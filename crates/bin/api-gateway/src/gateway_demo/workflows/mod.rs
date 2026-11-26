@@ -18,6 +18,7 @@ mod contract;
 mod endpoints;
 mod execution;
 mod graph;
+pub(super) mod generation_rollout;
 mod management;
 mod planner;
 pub(super) mod rollout;

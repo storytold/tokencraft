@@ -4,6 +4,7 @@ import argparse
 from base64 import b64decode, b64encode
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import hmac
 from http.client import HTTPConnection
@@ -356,6 +357,58 @@ def verify_tool_rollout(gateway, directory, settings, registry, sibling_project,
     print("PASS rollout checks queued tool pins, accepts drain-only retention, and preserves project authorization")
 
 
+def verify_generation_rollout(gateway, directory, settings, step_cap):
+    candidate = directory / "candidate-generation-catalog.json"
+    config = json.loads(Path(settings["TOKENCRAFT_CORE_CATALOG"]).read_bytes())
+    offer, private = config["offers"]
+    assert offer["id"] == "runtime_image"
+
+    def check(blocked, **overrides):
+        candidate.write_text(json.dumps(config))
+        command = [gateway, "catalog", "check-drain", "--catalog", candidate]
+        result = subprocess.run(command, cwd=directory, env=dict(settings, **overrides),
+                                capture_output=True, text=True, timeout=10)
+        assert result.returncode == int(blocked), (result.stdout, result.stderr)
+        report = json.loads(result.stdout)
+        assert report["ready"] is (not blocked) and report["checked_requests"] == 0
+        assert report["checked_workflow_generation_references"] == 1, report
+        expected = [{"model": offer["model"], "kind": "image", "first_frame": False,
+                     "references": 1, "reason": "generation_route_unavailable"}] if blocked else []
+        assert report["workflow_generation_blockers"] == expected, report
+        return report["base_revision"]
+
+    check(False)
+    config["offers"] = [private]
+    check(True)
+    config["offers"] = [offer, private]
+    offer["pricing"]["aspect_ratios"] = ["1:1"]
+    check(True)
+    offer["pricing"]["aspect_ratios"] = ["4:3"]
+    offer["pricing"]["usd_nanos_per_image"] = step_cap + 1
+    check(True)
+    offer["pricing"]["usd_nanos_per_image"] = step_cap
+    offer["provider"] = "alternate_fixture"
+    check(True)
+    offer["provider"] = "self_hosted"
+    config["connection_access"]["self_hosted"] = config["connection_access"][private["provider"]]
+    check(True)
+    del config["connection_access"]["self_hosted"]
+    revision = check(False)
+
+    feed = directory / "candidate-generation-rates.json"
+    now = datetime.now(timezone.utc)
+    feed.write_text(json.dumps({
+        "base_revision": revision,
+        "observed_at": (now - timedelta(minutes=1)).isoformat(),
+        "valid_until": (now + timedelta(hours=1)).isoformat(),
+        "rates": {offer["id"]: {"source_url": "https://example.invalid/fixture-image", "schedule": {
+            "kind": "image", "usd_nanos_per_image": step_cap + 1,
+        }}},
+    }))
+    check(True, TOKENCRAFT_DEMO_RATE_FEED=str(feed))
+    print("PASS rollout checks queued generation models, fixed shapes, step caps, project policy, sharing and rates")
+
+
 def verify_project_catalog(port, session, account, project):
     private = "a_private_image"
     caps_path = "/v1/workflows/capabilities"
@@ -560,7 +613,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     print("PASS published workflow contract, upload, digest, replay, conditional polling, cancellation, and app isolation")
 
 
-def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, hold_budget, receiver):
+def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, hold_budget, receiver, check_rollout):
     session, account, project = provision(port)
     query = f"?account_id={account}"
     base = f"/v1/projects/{project}"
@@ -592,7 +645,10 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     def set_caps(revision, total_limit, app_limit):
         policy = {"expected_revision": revision, "policy": {"monthly_estimated_budget_usd_nanos": total_limit}}
         for path in (organization_policy, project_policy):
-            call(port, path, 200, method="PUT", headers=session, body=policy)
+            candidate = policy
+            if path == project_policy:
+                candidate = {**policy, "policy": {**policy["policy"], "allowed_providers": ["self_hosted"]}}
+            call(port, path, 200, method="PUT", headers=session, body=candidate)
         call(port, client_budget, 200, method="PUT", headers=session,
              body={"expected_revision": revision, "limit_usd_nanos": app_limit})
 
@@ -618,6 +674,7 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     assert error["error"]["code"] == "monthly_budget_exceeded"
     receipt, _ = outcomes[1 - denied]
     assert_on_hold(estimate + run_cap, run_cap)
+    check_rollout(run_cap)
     replay, _ = call(peer, runs, 200, method="POST", body=empty, headers=attempts[1 - denied])
     assert replay == {**receipt, "replayed": True}
 
@@ -886,7 +943,11 @@ def rehearse(gateway, admin, directory):
             verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
                             check_rollout)
             verify_project_catalog(api_port, session, account, project)
-            verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver)
+            def check_generation(step_cap):
+                verify_generation_rollout(gateway, directory, settings, step_cap)
+
+            verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver,
+                                       check_generation)
 
 
 def main():

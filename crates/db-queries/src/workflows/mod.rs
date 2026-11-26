@@ -174,4 +174,4 @@ mod upload;
 pub use upload::*;
 
 mod rollout;
-pub use rollout::{tool_dependencies, ToolDependency};
+pub use rollout::{generation_dependencies, tool_dependencies, GenerationDependency, ToolDependency};

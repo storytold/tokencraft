@@ -182,14 +182,15 @@ impl Policies {
             gateway_routing_policies::current(exec, scope.account, Some(scope.project)).await?;
         let mut policies = Self::default();
         for row in rows {
-            let target = if row.project_id.is_some() {
-                &mut policies.project
-            } else {
-                &mut policies.organization
-            };
-            *target = Revision::from_row(row)?;
+            policies.set_current(row)?;
         }
         Ok(policies)
+    }
+
+    pub(super) fn set_current(&mut self, row: gateway_routing_policies::PolicyRow) -> ApiResult<()> {
+        let target = if row.project_id.is_some() { &mut self.project } else { &mut self.organization };
+        *target = Revision::from_row(row)?;
+        Ok(())
     }
 
     pub(super) fn advisor_enabled(&self) -> bool {

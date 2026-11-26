@@ -1,20 +1,25 @@
-use std::{env, ffi::OsString, io, net::IpAddr, path::Path, time::Duration};
+use std::{env, ffi::OsString, io, net::IpAddr, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Utc};
 use db_queries::gateway_requests::{BindingDependency, binding_dependencies};
-use db_queries::workflows::tool_dependencies;
+use db_queries::workflows::{generation_dependencies, tool_dependencies};
 use serde::Serialize;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{ChatBindings, Connectors, load_bindings, pin_catalog};
-use crate::gateway_demo::catalog::{Adapter, Catalog};
-use crate::gateway_demo::workflows::rollout as workflow_rollout;
+use crate::gateway_demo::{
+    catalog::{Adapter, Catalog, Offer},
+    catalog_refresh::CatalogStore,
+    compute_providers,
+    routing_policy::Policies,
+    workflows::{generation_rollout, rollout as workflow_rollout},
+};
 
 const MAX_GROUPS: i64 = 1024;
 const HELP: &str = "Usage: api-gateway catalog check-drain --catalog FILE
 
-Compare candidate providers and workflow tool bindings with outstanding work in DATABASE_URL.
+Compare candidate providers, workflow generation routes, and tool bindings with outstanding work in DATABASE_URL.
 Use the candidate's binding environment. The database connection is read-only.
 The JSON report lists blockers without exposing individual requests or workflow runs.
 ";
@@ -29,6 +34,8 @@ struct Report<'a> {
     blockers: Vec<Blocker<'a>>,
     #[serde(flatten)]
     workflows: workflow_rollout::Report<'a>,
+    #[serde(flatten)]
+    generation: generation_rollout::Report<'a>,
 }
 
 #[derive(Serialize)]
@@ -81,7 +88,7 @@ pub(in crate::gateway_demo) async fn run(mut args: impl Iterator<Item = OsString
     let checked_at = Utc::now();
     let dependencies = binding_dependencies(&mut tx, MAX_GROUPS + 1).await?;
     let workflow_dependencies = tool_dependencies(&mut tx, MAX_GROUPS + 1).await?;
-    tx.commit().await?;
+    let generation_dependencies = generation_dependencies(&mut tx, MAX_GROUPS + 1).await?;
     ensure!(
         dependencies.len() <= MAX_GROUPS as usize,
         "too many binding groups to certify this rollout"
@@ -90,6 +97,23 @@ pub(in crate::gateway_demo) async fn run(mut args: impl Iterator<Item = OsString
         workflow_dependencies.len() <= MAX_GROUPS as usize,
         "too many workflow tool binding groups to certify this rollout"
     );
+    ensure!(
+        generation_dependencies.len() <= MAX_GROUPS as usize,
+        "too many workflow generation groups to certify this rollout"
+    );
+    let generation = if generation_dependencies.is_empty() {
+        generation_rollout::Report::default()
+    } else {
+        let candidate = CatalogStore::load(Arc::new(catalog.clone()))?.current();
+        generation_rollout::check(
+            &mut tx,
+            &generation_dependencies,
+            &candidate,
+            |offer, account, policies, frame| generation_binding(offer, account, policies, frame, &chat, &connectors),
+        )
+        .await?
+    };
+    tx.commit().await?;
     let workflows = workflow_rollout::check(&workflow_dependencies)?;
     let blockers: Vec<_> = dependencies
         .iter()
@@ -109,18 +133,49 @@ pub(in crate::gateway_demo) async fn run(mut args: impl Iterator<Item = OsString
         version: 1,
         checked_at,
         base_revision: &catalog.revision,
-        ready: blockers.is_empty() && workflows.workflow_tool_blockers.is_empty(),
+        ready: blockers.is_empty()
+            && workflows.workflow_tool_blockers.is_empty()
+            && generation.workflow_generation_blockers.is_empty(),
         checked_requests: dependencies.iter().map(|entry| entry.requests).sum(),
         blockers,
         workflows,
+        generation,
     };
     serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
     println!();
+    ensure!(
+        report.generation.workflow_generation_blockers.is_empty(),
+        "candidate does not retain all outstanding workflow generation routes"
+    );
     ensure!(
         report.ready,
         "candidate does not retain all outstanding provider or workflow tool dependencies"
     );
     Ok(())
+}
+
+fn generation_binding(
+    offer: &Offer,
+    account: &ids::AccountId,
+    policies: &Policies,
+    frame: bool,
+    chat: &ChatBindings,
+    connectors: &Connectors,
+) -> bool {
+    let Some(slot) = offer.local_binding.as_deref() else {
+        return false;
+    };
+    match offer.adapter {
+        Adapter::OpenAiCompatibleChat => chat.get(slot).is_some_and(|binding| {
+            binding.client.compute_stack().is_none_or(|stack| {
+                stack.has_target(account, compute_providers::order(policies, &stack.name))
+            })
+        }),
+        Adapter::ConnectorQueue => connectors
+            .for_offer(slot)
+            .is_some_and(|binding| !frame || binding.accepts_workflow_frames),
+        Adapter::Mock => false,
+    }
 }
 
 fn blocker(

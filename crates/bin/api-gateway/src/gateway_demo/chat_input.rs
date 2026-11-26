@@ -39,10 +39,11 @@ pub fn message_input_bound(messages: &[Message]) -> Option<u32> {
     {
         return None;
     }
-    let bound = messages
-        .iter()
-        .map(|message| message.content.len() + 8)
-        .sum::<usize>();
+    input_bound_from_message_lengths(messages.iter().map(|message| message.content.len()))
+}
+
+pub(super) fn input_bound_from_message_lengths(lengths: impl IntoIterator<Item = usize>) -> Option<u32> {
+    let bound = lengths.into_iter().map(|length| length + 8).sum::<usize>();
     (bound <= 6000).then_some(bound as u32)
 }
 

@@ -365,13 +365,15 @@ After upgrading, a worker also publishes the removal event for expired successfu
 
 ## Check a connector rollout
 
-Run the drain check against the deployment database with the candidate catalog and the candidate binding environment. Include `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` and the referenced service token variables if the deployment uses workflow tools. `DATABASE_URL` can use a role with read access to requests, provider runs, connector completion state, provider credential state, and workflow runs. Use verified PostgreSQL TLS for a remote database. The command reads a point-in-time snapshot in a read-only transaction.
+Run the drain check against the deployment database with the candidate catalog and the candidate binding environment. Include `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` and the referenced service token variables if the deployment uses workflow tools. Include `TOKENCRAFT_DEMO_RATE_FEED` when the candidate uses a reviewed rate feed. `DATABASE_URL` can use a role with read access to requests, provider runs, connector completion state, provider credential state, workflow runs, and routing policies. Use verified PostgreSQL TLS for a remote database. The command reads a point-in-time snapshot in a read-only transaction.
 
 ```sh
 api-gateway catalog check-drain --catalog catalog.next.json
 ```
 
 The JSON report gives the candidate base revision and counts by offer, request phase, and pinned binding digest. It also reports `checked_workflow_tool_references` and `workflow_tool_blockers`. One reference represents an active, unexpired run and one pinned tool operation revision. An active run can contribute more than one reference. The check uses the saved graph, including tool steps the run may already have completed. It reports counts without account, project, or run IDs, and checks configuration without contacting tool services. A blocker makes the command exit nonzero. Wait for outstanding work with the previous workers in place, then rerun the check close to cutover.
+
+`checked_workflow_generation_references` and `workflow_generation_blockers` cover saved generation requirements in those same runs. One reference represents an active run and one distinct saved generation requirement. The checker uses the candidate bindings, first-frame support, fixed dimensions or token limits, current routing policy, and reviewed rates. For dynamic values it looks for a possible compatible workload and checks the minimum cost implied by the saved settings. For text, PostgreSQL returns the byte lengths of fixed messages. The checker receives no message content or workflow inputs. Provider credentials, temporary availability, and the resolved workload are evaluated again during execution.
 
 | Blocker | What to preserve |
 | --- | --- |
@@ -381,6 +383,7 @@ The JSON report gives the candidate base revision and counts by offer, request p
 | `tool_binding_unavailable` | Keep the original workflow tool binding. Its name, revision, origin, and manifest determine its saved digest. |
 | `tool_scope_unavailable` | Retain the account and project authorization required by the active workflow run. |
 | `tool_operation_unavailable` | Retain the pinned tool operation and revision in the reviewed manifest. |
+| `generation_route_unavailable` | Retain a usable route for the saved model and workload in the affected projects. Check active bindings, connector capabilities, policy, and estimated cost against the step's cap. |
 
 When replacing a queue connector, provision a new binding name. Keep the old origin, revision, and completion settings available until the old work drains. A drain-only worker polls and recovers existing jobs on that binding. Workers with the active binding continue to claim submissions during cutover. Continue to coordinate admissions during cutover and review provider access and pricing for the candidate. [Connector protocol](provider-connectors.md#queued-media-protocol-version-1)
 
