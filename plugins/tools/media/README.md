@@ -38,7 +38,19 @@ python3 plugins/tools/media/server.py \
   --state "$PWD/.tokencraft-documents"
 ```
 
-Use `manifest.json` for the FFmpeg binding. Other packs use `studio.manifest.json`, `documents.manifest.json`, `mesh.manifest.json`, or `delivery.manifest.json`. Use the selected pack name in `--pack`. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
+Use `manifest.json` for the FFmpeg binding. Other packs use `studio.manifest.json`, `documents.manifest.json`, `mesh.manifest.json`, or `delivery.manifest.json`. Use `speech.manifest.json` for the speech binding. Use the selected pack name in `--pack`. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
+
+## Enable speech processing
+
+The `speech` pack requires FFmpeg, FFprobe, a compatible `whisper-cli`, and a local whisper.cpp model provided by the operator. Use a multilingual model for automatic language detection and translation. The runner uses CPU inference by default. Mount the model read-only and use a new binding revision when changing the model or its compute options. [whisper.cpp command-line documentation](https://github.com/ggml-org/whisper.cpp/blob/master/examples/cli/README.md)
+
+```sh
+export TOKENCRAFT_MEDIA_SERVICE_TOKEN="$(openssl rand -hex 32)"
+python3 plugins/tools/media/server.py --pack speech --port 8098 \
+  --state "$PWD/.tokencraft-speech" --speech-model /models/ggml-base.bin
+```
+
+Use `--speech-gpu` when the installed whisper.cpp executable supports your hardware. Speech recipes accept up to ten minutes of audio at a time. Use the FFmpeg pack's **Extract audio** operation to start from video. The adapter normalizes audio to 16 kHz mono before inference. Speech outputs can feed the studio pack's selectable caption track.
 
 ## Operations
 
@@ -55,6 +67,7 @@ Use `manifest.json` for the FFmpeg binding. Other packs use `studio.manifest.jso
 | Captions | Normalize UTF-8 SRT or WebVTT, shift timing, and extract a plain-text transcript |
 | Mesh | Inspect self-contained GLB files, scale scenes, strip application extras, and convert embedded glTF JSON into a GLB |
 | Delivery | Compute a SHA-256 fingerprint and bundle two or four assets into a ZIP with a digest manifest |
+| Speech | Transcription, English translation, WebVTT captions, and timestamped segment JSON |
 
 The manifest is authoritative for names, revisions, input slots, parameter defaults and constraints, and possible response content types. For the FFmpeg pack, geometry uses encoded pixels. A time in milliseconds refers to the normalized source timeline. A video crop has even output dimensions for 4:2:0 encoding. The runner probes each source and verifies its actual kind. Supported source containers include MP4/MOV, Matroska/WebM, WAV, MP3, FLAC, Ogg, and supported PNG, JPEG, WebP, and GIF images.
 

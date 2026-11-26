@@ -23,6 +23,7 @@ from documents import Documents
 from engine import Engine, Limits, run_command
 from meshes import Meshes
 from queue_store import Capacity, Conflict, Store
+from speech import Speech
 from studio import Studio
 
 
@@ -69,7 +70,7 @@ def validate_submission(data: object, key: str, limit: int, registry: Registry) 
 
 
 class Worker:
-    def __init__(self, engine: Engine | Documents | Meshes | Delivery, store: Store):
+    def __init__(self, engine: Engine | Documents | Meshes | Delivery | Speech, store: Store):
         self.engine = engine
         self.store = store
         self.stop = Event()
@@ -316,9 +317,12 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=positive, default=8094)
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--pack", choices=("media", "studio", "documents", "mesh", "delivery"), default="media")
+    parser.add_argument("--pack", choices=("media", "studio", "documents", "mesh", "delivery", "speech"), default="media")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
+    parser.add_argument("--speech-model", type=Path)
+    parser.add_argument("--speech-executable", default="whisper-cli")
+    parser.add_argument("--speech-gpu", action="store_true")
     parser.add_argument("--max-file-mib", type=positive, default=64)
     parser.add_argument("--max-requests", type=positive, default=32)
     parser.add_argument("--retention-hours", type=positive, default=24)
@@ -338,6 +342,13 @@ def main():
         engine = Meshes(limits)
     elif args.pack == "delivery":
         engine = Delivery(limits)
+    elif args.pack == "speech":
+        if not args.speech_model:
+            parser.error("--pack speech requires --speech-model")
+        engine = Speech(
+            limits, args.ffmpeg, args.ffprobe, args.speech_executable, args.speech_model,
+            allow_gpu=args.speech_gpu,
+        )
     else:
         if args.pack == "studio":
             engine = Studio(limits, args.ffmpeg, args.ffprobe)

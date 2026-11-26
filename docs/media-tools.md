@@ -2,9 +2,9 @@
 
 ## Runner
 
-The independently started [media runner](../plugins/tools/media/README.md) uses reviewed, versioned recipes for video, audio, image, document, caption, mesh, and delivery operations. Its manifest supplies typed inputs, constrained parameters, and result media types to an editor or an API client. It speaks the queued connector's receipt, result status, request lookup, and artifact transport. The operator provides the service origin, trust configuration, service token, and compute capacity.
+The independently started [media runner](../plugins/tools/media/README.md) uses reviewed, versioned recipes for video, audio, image, document, caption, mesh, delivery, and speech operations. Its manifest supplies typed inputs, constrained parameters, and result media types to an editor or an API client. It speaks the queued connector's receipt, result status, request lookup, and artifact transport. The operator provides the service origin, trust configuration, service token, and compute capacity.
 
-Start each selected pack as a separate worker with its own reviewed manifest and state directory. A workflow can pass a PDF page rendered by Poppler to an image recipe on the FFmpeg worker. CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
+Start each selected pack as a separate worker with its own reviewed manifest and state directory. A workflow can pass a PDF page from Poppler to an FFmpeg image recipe or send speech captions to the studio pack for a selectable video track. CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
 
 ## Workflow execution
 
@@ -60,7 +60,7 @@ See the [documents and caption manifest](../plugins/tools/media/documents.manife
 | Audio | Stem separation and more channel routing options |
 | Image | Model-backed upscaling, background removal, and batch preparation |
 | Analysis | Shot boundaries and additional quality checks |
-| Specialist assets | Vector assets, mesh formats beyond self-contained glTF, and optional model-backed finishing |
+| Specialist assets | Vector assets and mesh formats beyond self-contained glTF |
 | Publishing | Extend fixed-size delivery bundles to larger project packages |
 
 CPU and model-backed packs share the versioned descriptor, explicit project policy, scoped inputs, and durable job receipts. Each pack declares its own media envelope, prerequisites, and execution model. The public image, video, and audio tooling reference for the first runner is the [FFmpeg documentation](https://ffmpeg.org/documentation.html).
