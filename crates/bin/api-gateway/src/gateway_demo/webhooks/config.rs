@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::time::Duration;
 
@@ -91,6 +91,17 @@ impl WebhookConfig {
 
     pub fn destination_ids(&self) -> impl Iterator<Item = &str> {
         self.destinations.keys().map(String::as_str)
+    }
+
+    pub(super) fn destinations_by_origin(&self) -> HashMap<String, Vec<String>> {
+        let mut groups = HashMap::<String, Vec<String>>::new();
+        for (id, url) in &self.destinations {
+            groups
+                .entry(url.origin().ascii_serialization())
+                .or_default()
+                .push(id.clone());
+        }
+        groups
     }
 
     pub fn destination(&self, id: &str) -> Option<&Url> {

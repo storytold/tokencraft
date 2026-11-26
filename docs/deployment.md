@@ -339,7 +339,9 @@ With the revision set, the check verifies both origins without sending the scope
 
 To deliver signed customer webhooks, set `TOKENCRAFT_DEMO_WEBHOOK_CONFIG` to an operator-maintained JSON registry such as `{"destinations":{"customer_updates":"https://events.example.com/tokencraft"}}`. Give the API and workers the same independent 32-byte hex `TOKENCRAFT_DEMO_WEBHOOK_KEY`. Hosts use the standard public certificate roots by default. Set `TOKENCRAFT_WEBHOOK_CA_FILE` to an operator-managed PEM bundle to use a private trust store for all webhook destinations. Tenants select a registry entry by ID. Register reviewed HTTPS destinations and set egress policy for the hosts you allow. TLS verifies the destination hostname and the client rejects redirects.
 
-Each worker runs up to four delivery attempts at a time. A worker taking over an expired lease records that attempt and retries with the same event ID and body. Receivers should deduplicate by `webhook-id` because a successful delivery can be retried after a lost response or worker restart. Revocation prevents new attempts and redrives. An attempt already leased when revocation commits may finish.
+Each worker runs up to four delivery attempts at a time. When three attempts target the same origin and other origins are configured, the fourth slot stays available for a different origin. Destination aliases with the same scheme, host, and port share capacity. A deployment with one receiver origin can use all four slots per worker.
+
+A worker taking over an expired lease records that attempt and retries with the same event ID and body. Receivers should deduplicate by `webhook-id` because a successful delivery can be retried after a lost response or worker restart. Revocation prevents new attempts and redrives. An attempt already leased when revocation commits may finish.
 
 For retryable responses, the worker honors `Retry-After` in seconds or as an HTTP date, up to 60 seconds. It waits at least the normal backoff and retains the scheduled retry in PostgreSQL. [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
 

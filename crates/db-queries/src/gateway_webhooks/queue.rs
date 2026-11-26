@@ -18,7 +18,13 @@ pub struct Claim {
     pub tries_in_cycle: i32,
 }
 
-pub async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claim>> {
+pub enum ClaimOutcome {
+    Claimed(Claim),
+    Closed,
+    Idle,
+}
+
+pub async fn claim(pool: &PgPool, excluded_destinations: &[String]) -> sqlx::Result<ClaimOutcome> {
     let mut tx = pool.begin().await?;
     // Use a stable cutoff so the due index can skip future retries. Holding the
     // subscription lock through commit orders new leases with revocation and rotation.
@@ -34,14 +40,16 @@ pub async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claim>> {
            LEFT JOIN workflow_runs w ON w.id = d.workflow_run_id
            JOIN gateway_webhook_subscriptions s ON s.id = coalesce(r.webhook_subscription_id, w.webhook_subscription_id)
          WHERE d.state IN ('pending', 'sending') AND d.available_at <= statement_timestamp()
+           AND s.destination_id <> ALL($1::text[])
          ORDER BY d.available_at, d.id LIMIT 1
          FOR UPDATE OF d SKIP LOCKED FOR SHARE OF s SKIP LOCKED",
+        excluded_destinations,
     )
     .fetch_optional(&mut *tx)
     .await?;
     let Some(ready) = ready else {
         tx.commit().await?;
-        return Ok(None);
+        return Ok(ClaimOutcome::Idle);
     };
 
     if ready.state == "sending" {
@@ -73,7 +81,7 @@ pub async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claim>> {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(None);
+        return Ok(ClaimOutcome::Closed);
     }
 
     let attempt = ready.attempt_count + 1;
@@ -95,7 +103,7 @@ pub async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claim>> {
     .await?;
     tx.commit().await?;
 
-    Ok(Some(Claim {
+    Ok(ClaimOutcome::Claimed(Claim {
         id: ready.id,
         subject_id: ready.subject_id,
         is_workflow: ready.is_workflow,

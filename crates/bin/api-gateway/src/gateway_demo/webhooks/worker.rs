@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use db_queries::gateway_webhooks::{self, Claim, DeliveryResult};
+use db_queries::gateway_webhooks::{self, Claim, ClaimOutcome, DeliveryResult};
+use tokio::task::Id;
 use tracing::Instrument;
 
 use crate::{gateway_demo::readiness::Readiness, middleware::trace_context::work_span};
@@ -9,29 +11,45 @@ use crate::{gateway_demo::readiness::Readiness, middleware::trace_context::work_
 use super::config::WebhookConfig;
 
 const MAX_IN_FLIGHT: usize = 4;
+const MAX_CLAIMS_PER_TICK: usize = 16;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 pub(in crate::gateway_demo) fn spawn(pool: db::PgPool, config: Arc<WebhookConfig>, readiness: Arc<Readiness>) {
     tokio::spawn(async move {
         let mut tasks = tokio::task::JoinSet::new();
+        let mut in_flight = HashMap::new();
+        let groups = config.destinations_by_origin();
         let mut timer = tokio::time::interval(Duration::from_millis(250));
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             timer.tick().await;
-            while let Some(result) = tasks.try_join_next() {
-                if result.is_err() {
-                    tracing::warn!("webhook task stopped before writing its outcome");
-                }
+            while let Some(result) = tasks.try_join_next_with_id() {
+                let task_id = match result {
+                    Ok((id, ())) => id,
+                    Err(error) => {
+                        tracing::warn!("webhook task stopped before writing its outcome");
+                        error.id()
+                    }
+                };
+                in_flight.remove(&task_id);
             }
-            for _ in tasks.len()..MAX_IN_FLIGHT {
-                if !readiness.database_schema_ready() {
+            for _ in 0..MAX_CLAIMS_PER_TICK {
+                if tasks.len() >= MAX_IN_FLIGHT || !readiness.database_schema_ready() {
                     break;
                 }
-                match gateway_webhooks::claim(&pool).await {
-                    Ok(Some(claim)) => {
-                        tasks.spawn(deliver(pool.clone(), Arc::clone(&config), claim));
+                let excluded = saturated_destinations(&groups, &in_flight);
+                match gateway_webhooks::claim(&pool, excluded).await {
+                    Ok(ClaimOutcome::Claimed(claim)) => {
+                        let origin = config
+                            .matches_destination(&claim.destination_id, &claim.destination_url)
+                            .map(|url| url.origin().ascii_serialization());
+                        let task = tasks.spawn(deliver(pool.clone(), Arc::clone(&config), claim));
+                        if let Some(origin) = origin {
+                            in_flight.insert(task.id(), origin);
+                        }
                     }
-                    Ok(None) => break,
+                    Ok(ClaimOutcome::Closed) => continue,
+                    Ok(ClaimOutcome::Idle) => break,
                     Err(error) => {
                         log_database_error(&error);
                         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -41,6 +59,23 @@ pub(in crate::gateway_demo) fn spawn(pool: db::PgPool, config: Arc<WebhookConfig
             }
         }
     });
+}
+
+fn saturated_destinations<'a>(
+    groups: &'a HashMap<String, Vec<String>>,
+    in_flight: &HashMap<Id, String>,
+) -> &'a [String] {
+    // With multiple configured origins, keep the last slot for a different
+    // receiver when one origin already owns the other three.
+    if groups.len() < 2 || in_flight.len() != MAX_IN_FLIGHT - 1 {
+        return &[];
+    }
+    let origin = in_flight.values().next().expect("three active deliveries");
+    if in_flight.values().all(|value| value == origin) {
+        groups.get(origin).map_or(&[], Vec::as_slice)
+    } else {
+        &[]
+    }
 }
 
 async fn deliver(pool: db::PgPool, config: Arc<WebhookConfig>, claim: Claim) {
