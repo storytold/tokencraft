@@ -29,7 +29,7 @@ python3 -m unittest discover -s plugins/tools/media -v
 
 ## Select a pack
 
-The `media` pack uses FFmpeg and is the default when you start this optional runner. The `documents` pack uses Poppler's `pdfinfo`, `pdftoppm`, and `pdftotext`. The `mesh` and `delivery` packs run with Python's standard library. Start each pack on its own port with a different private state directory and service token. A state directory stays with the pack that initialized it.
+The `media` pack uses FFmpeg and is the default when you start this optional runner. The `studio` pack adds editing and analysis recipes and needs FFmpeg with `libx264`, `libvpx-vp9`, and `libopus`. The `documents` pack uses Poppler's `pdfinfo`, `pdftoppm`, and `pdftotext`. The `mesh` and `delivery` packs run with Python's standard library. Start each pack on its own port with a different private state directory and service token. A state directory stays with the pack that initialized it.
 
 ```sh
 export TOKENCRAFT_MEDIA_SERVICE_TOKEN="$(openssl rand -hex 32)"
@@ -38,7 +38,7 @@ python3 plugins/tools/media/server.py \
   --state "$PWD/.tokencraft-documents"
 ```
 
-Use `manifest.json` for the FFmpeg binding. The other packs use `documents.manifest.json`, `mesh.manifest.json`, and `delivery.manifest.json` respectively. Use the selected pack name in `--pack`. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
+Use `manifest.json` for the FFmpeg binding. Other packs use `studio.manifest.json`, `documents.manifest.json`, `mesh.manifest.json`, or `delivery.manifest.json`. Use the selected pack name in `--pack`. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
 
 ## Operations
 
@@ -48,6 +48,9 @@ Use `manifest.json` for the FFmpeg binding. The other packs use `documents.manif
 | Video | Trim, join with scale and audio normalization, replace soundtrack, extract audio, mute, resize, crop, transcode to H.264, change speed, extract a frame, and create a GIF |
 | Audio | Trim, concatenate, mix, apply loudness normalization or fades, and convert to WAV, MP3, or FLAC |
 | Images | Resize, crop, convert to PNG, JPEG, or WebP, overlay, and extend a still into an MP4 |
+| Studio video | Letterbox, rotate, change frame rate, overlay an image, make a contact sheet, attach a selectable caption track, and export VP9 WebM |
+| Studio audio | Change speed and gain, reduce steady noise, resample, downmix to mono, and measure peak and RMS waveform |
+| Studio images | Letterbox, rotate, flip, convert to monochrome, apply alpha masks, and estimate an image palette |
 | Documents | Inspect PDF page count and version, render a page as PNG, and extract text across a bounded page range |
 | Captions | Normalize UTF-8 SRT or WebVTT, shift timing, and extract a plain-text transcript |
 | Mesh | Inspect self-contained GLB files, scale scenes, strip application extras, and convert embedded glTF JSON into a GLB |

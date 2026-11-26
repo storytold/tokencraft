@@ -38,9 +38,9 @@ def mp4(arguments: list[str], *, crf: int = 23) -> Recipe:
     ], "video/mp4")
 
 
-def sound(arguments: list[str], format_name: str = "wav") -> Recipe:
+def sound(arguments: list[str], format_name: str = "wav", *, sample_rate: str = "48000") -> Recipe:
     content_type, options = AUDIO_FORMATS[format_name]
-    return Recipe(arguments + ["-vn", "-ar", "48000", *options], content_type)
+    return Recipe(arguments + ["-vn", "-ar", sample_rate, *options], content_type)
 
 
 def picture(arguments: list[str], format_name: str = "png") -> Recipe:

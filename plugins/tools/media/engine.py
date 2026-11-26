@@ -143,15 +143,24 @@ class Engine:
         if tool["id"] == "media.inspect":
             staging.write_text(json.dumps(media["source"], sort_keys=True) + "\n", encoding="utf-8")
             return "application/json"
-        family, name = tool["id"].split(".", 1)
-        recipe = RECIPE_FAMILIES[family](name, media, parameters)
-        arguments = [
+        recipe = self.recipe(tool["id"], media, parameters)
+        return self.encode(tool["output"]["kind"], recipe, sources, staging)
+
+    def recipe(self, tool_id: str, media: dict, parameters: dict):
+        family, name = tool_id.split(".", 1)
+        return RECIPE_FAMILIES[family](name, media, parameters)
+
+    def command(self) -> list[str]:
+        return [
             self.ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-xerror",
             "-filter_threads", "1", "-filter_complex_threads", "1",
             "-max_alloc", str(128 * 1024 * 1024),
         ]
+    def encode(self, kind: str, recipe, sources: dict[str, Path], staging: Path, extra_inputs=()) -> str:
+        arguments = self.command()
         for source in sources.values():
             arguments += [*INPUT_OPTIONS, "-threads", "1", "-noautorotate", "-i", str(source)]
+        arguments += extra_inputs
         arguments += [
             *recipe.arguments, "-map_metadata", "-1", "-map_chapters", "-1",
             "-threads", "1", "-fs", str(self.limits.output_bytes), str(staging),
@@ -160,6 +169,6 @@ class Engine:
         if not staging.is_file() or staging.stat().st_size >= self.limits.output_bytes:
             raise MediaError("output was missing or reached its byte limit")
         result = self.inspect(staging, byte_limit=self.limits.output_bytes)
-        if result["kind"] != tool["output"]["kind"]:
+        if result["kind"] != kind:
             raise MediaError("output does not match the declared media kind")
         return recipe.content_type

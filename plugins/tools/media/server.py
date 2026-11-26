@@ -23,6 +23,7 @@ from documents import Documents
 from engine import Engine, Limits, run_command
 from meshes import Meshes
 from queue_store import Capacity, Conflict, Store
+from studio import Studio
 
 
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -315,7 +316,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=positive, default=8094)
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--pack", choices=("media", "documents", "mesh", "delivery"), default="media")
+    parser.add_argument("--pack", choices=("media", "studio", "documents", "mesh", "delivery"), default="media")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--max-file-mib", type=positive, default=64)
@@ -338,9 +339,14 @@ def main():
     elif args.pack == "delivery":
         engine = Delivery(limits)
     else:
-        engine = Engine(limits, args.ffmpeg, args.ffprobe)
+        if args.pack == "studio":
+            engine = Studio(limits, args.ffmpeg, args.ffprobe)
+            required = ("libx264", "libvpx-vp9", "libopus")
+        else:
+            engine = Engine(limits, args.ffmpeg, args.ffprobe)
+            required = ("libx264", "libmp3lame", "libwebp")
         encoders = run_command([engine.ffmpeg, "-hide_banner", "-encoders"], 10, read_output=True).decode()
-        for name in ("libx264", "libmp3lame", "libwebp"):
+        for name in required:
             if not re.search(rf"^\s*[A-Z.]+\s+{name}\s", encoders, re.MULTILINE):
                 parser.error(f"FFmpeg needs the {name} encoder")
     store = Store(

@@ -56,10 +56,10 @@ See the [documents and caption manifest](../plugins/tools/media/documents.manife
 
 | Pack | Coverage to verify |
 | --- | --- |
-| Editing and delivery | Explicit frame sizes, multi-clip assembly, overlays, watermarks, sprite and contact sheets, subtitle and caption tracks, compatible web and editing formats |
-| Audio | Extraction, loudness, transitions, channel routing, mix and concatenation, noise treatment, and stem workflows |
-| Image | Geometry, format conversion, masks and alpha compositing, thumbnails, color transforms, and batch preparation |
-| Analysis | Typed probe output, fingerprints, waveform and loudness data, timestamps, and quality inspection |
+| Editing and delivery | Crossfades and additional editing export formats |
+| Audio | Stem separation and more channel routing options |
+| Image | Model-backed upscaling, background removal, and batch preparation |
+| Analysis | Shot boundaries and additional quality checks |
 | Specialist assets | Vector assets, mesh formats beyond self-contained glTF, and optional model-backed finishing |
 | Publishing | Extend fixed-size delivery bundles to larger project packages |
 

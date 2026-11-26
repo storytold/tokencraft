@@ -1,0 +1,600 @@
+{
+  "version": 1,
+  "plugin": "tokencraft-studio",
+  "tools": [
+    {
+      "id": "video.letterbox",
+      "revision": 1,
+      "label": "Fit video inside a frame",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 4096,
+            "multipleOf": 2
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 4096,
+            "multipleOf": 2
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/mp4"
+        ]
+      }
+    },
+    {
+      "id": "video.rotate",
+      "revision": 1,
+      "label": "Rotate video",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "string",
+            "enum": [
+              "clockwise",
+              "counterclockwise",
+              "half"
+            ]
+          }
+        },
+        "required": [
+          "turn"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/mp4"
+        ]
+      }
+    },
+    {
+      "id": "video.frame_rate",
+      "revision": 1,
+      "label": "Change video frame rate",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "fps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "required": [
+          "fps"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/mp4"
+        ]
+      }
+    },
+    {
+      "id": "video.overlay",
+      "revision": 1,
+      "label": "Overlay an image on video",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        },
+        "overlay": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "opacity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/mp4"
+        ]
+      }
+    },
+    {
+      "id": "video.contact_sheet",
+      "revision": 1,
+      "label": "Create a video contact sheet",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6,
+            "default": 4
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6,
+            "default": 3
+          },
+          "tile_size": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 480,
+            "default": 160
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "video.caption_track",
+      "revision": 1,
+      "label": "Add a selectable caption track",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        },
+        "captions": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/mp4"
+        ]
+      }
+    },
+    {
+      "id": "video.to_webm",
+      "revision": 1,
+      "label": "Export video as WebM",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "quality": {
+            "type": "integer",
+            "minimum": 15,
+            "maximum": 45,
+            "default": 32
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/webm"
+        ]
+      }
+    },
+    {
+      "id": "image.letterbox",
+      "revision": 1,
+      "label": "Fit image inside a frame",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 4096,
+            "multipleOf": 2
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 4096,
+            "multipleOf": 2
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "image.rotate",
+      "revision": 1,
+      "label": "Rotate image",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "string",
+            "enum": [
+              "clockwise",
+              "counterclockwise",
+              "half"
+            ]
+          }
+        },
+        "required": [
+          "turn"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "image.flip",
+      "revision": 1,
+      "label": "Flip image",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "axis": {
+            "type": "string",
+            "enum": [
+              "horizontal",
+              "vertical"
+            ]
+          }
+        },
+        "required": [
+          "axis"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "image.monochrome",
+      "revision": 1,
+      "label": "Convert image to monochrome",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "image.alpha_mask",
+      "revision": 1,
+      "label": "Apply an image alpha mask",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        },
+        "mask": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "audio.change_speed",
+      "revision": 1,
+      "label": "Change audio speed",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "factor": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 2
+          }
+        },
+        "required": [
+          "factor"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "audio",
+        "content_types": [
+          "audio/wav"
+        ]
+      }
+    },
+    {
+      "id": "audio.gain",
+      "revision": 1,
+      "label": "Adjust audio gain",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "db": {
+            "type": "integer",
+            "minimum": -40,
+            "maximum": 20
+          }
+        },
+        "required": [
+          "db"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "audio",
+        "content_types": [
+          "audio/wav"
+        ]
+      }
+    },
+    {
+      "id": "audio.denoise",
+      "revision": 1,
+      "label": "Reduce steady audio noise",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "amount_db": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 36,
+            "default": 12
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "audio",
+        "content_types": [
+          "audio/wav"
+        ]
+      }
+    },
+    {
+      "id": "audio.resample",
+      "revision": 1,
+      "label": "Resample audio",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "rate": {
+            "type": "string",
+            "enum": [
+              "16000",
+              "22050",
+              "44100",
+              "48000"
+            ]
+          }
+        },
+        "required": [
+          "rate"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "audio",
+        "content_types": [
+          "audio/wav"
+        ]
+      }
+    },
+    {
+      "id": "audio.mono",
+      "revision": 1,
+      "label": "Downmix audio to mono",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "audio",
+        "content_types": [
+          "audio/wav"
+        ]
+      }
+    },
+    {
+      "id": "analysis.waveform",
+      "revision": 1,
+      "label": "Measure audio waveform",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "integer",
+            "minimum": 16,
+            "maximum": 2048,
+            "default": 256
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    },
+    {
+      "id": "analysis.palette",
+      "revision": 1,
+      "label": "Extract an image palette",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "colors": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 16,
+            "default": 8
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    }
+  ]
+}
