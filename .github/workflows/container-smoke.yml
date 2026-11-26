@@ -31,7 +31,7 @@ jobs:
           docker build --file deploy/container/Dockerfile --target gateway \
             --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag tokencraft-gateway:ci .
           docker compose build --build-arg "SOURCE_REVISION=$GITHUB_SHA"
-      - name: Verify image metadata
+      - name: Verify image metadata and support files
         id: image_metadata
         shell: bash
         run: |
@@ -45,6 +45,9 @@ jobs:
                   | .version
                   | select(type == "string" and test("\\A[0-9][0-9A-Za-z.-]{0,127}\\z"))')
             package_version=${package_version:-$image_version}
+            for file in catalog/artcraft-v1.json contracts/openapi.json deploy/postgres/grant-runtime.sql; do
+              docker run --rm --network none --entrypoint cat "$image" "$file" | cmp - "$file"
+            done
             test "$package_version" = "$image_version"
           done
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$package_version" ]]; then

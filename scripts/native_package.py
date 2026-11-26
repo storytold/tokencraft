@@ -14,6 +14,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 import tarfile
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
@@ -26,14 +27,23 @@ from urllib.request import ProxyHandler, Request, build_opener
 ROOT = Path(__file__).resolve().parents[1]
 BINARIES = ("tokencraft", "api-gateway", "admin-cli")
 SERVER_TOOLS = ("postgres", "initdb", "pg_ctl", "pg_isready", "createdb")
+MEDIA_WORKER = "plugins/tools/media"
+MEDIA_FILES = (
+    "README.md", "contract.py", "delivery.manifest.json", "delivery.py",
+    "documents.manifest.json", "documents.py", "engine.py", "manifest.json",
+    "mesh.manifest.json", "meshes.py", "queue_store.py", "recipes.py", "server.py",
+    "speech.manifest.json", "speech.py", "studio.manifest.json", "studio.py",
+)
 SUPPORT_FILES = (
-    "LICENSE", "README.md", "catalog/artcraft-v1.json", "docs/setup.md", "docs/deployment.md",
+    "LICENSE", "README.md", "catalog/artcraft-v1.json", "contracts/openapi.json",
+    "docs/setup.md", "docs/deployment.md", "docs/workflows.md", "docs/media-tools.md",
     "docs/provider-connectors.md", "docs/customer-data.md", "docs/event-archives.md",
     "docs/chat-history.md", "examples/connector/catalog.json",
     "examples/connector/bindings.json", "examples/connector/smoke.sh",
     "examples/postgres/export_to_postgres.py", "examples/postgres/postgres_usage_views.sql",
     "examples/postgres/grant_sync_role.sql", "examples/postgres/smoke.py",
     "deploy/postgres/grant-runtime.sql",
+    *(f"{MEDIA_WORKER}/{name}" for name in MEDIA_FILES),
 )
 
 
@@ -128,6 +138,8 @@ def smoke_package(archive, name, pg_bin):
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(work, filter="data")
         package = work / name
+        run([sys.executable, "-B", package / MEDIA_WORKER / "server.py", "--help"],
+            cwd=package, env={"LC_ALL": "C"}, stdout=subprocess.DEVNULL, timeout=10)
         tool_dir = work / "tools"
         tool_dir.mkdir()
         required = ["bash", "curl", "jq", "openssl", "mktemp", "rm", "rmdir", "cmp", "cut", "od", "tr", "sleep"]
@@ -170,6 +182,9 @@ def smoke_package(archive, name, pg_bin):
                     sleep(.2)
                 else:
                     raise RuntimeError("The packaged gateway did not start.")
+                with opener.open(api + "/openapi.json", timeout=3) as running_contract:
+                    if json.load(running_contract) != json.loads((package / "contracts/openapi.json").read_bytes()):
+                        raise RuntimeError("The packaged API contract differs from the running gateway.")
                 if console.is_dir():
                     route = Request(f"http://localhost:{web_port}/pricing", headers={"Accept": "text/html"})
                     with opener.open(route, timeout=3) as result:

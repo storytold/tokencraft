@@ -30,6 +30,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/tokencraft
 COPY --from=build /tmp/tokencraft-package/LICENSE /tmp/tokencraft-package/VERSION.json ./
+COPY --from=build /tmp/tokencraft-package/catalog/ ./catalog/
+COPY --from=build /tmp/tokencraft-package/contracts/ ./contracts/
+COPY --from=build /tmp/tokencraft-package/deploy/postgres/ ./deploy/postgres/
 COPY --from=build /tmp/tokencraft-package/bin/api-gateway /tmp/tokencraft-package/bin/admin-cli /usr/local/bin/
 USER 65532:65532
 EXPOSE 4000

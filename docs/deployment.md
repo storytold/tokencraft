@@ -75,7 +75,7 @@ Open **Projects → Settings → Compute fallback** to inherit pool priorities o
 
 ## Build the gateway runtime image
 
-From the core repository, build the gateway target and tag it with the release version. The image includes the matching migration CLI and records the Git commit in `VERSION.json` when supplied at build time.
+From the core repository, build the gateway target and tag it with the release version. The image includes the matching migration CLI and records the Git commit in `VERSION.json` when supplied at build time. The public catalog, OpenAPI contract, and PostgreSQL runtime grant script are in `/opt/tokencraft`.
 
 ```sh
 docker build --file deploy/container/Dockerfile --target gateway \
@@ -307,7 +307,14 @@ For retryable responses, the worker honors `Retry-After` in seconds or as an HTT
 
 Use a dedicated PostgreSQL database whose owner applies migrations and owns the TokenCraft objects in the `public` schema. Give the API and worker a separate login with an independent credential. The runtime login needs no database ownership, elevated role membership, or permission to create objects in `public`. In clusters upgraded from an older PostgreSQL release, check whether `PUBLIC` still has `CREATE` on that schema and revoke it in the dedicated database if needed.
 
-With the migration owner's verified `DATABASE_URL` configured for `admin-cli`, apply migrations. In staging and production the CLI requires a TCP connection with `sslmode=verify-full` before it connects. Run the grant script against the same database as the migration owner. The example uses a PostgreSQL service definition called `tokencraft_migration` with `sslmode=verify-full`. Keep the password in your secret configuration.
+With the migration owner's verified `DATABASE_URL` configured for `admin-cli`, apply migrations. In staging and production the CLI requires a TCP connection with `sslmode=verify-full` before it connects. Run the grant script against the same database as the migration owner. The example uses a PostgreSQL service definition called `tokencraft_migration` with `sslmode=verify-full`. Keep the password in your secret configuration. The grant script is included in the source checkout and native package. When deploying only the runtime image, extract its matching copy before running `psql`.
+
+```sh
+docker run --rm --network none --entrypoint cat tokencraft-gateway:0.1.0 \
+  /opt/tokencraft/deploy/postgres/grant-runtime.sql > grant-runtime.sql
+```
+
+Use `-f grant-runtime.sql` below when using the extracted copy.
 
 ```sh
 FOUNDATION_ENV=production admin-cli migrate

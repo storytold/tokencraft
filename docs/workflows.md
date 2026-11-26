@@ -31,4 +31,4 @@ Use the uploaded-file source in the step inspector when a workflow starts from e
 
 ## Verify a release
 
-The **Gateway, connector, and SDKs** CI job runs the published workflow against disposable PostgreSQL, separate API and worker processes, and the standard-library delivery pack. To reproduce the check locally with matching gateway and migration binaries and PostgreSQL tools on `PATH`, run `python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli`.
+The **Gateway, connector, and SDKs** CI job runs the published workflow against disposable PostgreSQL, separate API and worker processes, and the standard-library delivery pack. From a source checkout with matching gateway and migration binaries and PostgreSQL tools on `PATH`, reproduce the check with `python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli`.

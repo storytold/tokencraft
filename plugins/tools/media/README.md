@@ -21,7 +21,7 @@ curl -fsS -H "Authorization: Bearer $TOKENCRAFT_MEDIA_SERVICE_TOKEN" \
   http://127.0.0.1:8094/v1/tools
 ```
 
-The runner test suite is optional and uses generated media.
+The source checkout includes an optional runner test suite that uses generated media.
 
 ```sh
 python3 -m unittest discover -s plugins/tools/media -v
