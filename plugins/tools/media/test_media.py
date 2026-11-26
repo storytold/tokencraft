@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from contract import DEFAULT_REGISTRY, MediaError, TOOLS, validate_request
 from engine import Engine, Limits
@@ -26,6 +27,23 @@ class ContractTests(unittest.TestCase):
             path.write_text(json.dumps(profile))
             with self.assertRaisesRegex(MediaError, "exact descriptors"):
                 DEFAULT_REGISTRY.subset(path)
+
+    def test_encoder_requirements_follow_the_reviewed_profile(self):
+        trim = DEFAULT_REGISTRY.operation("video.trim", 1)
+        convert = DEFAULT_REGISTRY.operation("image.convert", 1)
+        with tempfile.TemporaryDirectory() as directory, patch("engine.resolved_executable", side_effect=str):
+            path = Path(directory) / "profile.json"
+            engine = Engine()
+            encoders = b" V....D libx264  H.264\n V....D libwebp_anim  Animated WebP\n"
+            with patch("engine.run_command", return_value=encoders):
+                path.write_text(json.dumps({**DEFAULT_REGISTRY.manifest, "tools": [trim]}))
+                engine.registry = DEFAULT_REGISTRY.subset(path)
+                engine.verify_encoders()
+
+                path.write_text(json.dumps({**DEFAULT_REGISTRY.manifest, "tools": [trim, convert]}))
+                engine.registry = DEFAULT_REGISTRY.subset(path)
+                with self.assertRaisesRegex(MediaError, r"required encoders libwebp$"):
+                    engine.verify_encoders()
 
     def test_strict_types_skips_neither_required_nor_unknown_parameters(self):
         for args in (

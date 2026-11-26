@@ -4,7 +4,7 @@ Run this optional worker to process media on infrastructure you choose. The runn
 
 ## Run from an audited checkout
 
-Check out the desired TokenCraft source revision. The server and the versioned manifest are in `plugins/tools/media`. Copy that directory to the worker host to run it separately from the gateway. Keep the source revision and the manifest together when distributing the plugin. Use Python 3.12 or newer and a matching `ffmpeg` and `ffprobe` build with the `libx264`, `libmp3lame`, and `libwebp` encoders. The runner checks the encoders on startup. Distribution builds differ, including the standard and full FFmpeg formulas on systems that package them separately.
+Check out the desired TokenCraft source revision. The server and the versioned manifest are in `plugins/tools/media`. Copy that directory to the worker host to run it separately from the gateway. Keep the source revision and the manifest together when distributing the plugin. Use Python 3.12 or newer and a matching `ffmpeg` and `ffprobe` build with the `libx264`, `libmp3lame`, and `libwebp` encoders for the full media pack. The runner checks required encoders on startup. Distribution builds differ, including the standard and full FFmpeg formulas on systems that package them separately.
 
 ```sh
 export TOKENCRAFT_MEDIA_SERVICE_TOKEN="$(openssl rand -hex 32)"
@@ -42,7 +42,7 @@ Use `manifest.json` for the FFmpeg binding. Other packs use `studio.manifest.jso
 
 ### Serve only selected operations
 
-Provide `--manifest path/to/profile.json` to start a worker with reviewed operations from the selected pack. A profile retains the pack ID, descriptor version, and exact operation descriptors. For example, this profile serves repeatable trims and revision 2 of soundtrack replacement.
+Provide `--manifest path/to/profile.json` to start a worker with reviewed operations from the selected pack. A profile retains the pack ID, descriptor version, and exact operation descriptors. The startup check requires only the external encoders needed for the selected operations. For example, this profile serves repeatable trims and revision 2 of soundtrack replacement.
 
 ```sh
 jq '.tools |= map(select(

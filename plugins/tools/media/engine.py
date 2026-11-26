@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import math
+import re
 import shutil
 import subprocess
 
@@ -21,6 +22,14 @@ INPUT_OPTIONS = [
 ]
 MAX_DIMENSION = 4096
 MAX_DURATION_MS = 3_600_000
+# The media and studio recipes use these external encoders for the listed output formats.
+EXTERNAL_ENCODERS = {
+    "video/mp4": ("libx264",),
+    "video/webm": ("libvpx-vp9", "libopus"),
+    "audio/mpeg": ("libmp3lame",),
+    "image/webp": ("libwebp",),
+}
+ENCODER_LINE = re.compile(r"^[ \t]+[AV][A-Z.]{5}[ \t]+(\S+)", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -72,6 +81,21 @@ class Engine:
         self.limits = limits
         self.ffmpeg = resolved_executable(ffmpeg)
         self.ffprobe = resolved_executable(ffprobe)
+
+    def verify_encoders(self) -> None:
+        required = {
+            encoder
+            for tool in self.registry.operations.values()
+            for content_type in tool["output"]["content_types"]
+            for encoder in EXTERNAL_ENCODERS.get(content_type, ())
+        }
+        if not required:
+            return
+        listing = run_command([self.ffmpeg, "-hide_banner", "-encoders"], 10, read_output=True)
+        available = set(ENCODER_LINE.findall(listing.decode()))
+        missing = sorted(required - available)
+        if missing:
+            raise MediaError("FFmpeg is missing required encoders " + ", ".join(missing))
 
     def inspect(
         self, source: Path, *, byte_limit: int | None = None, include_track_duration: bool = False,

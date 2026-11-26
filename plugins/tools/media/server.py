@@ -20,7 +20,7 @@ import time
 from contract import MediaError, Registry, validate_request
 from delivery import Delivery
 from documents import Documents
-from engine import Engine, Limits, run_command
+from engine import Engine, Limits
 from meshes import Meshes
 from queue_store import Capacity, Conflict, Store
 from speech import Speech
@@ -350,17 +350,10 @@ def main():
             limits, args.ffmpeg, args.ffprobe, args.speech_executable, args.speech_model,
             allow_gpu=args.speech_gpu,
         )
+    elif args.pack == "studio":
+        engine = Studio(limits, args.ffmpeg, args.ffprobe)
     else:
-        if args.pack == "studio":
-            engine = Studio(limits, args.ffmpeg, args.ffprobe)
-            required = ("libx264", "libvpx-vp9", "libopus")
-        else:
-            engine = Engine(limits, args.ffmpeg, args.ffprobe)
-            required = ("libx264", "libmp3lame", "libwebp")
-        encoders = run_command([engine.ffmpeg, "-hide_banner", "-encoders"], 10, read_output=True).decode()
-        for name in required:
-            if not re.search(rf"^\s*[A-Z.]+\s+{name}\s", encoders, re.MULTILINE):
-                parser.error(f"FFmpeg needs the {name} encoder")
+        engine = Engine(limits, args.ffmpeg, args.ffprobe)
     state_identity = engine.registry.manifest["plugin"]
     if args.manifest is not None:
         try:
@@ -369,6 +362,11 @@ def main():
             parser.error(f"invalid tool profile: {error}")
         fingerprint = sha256(json.dumps(engine.registry.manifest, sort_keys=True).encode()).hexdigest()
         state_identity = f"{state_identity}:{fingerprint}"
+    if isinstance(engine, Engine):
+        try:
+            engine.verify_encoders()
+        except MediaError as error:
+            parser.error(str(error))
     store = Store(
         args.state, args.max_requests, args.retention_hours * 3600, 2 * size,
         pack=state_identity,

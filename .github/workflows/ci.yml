@@ -66,6 +66,11 @@ jobs:
         run: |
           cargo build --locked -p admin_cli --bin admin-cli
           python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli
+      - name: Verify profiled media runners and workflow reuse
+        run: |
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python3 -B -m unittest discover -s plugins/tools/media -p test_media.py
+          python3 -B scripts/smoke_media_finishing.py target/debug/api-gateway target/debug/admin-cli
       - uses: actions/upload-artifact@v4
         if: always()
         with:

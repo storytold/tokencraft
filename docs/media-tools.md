@@ -122,7 +122,7 @@ After a successful draft test, choose **Test with reused steps** in its run time
 
 An application can do the same with `reuse_run_id` in a new invocation. Supply the original input values or upload IDs alongside your changes and use a fresh idempotency key. The source must be a successful run on the same workflow version by the same application, with a matching `client_ref` if one was supplied. The credential needs `runs:submit`, `runs:read`, and `outputs:read`. The run status reports the source ID and reused steps. If the source or its required outputs have expired, reuse fails before dispatching fresh work. A tool result copied to the new run follows that run's retention. Reused generation outputs retain their original artifact lifetime. Upgrade all gateway workers before accepting reruns.
 
-Operators can run both tools on one host or give each its own [reviewed runner profile](../plugins/tools/media/README.md#serve-only-selected-operations). With local gateway binaries and PostgreSQL 17, run the two-runner smoke using the same FFmpeg build required by the pack.
+Operators can run both tools on one host or give each its own [reviewed runner profile](../plugins/tools/media/README.md#serve-only-selected-operations). The Linux gateway CI verifies this workflow with two separate runners. To reproduce it locally, put PostgreSQL 17, FFprobe, and FFmpeg with `libx264` on `PATH` and use matching gateway and migration binaries.
 
 ```sh
 python3 -B scripts/smoke_media_finishing.py target/debug/api-gateway target/debug/admin-cli
