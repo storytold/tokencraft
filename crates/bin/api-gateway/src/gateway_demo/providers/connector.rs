@@ -47,6 +47,8 @@ struct ConfigBinding {
     drain_only: bool,
     #[serde(default)]
     tenant_keys: bool,
+    #[serde(default)]
+    accepts_workflow_frames: bool,
 }
 
 #[derive(Default)]
@@ -62,6 +64,7 @@ pub(super) struct Connector {
     completion_webhooks: bool,
     drain_only: bool,
     pub(super) tenant_keys: bool,
+    pub(super) accepts_workflow_frames: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -77,6 +80,8 @@ pub(in crate::gateway_demo) enum MediaInput {
         duration_seconds: u16,
         aspect_ratio: String,
         resolution: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_frame: Option<WorkflowFrame>,
     },
     Audio {
         prompt: String,
@@ -87,6 +92,13 @@ pub(in crate::gateway_demo) enum MediaInput {
         prompt: String,
         format: String,
     },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::gateway_demo) struct WorkflowFrame {
+    pub media_type: String,
+    pub data_base64: String,
 }
 
 #[derive(Serialize)]
@@ -280,8 +292,9 @@ impl ConfigBinding {
             .build()?;
         let completion = if self.completion_webhooks { "/completion-v1" } else { "" };
         let credential = if self.tenant_keys { "/tenant-keys-v1" } else { "" };
+        let frame = if self.accepts_workflow_frames { "/workflow-frame-v1" } else { "" };
         let digest = digest(format!(
-            "connector_queue/{VERSION}/{}/{}/{}{completion}{credential}",
+            "connector_queue/{VERSION}/{}/{}/{}{completion}{credential}{frame}",
             self.name, self.revision, origin
         ));
         Ok(Connector {
@@ -292,6 +305,7 @@ impl ConfigBinding {
             completion_webhooks: self.completion_webhooks,
             drain_only: self.drain_only,
             tenant_keys: self.tenant_keys,
+            accepts_workflow_frames: self.accepts_workflow_frames,
         })
     }
 }

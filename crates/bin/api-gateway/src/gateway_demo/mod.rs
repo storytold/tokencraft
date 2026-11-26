@@ -68,6 +68,7 @@ mod sealed;
 mod settlements;
 mod usage;
 mod webhooks;
+mod workflows;
 
 use catalog::Catalog;
 use catalog_refresh::CatalogStore;
@@ -156,6 +157,7 @@ pub(crate) struct DemoConfig {
     providers: Option<Arc<providers::ProviderRuntime>>,
     archives: Option<Arc<archive_blobs::ArchiveStorage>>,
     mcp: Option<mcp::Settings>,
+    workflows: Option<Arc<workflows::Security>>,
 }
 
 #[derive(Clone)]
@@ -250,6 +252,7 @@ pub(crate) fn startup_config(
         webhooks: webhooks::WebhookConfig::load(hosted)?.map(Arc::new),
         archives: archive_blobs::ArchiveStorage::load()?.map(Arc::new),
         mcp: if role.serves_api() { mcp::Settings::from_env(session_secret)? } else { None },
+        workflows: workflows::Security::load(!hosted)?,
     }))
 }
 
@@ -364,6 +367,11 @@ fn router(config: DemoConfig) -> Router<AppState> {
         Some(settings) => router.merge(mcp::router(settings)),
         None => router,
     };
+    let router = if let Some(security) = config.workflows {
+        router.merge(workflows::router(security))
+    } else {
+        router
+    };
     let router = router
         .layer(Extension(config.readiness))
         .layer(Extension(config.catalog))
@@ -427,6 +435,7 @@ pub(crate) fn spawn_background_tasks(pool: db::PgPool, config: &DemoConfig) {
     if !config.role.runs_workers() {
         return;
     }
+    workflows::spawn(pool.clone(), config);
     if let Some(webhooks) = &config.webhooks {
         webhooks::spawn(pool.clone(), Arc::clone(webhooks), Arc::clone(&config.readiness));
     }

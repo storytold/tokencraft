@@ -6,6 +6,7 @@ The console opens the docs at `/docs`, the searchable operation reference at `/d
 
 - [Follow a request from quote to delivery](api-schema.md)
 - [Read and export the API contracts](api-contracts.md)
+- [Run a private workflow](workflows.md)
 - [Use the Rust SDK](../sdk/rust/README.md) or [TypeScript SDK](../sdk/typescript/README.md)
 
 ## Configure providers
