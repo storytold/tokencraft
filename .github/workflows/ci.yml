@@ -65,6 +65,10 @@ jobs:
           exit 1
       - name: Check and rehearse signed catalog publication and import
         run: python3 -B scripts/smoke_reference_catalog.py target/debug/api-gateway
+      - name: Verify the published workflow contract end to end
+        run: |
+          cargo build --locked -p admin_cli --bin admin-cli
+          python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli
       - uses: actions/upload-artifact@v4
         if: always()
         with:

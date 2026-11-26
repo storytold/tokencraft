@@ -28,3 +28,7 @@ Only published application keys with `runs:submit` can invoke that endpoint. Use
 Workflow versions pin the graph. The backend checkpoints runs under database leases and replays child admission using a stable step key. Each generation step passes the current project allocation and provider policy checks. Each tool step pins a reviewed project binding and an operation revision. Media results are accessed under the workflow's existing project and app scope.
 
 Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).
+
+## Verify a release
+
+The **Gateway, connector, and SDKs** CI job runs the published workflow against disposable PostgreSQL, separate API and worker processes, and the standard-library delivery pack. To reproduce the check locally with matching gateway and migration binaries and PostgreSQL tools on `PATH`, run `python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli`.
