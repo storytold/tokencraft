@@ -647,6 +647,53 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     expect_expired(delayed)
     print("PASS a child blocked on budget cannot commit after its lease reaches the run deadline")
 
+    def set_credits(credits):
+        # Freeze refill while checking exact costs. A debit must still use the real SQL function.
+        query_db("UPDATE gateway_submission_limits SET requests_per_minute = 60, credit = :'balance', "
+                 "refilled_at = clock_timestamp() + interval '1 hour' WHERE account_id = :'account'",
+                 balance=credits * 60_000_000, account=account)
+
+    stop_worker()
+    set_credits(1)
+    quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=direct,
+                    body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
+    call(port, "/v1/requests", 202, method="POST", body={"quote_id": quote["id"], "input": quote["input"]},
+         headers={**direct, "Idempotency-Key": token_hex(16)})
+    draft_denied, draft_headers = call(peer, manage + "/test-runs" + query, 429, method="POST",
+                                      body={**empty, "revision": draft["revision"]},
+                                      headers={**session, "Idempotency-Key": token_hex(16)})
+    assert draft_denied["error"]["code"] == "submission_rate_limit" and int(draft_headers["Retry-After"]) == 1
+    assert_on_hold(estimate * 3, estimate)
+
+    set_caps(2, 10_000_000, 10_000_000)
+    set_credits(1)
+    attempts = [{**auth, "Idempotency-Key": token_hex(16)} for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        pending = [threads.submit(call, target, runs, (202, 429), method="POST", body=empty, headers=headers)
+                   for target, headers in zip((port, peer), attempts)]
+        outcomes = [future.result() for future in pending]
+    (denied,) = [index for index, (payload, _) in enumerate(outcomes) if "error" in payload]
+    error, response = outcomes[denied]
+    verify_json_response(spec, spec["paths"][runs]["post"], 429, error, response, expected_headers=("Retry-After",))
+    assert error["error"]["code"] == "submission_rate_limit" and int(response["Retry-After"]) == 1
+    receipt, _ = outcomes[1 - denied]
+    replay, _ = call(port, runs, 200, method="POST", body=empty, headers=attempts[1 - denied])
+    assert replay == {**receipt, "replayed": True}
+    assert_on_hold(estimate * 3 + run_cap, estimate + run_cap)
+
+    start_worker()
+    wait_for_db("SELECT status = 'queued' AND revision > 1 AND next_at > now() FROM workflow_runs WHERE id = :'run'",
+                "The workflow worker did not defer its generation step at the quota", run=receipt["id"])
+    assert query_db("SELECT NOT EXISTS (SELECT 1 FROM gateway_requests WHERE actor_id = :'run')",
+                    run=receipt["id"]) == "t"
+    set_credits(1)
+    finished, _ = wait_for_run(peer, receipt, auth)
+    assert len(finished["steps"]) == 1
+    assert query_db("SELECT credit FROM gateway_submission_limits WHERE account_id = :'account'",
+                    account=account) == "0"
+    assert_on_hold(estimate * 4, estimate * 2)
+    print("PASS shared submission quota for native requests, draft tests, concurrent published runs, replay, and deferred generation")
+
 
 def rehearse(gateway, admin, directory):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
@@ -693,7 +740,10 @@ def rehearse(gateway, admin, directory):
         print("PASS startup initializes an empty schema and verifies an existing schema with the runtime login")
         with service("setup-api", [gateway], directory, settings, lambda: ready(api_port)):
             session, account, project = provision(api_port)
+            for path in ("/v1/setup/status", "/v1/operations/queues", "/v1/operations/artifact-publication"):
+                call(api_port, f"{path}?account_id={account}", 404, headers=session)
 
+        settings["TOKENCRAFT_ENABLE_LEGACY_OPERATIONS"] = "true"
         media_port, token = loopback_port(), token_hex(32)
         stack.enter_context(service("delivery", [sys.executable, "-B", MEDIA / "server.py", "--pack", "delivery",
             "--host", HOST, "--port", str(media_port), "--state", directory / "delivery"], directory,

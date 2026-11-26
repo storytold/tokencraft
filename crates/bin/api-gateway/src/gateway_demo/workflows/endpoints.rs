@@ -6,7 +6,10 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use db_queries::{gateway_requests::RequestScope, gateway_routing_policies, gateway_webhooks, workflows as db};
+use db_queries::{
+    gateway_requests::{submission_limits, RequestScope},
+    gateway_routing_policies, gateway_webhooks, workflows as db,
+};
 use ids::{AccountId, GatewayProjectId, WorkflowAppId, WorkflowId, WorkflowKeyId, WorkflowRunId};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -392,6 +395,10 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
             project: args.scope.project,
             client_ref: application.map(WorkflowAppId::as_str),
         }).await?;
+    }
+    let retry_after = submission_limits::consume(&mut tx, args.scope.account).await?;
+    if retry_after > 0 {
+        return Err(ApiError::SubmissionRateLimit(retry_after));
     }
     tx.commit().await?;
     receipt(&args, id, version, false)

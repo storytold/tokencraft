@@ -54,10 +54,11 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
     replay["description"] = json!("Previously accepted run returned for the same key and input");
     let mut status = json_response("Run status and permitted outputs", "WorkflowRun");
     status["headers"] = json!({"ETag":{"schema":{"type":"string"}}});
-    let at_capacity = retry_response(&format!(
+    let throttled = retry_response(&format!(
         "An application can have {MAX_ACTIVE_RUNS_PER_APP} active runs. A workflow can have \
          {MAX_ACTIVE_RUNS_PER_WORKFLOW} active runs across its applications and draft tests. \
-         Retry with the same idempotency key."
+         New runs also share the organization's submission rate limit. \
+         Wait for Retry-After and retry with the same idempotency key."
     ));
     let mut contract = json!({
         "openapi":"3.1.0", "info":{"title":graph.title,"version":version.to_string()},
@@ -88,7 +89,7 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 }}},
                 "responses":{"202":accepted,"200":replay,
                     "409":json_response("The workflow is paused, the invocation conflicts with an earlier submission, or the spending reservation exceeds a monthly limit.", "GatewayError"),
-                    "429":at_capacity,"default":gateway_error}
+                    "429":throttled,"default":gateway_error}
             }},
             (&run):{
                 "parameters":[run_id],
