@@ -22,6 +22,10 @@ class Capacity(ValueError):
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS runner_pack (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    name TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS requests (
     id TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
@@ -55,7 +59,10 @@ def sync_directory(directory: Path):
 
 
 class Store:
-    def __init__(self, state: Path, max_requests: int, retention_seconds: int, request_bytes: int):
+    def __init__(
+        self, state: Path, max_requests: int, retention_seconds: int, request_bytes: int,
+        *, pack: str = "tokencraft-media",
+    ):
         self.state = state.resolve()
         self.max_requests = max_requests
         self.retention_seconds = retention_seconds
@@ -73,16 +80,28 @@ class Store:
         for directory in (self.inputs, self.results, self.uploads):
             directory.mkdir(mode=0o700, exist_ok=True)
         self.database = self.state / "queue.sqlite3"
-        with closing(self.connect()) as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(SCHEMA)
-            db.execute("UPDATE requests SET status = 'queued' WHERE status = 'running'")
-            staged = {entry[0] for entry in db.execute(
-                "SELECT id FROM requests WHERE status != 'expired'",
-            )}
-            retained = {entry[0] for entry in db.execute(
-                "SELECT handle FROM requests WHERE status IN ('queued','running','succeeded')",
-            )}
+        try:
+            with closing(self.connect()) as db:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.executescript(SCHEMA)
+                pinned = db.execute("SELECT name FROM runner_pack WHERE id = 1").fetchone()
+                if pinned is None:
+                    legacy = db.execute("SELECT 1 FROM requests LIMIT 1").fetchone()
+                    if legacy and pack != "tokencraft-media":
+                        raise RuntimeError("state directory belongs to the original media pack")
+                    db.execute("INSERT INTO runner_pack(id,name) VALUES (1,?)", (pack,))
+                elif pinned["name"] != pack:
+                    raise RuntimeError("state directory belongs to another tool pack")
+                db.execute("UPDATE requests SET status = 'queued' WHERE status = 'running'")
+                staged = {entry[0] for entry in db.execute(
+                    "SELECT id FROM requests WHERE status != 'expired'",
+                )}
+                retained = {entry[0] for entry in db.execute(
+                    "SELECT handle FROM requests WHERE status IN ('queued','running','succeeded')",
+                )}
+        except Exception:
+            self.lock.close()
+            raise
         for entry in self.inputs.iterdir():
             if entry.name not in staged and entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry)

@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "plugin": "tokencraft-documents",
+  "tools": [
+    {
+      "id": "pdf.inspect",
+      "revision": 1,
+      "label": "Inspect PDF",
+      "inputs": {
+        "pdf": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    },
+    {
+      "id": "pdf.render_page",
+      "revision": 1,
+      "label": "Render PDF page",
+      "inputs": {
+        "pdf": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "long_edge": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 2400,
+            "default": 1280
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "pdf.extract_text",
+      "revision": 1,
+      "label": "Extract PDF text",
+      "inputs": {
+        "pdf": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "first_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1
+          },
+          "last_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "reading",
+              "layout"
+            ],
+            "default": "reading"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/plain"
+        ]
+      }
+    },
+    {
+      "id": "captions.normalize",
+      "revision": 1,
+      "label": "Convert captions to WebVTT",
+      "inputs": {
+        "captions": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/vtt"
+        ]
+      }
+    },
+    {
+      "id": "captions.shift",
+      "revision": 1,
+      "label": "Shift caption timing",
+      "inputs": {
+        "captions": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "offset_ms": {
+            "type": "integer",
+            "minimum": -600000,
+            "maximum": 600000
+          }
+        },
+        "required": [
+          "offset_ms"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/vtt"
+        ]
+      }
+    },
+    {
+      "id": "captions.extract_text",
+      "revision": 1,
+      "label": "Extract caption transcript",
+      "inputs": {
+        "captions": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/plain"
+        ]
+      }
+    }
+  ]
+}

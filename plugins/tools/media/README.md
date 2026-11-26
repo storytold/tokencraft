@@ -1,6 +1,6 @@
 # TokenCraft media tools
 
-Run this optional worker to process media on infrastructure you choose. The runner uses Python's standard library, FFmpeg, and a private state directory. The default TokenCraft gateway, native package, and demo do not launch it or install its dependencies.
+Run this optional worker to process media on infrastructure you choose. The runner uses Python's standard library, a private state directory, and the system tools required by the selected pack. The default TokenCraft gateway, native package, and demo do not launch it or install its dependencies.
 
 ## Run from an audited checkout
 
@@ -27,6 +27,19 @@ The runner test suite is optional and uses generated media.
 python3 -m unittest discover -s plugins/tools/media -v
 ```
 
+## Select a pack
+
+The `media` pack uses FFmpeg and is the default when you start this optional runner. The `documents` pack uses Poppler's `pdfinfo`, `pdftoppm`, and `pdftotext`. Start each pack on its own port with a different private state directory and service token. A state directory stays with the pack that initialized it.
+
+```sh
+export TOKENCRAFT_MEDIA_SERVICE_TOKEN="$(openssl rand -hex 32)"
+python3 plugins/tools/media/server.py \
+  --pack documents --port 8095 \
+  --state "$PWD/.tokencraft-documents"
+```
+
+Use `documents.manifest.json` for the documents binding and `manifest.json` for the FFmpeg binding. The documents runner starts without FFmpeg. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
+
 ## Operations
 
 | Family | Operations |
@@ -35,8 +48,10 @@ python3 -m unittest discover -s plugins/tools/media -v
 | Video | Trim, join with scale and audio normalization, replace soundtrack, extract audio, mute, resize, crop, transcode to H.264, change speed, extract a frame, and create a GIF |
 | Audio | Trim, concatenate, mix, apply loudness normalization or fades, and convert to WAV, MP3, or FLAC |
 | Images | Resize, crop, convert to PNG, JPEG, or WebP, overlay, and extend a still into an MP4 |
+| Documents | Inspect PDF page count and version, render a page as PNG, and extract text across a bounded page range |
+| Captions | Normalize UTF-8 SRT or WebVTT, shift timing, and extract a plain-text transcript |
 
-The manifest is authoritative for names, revisions, input slots, parameter defaults and constraints, and possible response content types. Geometry uses encoded pixels. A time in milliseconds refers to the normalized source timeline. A video crop has even output dimensions for 4:2:0 encoding. The runner probes each source and verifies its actual kind. Supported source containers include MP4/MOV, Matroska/WebM, WAV, MP3, FLAC, Ogg, and supported PNG, JPEG, WebP, and GIF images.
+The manifest is authoritative for names, revisions, input slots, parameter defaults and constraints, and possible response content types. For the FFmpeg pack, geometry uses encoded pixels. A time in milliseconds refers to the normalized source timeline. A video crop has even output dimensions for 4:2:0 encoding. The runner probes each source and verifies its actual kind. Supported source containers include MP4/MOV, Matroska/WebM, WAV, MP3, FLAC, Ogg, and supported PNG, JPEG, WebP, and GIF images.
 
 ## Tool protocol version 1
 

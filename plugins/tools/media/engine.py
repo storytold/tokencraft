@@ -5,12 +5,10 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import math
-import os
 import shutil
 import subprocess
-import tempfile
 
-from contract import MediaError, validate_request
+from contract import DEFAULT_REGISTRY, MediaError, produce_artifact, validate_request
 from recipes import RECIPE_FAMILIES
 
 
@@ -68,6 +66,8 @@ def parse_duration(value: object) -> int | None:
 
 
 class Engine:
+    registry = DEFAULT_REGISTRY
+
     def __init__(self, limits: Limits = Limits(), ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"):
         self.limits = limits
         self.ffmpeg = resolved_executable(ffmpeg)
@@ -128,50 +128,38 @@ class Engine:
     def execute(
         self, tool_id: str, revision: int, inputs: dict[str, Path], parameters: dict, output: Path,
     ) -> str:
-        tool = validate_request(tool_id, revision, inputs, parameters)
-        parameters = {
-            **{name: spec["default"] for name, spec in tool["parameters"]["properties"].items() if "default" in spec},
-            **parameters,
-        }
-        sources = {slot: inputs[slot].resolve() for slot in tool["inputs"]}
-        if output.resolve() in sources.values():
-            raise MediaError("output must be separate from its sources")
+        tool = validate_request(tool_id, revision, inputs, parameters, self.registry)
+        return produce_artifact(
+            tool, inputs, parameters, output, self.limits.input_bytes, self.limits.output_bytes, self.render,
+        )
+
+    def render(self, tool: dict, sources: dict[str, Path], parameters: dict, staging: Path) -> str:
         media = {slot: self.inspect(source) for slot, source in sources.items()}
         for slot, source in media.items():
             expected = tool["inputs"][slot]["kind"]
             if expected != "media" and source["kind"] != expected:
                 raise MediaError(f"input slot {slot} requires {expected}")
 
-        with tempfile.TemporaryDirectory(prefix=".media-", dir=output.parent) as directory:
-            staging = Path(directory) / "result"
-            if tool_id == "media.inspect":
-                staging.write_text(json.dumps(media["source"], sort_keys=True) + "\n", encoding="utf-8")
-                content_type = "application/json"
-            else:
-                family, name = tool_id.split(".", 1)
-                recipe = RECIPE_FAMILIES[family](name, media, parameters)
-                arguments = [
-                    self.ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-xerror",
-                    "-filter_threads", "1", "-filter_complex_threads", "1",
-                    "-max_alloc", str(128 * 1024 * 1024),
-                ]
-                for source in sources.values():
-                    arguments += [*INPUT_OPTIONS, "-threads", "1", "-noautorotate", "-i", str(source)]
-                arguments += [
-                    *recipe.arguments, "-map_metadata", "-1", "-map_chapters", "-1",
-                    "-threads", "1", "-fs", str(self.limits.output_bytes), str(staging),
-                ]
-                run_command(arguments, self.limits.timeout_seconds)
-                if not staging.is_file() or staging.stat().st_size >= self.limits.output_bytes:
-                    raise MediaError("output was missing or reached its byte limit")
-                result = self.inspect(staging, byte_limit=self.limits.output_bytes)
-                if result["kind"] != tool["output"]["kind"]:
-                    raise MediaError("output does not match the declared media kind")
-                content_type = recipe.content_type
-
-            if content_type not in tool["output"]["content_types"]:
-                raise MediaError("output does not match the declared content type")
-            if not 0 < staging.stat().st_size < self.limits.output_bytes:
-                raise MediaError("output was empty or reached its byte limit")
-            os.replace(staging, output)
-        return content_type
+        if tool["id"] == "media.inspect":
+            staging.write_text(json.dumps(media["source"], sort_keys=True) + "\n", encoding="utf-8")
+            return "application/json"
+        family, name = tool["id"].split(".", 1)
+        recipe = RECIPE_FAMILIES[family](name, media, parameters)
+        arguments = [
+            self.ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-xerror",
+            "-filter_threads", "1", "-filter_complex_threads", "1",
+            "-max_alloc", str(128 * 1024 * 1024),
+        ]
+        for source in sources.values():
+            arguments += [*INPUT_OPTIONS, "-threads", "1", "-noautorotate", "-i", str(source)]
+        arguments += [
+            *recipe.arguments, "-map_metadata", "-1", "-map_chapters", "-1",
+            "-threads", "1", "-fs", str(self.limits.output_bytes), str(staging),
+        ]
+        run_command(arguments, self.limits.timeout_seconds)
+        if not staging.is_file() or staging.stat().st_size >= self.limits.output_bytes:
+            raise MediaError("output was missing or reached its byte limit")
+        result = self.inspect(staging, byte_limit=self.limits.output_bytes)
+        if result["kind"] != tool["output"]["kind"]:
+            raise MediaError("output does not match the declared media kind")
+        return recipe.content_type

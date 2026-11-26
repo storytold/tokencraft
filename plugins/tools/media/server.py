@@ -17,7 +17,8 @@ import tempfile
 from threading import BoundedSemaphore, Event, Thread
 import time
 
-from contract import MANIFEST, MediaError, validate_request
+from contract import MediaError, Registry, validate_request
+from documents import Documents
 from engine import Engine, Limits, run_command
 from queue_store import Capacity, Conflict, Store
 
@@ -42,7 +43,7 @@ def json_object(pairs: list[tuple]) -> dict:
     return data
 
 
-def validate_submission(data: object, key: str, limit: int) -> str:
+def validate_submission(data: object, key: str, limit: int, registry: Registry) -> str:
     if not isinstance(data, dict) or data.keys() != {"version", "request_id", "model", "input"}:
         raise MediaError("expected version, request_id, model, and input")
     if type(data["version"]) is not int or data["version"] != 1:
@@ -53,7 +54,7 @@ def validate_submission(data: object, key: str, limit: int) -> str:
     tool = data["input"]
     if not isinstance(tool, dict) or tool.keys() != {"kind", "revision", "inputs", "parameters"} or tool["kind"] != "tool":
         raise MediaError("invalid tool input")
-    validate_request(data["model"], tool["revision"], tool["inputs"], tool["parameters"])
+    validate_request(data["model"], tool["revision"], tool["inputs"], tool["parameters"], registry)
     for metadata in tool["inputs"].values():
         if (
             not isinstance(metadata, dict) or metadata.keys() != {"sha256", "size_bytes"}
@@ -65,7 +66,7 @@ def validate_submission(data: object, key: str, limit: int) -> str:
 
 
 class Worker:
-    def __init__(self, engine: Engine, store: Store):
+    def __init__(self, engine: Engine | Documents, store: Store):
         self.engine = engine
         self.store = store
         self.stop = Event()
@@ -183,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authenticated():
             return
         if self.path == "/v1/tools":
-            self.reply(200, MANIFEST)
+            self.reply(200, self.server.worker.engine.registry.manifest)
             return
         parts = self.path.split("/")
         if len(parts) == 5 and parts[1:4] == ["v1", "jobs", "by-request"] and valid(IDENTIFIER, parts[4]):
@@ -283,6 +284,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw, object_pairs_hook=json_object)
             request_id = validate_submission(
                 data, self.headers.get("Idempotency-Key"), self.server.worker.engine.limits.input_bytes,
+                self.server.worker.engine.registry,
             )
             handle = self.server.store.submit(request_id, data)
         except Conflict as error:
@@ -311,6 +313,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=positive, default=8094)
     parser.add_argument("--state", required=True, type=Path)
+    parser.add_argument("--pack", choices=("media", "documents"), default="media")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--max-file-mib", type=positive, default=64)
@@ -325,12 +328,19 @@ def main():
         parser.error("the maximum file size is 512 MiB and the maximum port is 65535")
     os.umask(0o077)
     size = args.max_file_mib * 1024 * 1024
-    engine = Engine(Limits(size, size, args.timeout_seconds), args.ffmpeg, args.ffprobe)
-    encoders = run_command([engine.ffmpeg, "-hide_banner", "-encoders"], 10, read_output=True).decode()
-    for name in ("libx264", "libmp3lame", "libwebp"):
-        if not re.search(rf"^\s*[A-Z.]+\s+{name}\s", encoders, re.MULTILINE):
-            parser.error(f"FFmpeg needs the {name} encoder")
-    store = Store(args.state, args.max_requests, args.retention_hours * 3600, 2 * size)
+    limits = Limits(size, size, args.timeout_seconds)
+    if args.pack == "documents":
+        engine = Documents(limits)
+    else:
+        engine = Engine(limits, args.ffmpeg, args.ffprobe)
+        encoders = run_command([engine.ffmpeg, "-hide_banner", "-encoders"], 10, read_output=True).decode()
+        for name in ("libx264", "libmp3lame", "libwebp"):
+            if not re.search(rf"^\s*[A-Z.]+\s+{name}\s", encoders, re.MULTILINE):
+                parser.error(f"FFmpeg needs the {name} encoder")
+    store = Store(
+        args.state, args.max_requests, args.retention_hours * 3600, 2 * size,
+        pack=engine.registry.manifest["plugin"],
+    )
     worker = Worker(engine, store)
 
     def terminate(*_):

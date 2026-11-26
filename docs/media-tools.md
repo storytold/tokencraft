@@ -2,9 +2,9 @@
 
 ## Runner
 
-The independently started [media runner](../plugins/tools/media/README.md) uses reviewed, versioned recipes for video, audio, and image operations. Its manifest supplies typed inputs, constrained parameters, and result media types to an editor or an API client. It speaks the queued connector's receipt, result status, request lookup, and artifact transport. The operator provides the service origin, trust configuration, service token, and compute capacity.
+The independently started [media runner](../plugins/tools/media/README.md) uses reviewed, versioned recipes for video, audio, image, document, and caption operations. Its manifest supplies typed inputs, constrained parameters, and result media types to an editor or an API client. It speaks the queued connector's receipt, result status, request lookup, and artifact transport. The operator provides the service origin, trust configuration, service token, and compute capacity.
 
-CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
+Start the FFmpeg and Poppler packs as separate workers with distinct reviewed manifests and state directories. A workflow can pass a PDF page rendered by Poppler to an image recipe on the FFmpeg worker. CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
 
 ## Workflow execution
 
@@ -38,6 +38,20 @@ curl -fsS "$WORKFLOW_ENDPOINT/runs" \
 
 Replace `source` with the key from your published contract. The upload needs `runs:submit`, the actual supported media type, and the exact body length. The same app can repeat an identical upload and receive its existing eligible ID. The gateway verifies the media signature, length, and SHA-256 and encrypts the bytes. Uploads expire after one hour. Submit the run within 30 minutes so the file remains available through its run deadline. Each workflow can hold up to 32 active files or 128 MiB, with 32 MiB per file. Workflow drafts and published apps have their own upload ownership, and app key rotation preserves the application's ownership.
 
+## Implement a compatible pack
+
+A pack serves a version-1 JSON manifest at authenticated `GET /v1/tools`. The operator registers a reviewed copy at the gateway. Use a stable `plugin` ID. Give every operation a stable dot-delimited `id`, a positive integer `revision`, a label, named input slots, a closed parameter schema, and one typed result.
+
+| Field | Contract |
+| --- | --- |
+| Input slots | One to eight required named files. Kinds include `image`, `video`, `audio`, `document`, `mesh`, or `media` for any accepted file kind. |
+| Parameters | A JSON object with `additionalProperties: false`. Declare required keys, bounded integer or numeric values, or enumerated strings. Optional defaults are part of the pinned manifest. |
+| Result | One artifact with an explicit kind and one or more accepted content types. `metadata` uses JSON. |
+| Lifecycle | Stage each input with its exact length and SHA-256. Persist the receipt before reporting acceptance. Return the same handle on identical replay and support request lookup after a lost response. |
+| Storage | Keep inputs immutable after staging and isolate each service's job state from other pack instances. Return verified bytes from the authenticated result endpoint. |
+
+See the [documents and caption manifest](../plugins/tools/media/documents.manifest.json) for a complete example and the [runner protocol](../plugins/tools/media/README.md#tool-protocol-version-1) for paths, headers, and payloads. Keep behavior stable for each published operation revision. For cutover, stage a new binding and keep the older service running until pinned jobs finish.
+
 ## Planned tool coverage
 
 | Pack | Coverage to verify |
@@ -70,7 +84,7 @@ Start the [worker](../plugins/tools/media/README.md#run-from-an-audited-checkout
 }
 ```
 
-Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the gateway and workflow workers. Set the named environment variable in their secret configuration to the worker's `TOKENCRAFT_MEDIA_SERVICE_TOKEN`. A loopback sidecar can use HTTP. A separate host requires HTTPS. Use the matching reviewed manifest on the worker and in the registry.
+Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the gateway and workflow workers. Set the named environment variable in their secret configuration to the worker's `TOKENCRAFT_MEDIA_SERVICE_TOKEN`. A loopback sidecar can use HTTP. A separate host requires HTTPS. Use the matching reviewed manifest on the worker and in the registry. To add the documents pack, add a second entry with a distinct binding name, token variable, origin, and the reviewed `documents.manifest.json` file.
 
 Project developers and admins can discover their approved bindings at `GET /v1/projects/{project}/workflow-tools?account_id={account}` with a session cookie. An admin can add `&verify=studio-media` to verify the selected binding against the live worker. A successful check returns `reachable: true` and the matching manifest. Ordinary discovery uses the reviewed local manifest and succeeds during a worker outage. The gateway keeps connector origins and credentials out of the discovery response.
 
