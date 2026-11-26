@@ -91,7 +91,7 @@ pub(super) fn scope(row: &db::Run) -> RequestScope<'_> {
     RequestScope {
         account: &row.account_id,
         project: &row.project_id,
-        client_ref: row.version.is_some().then_some(row.actor_id.as_str()),
+        client_ref: row.client_ref.as_deref().or_else(|| row.version.is_some().then_some(row.actor_id.as_str())),
     }
 }
 

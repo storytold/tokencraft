@@ -84,7 +84,11 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 "parameters":[{"in":"header","name":"Idempotency-Key","required":true,"schema":{"type":"string","minLength":8,"maxLength":128}}],
                 "requestBody":{"required":true,"content":{"application/json":{
                     "schema":{"type":"object","required":["inputs"],"additionalProperties":false,
-                        "properties":{"inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required}}},
+                        "properties":{
+                            "inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required},
+                            "client_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+                                "description":"Optional opaque customer reference for child requests and usage."}
+                        }},
                     "example":{"inputs":example}
                 }}},
                 "responses":{"202":accepted,"200":replay,
@@ -175,6 +179,7 @@ fn schemas() -> Value {
             "properties":{
                 "id":{"type":"string"},"workflow_version":{"type":["integer","null"]},"draft_revision":{"type":"integer"},
                 "created_at":{"type":"string","format":"date-time"},"error":{"type":["string","null"]},
+                "client_ref":{"type":"string","description":"The supplied customer reference, when present."},
                 "status":{"enum":["queued","running","reconciling","succeeded","failed","canceled","expired"]},
                 "steps":{"type":"array","items":{"type":"object","required":["node","request","status"],
                     "properties":{"node":{"type":"string"},"request":{"type":"string"},"status":{"type":"string"}}}},

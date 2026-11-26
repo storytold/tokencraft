@@ -414,12 +414,12 @@ async fn submit_inner(
     gateway_routing_policies::lock_for_admission(&mut *tx, key.scope.account).await?;
     let workflow_lease = workflow.as_ref().map(|(run, lease, _)| (*run, *lease));
     let lease_ended = || ApiError::Conflict("workflow execution is no longer active".into());
-    let workflow_budget = if let Some((run, lease)) = workflow_lease {
+    let (workflow_budget, workflow_app) = if let Some((run, lease)) = workflow_lease {
         let locked = db_queries::workflows::lock_active_run(&mut *tx, run, lease).await?
             .ok_or_else(lease_ended)?;
-        locked.budget_month_start.map(|month| (run, month))
+        (locked.budget_month_start.map(|month| (run, month)), locked.application_id)
     } else {
-        None
+        (None, None)
     };
     if let Some(accepted) = replay(&mut *tx, key, &intent).await? {
         return Ok((accepted, true));
@@ -647,12 +647,7 @@ async fn submit_inner(
             Some((binding, model, encrypted))
         }
     };
-    let client_budget = match client {
-        Some(reference) => gateway_requests::client_budgets::find(
-            &mut *tx, key.scope.account, key.scope.project, reference,
-        ).await?.and_then(|budget| budget.limit_usd_nanos.map(|limit| (budget.revision, limit))),
-        None => None,
-    };
+    let limits = super::client_budgets::admission_limits(&mut tx, evidence_scope, workflow_app.as_deref()).await?;
     let trace = TraceContext::admission();
     let new_request = NewGatewayRequest {
         id: &id,
@@ -670,7 +665,8 @@ async fn submit_inner(
         estimated_usd_nanos: estimate,
         budget_reserved_usd_nanos: estimate,
         workflow_budget_month_start: workflow_budget.map(|(_, month)| month),
-        client_budget,
+        workflow_app_id: workflow_app.as_deref(),
+        client_budget: limits.evidence,
         credential: availability.credential(&offer.id),
         correlation: RequestCorrelation {
             trace_id: &trace.trace_id,
@@ -704,7 +700,7 @@ async fn submit_inner(
             evidence_scope,
             policies.organization.policy.monthly_estimated_budget_usd_nanos,
             policies.project.policy.monthly_estimated_budget_usd_nanos,
-            client_budget.map(|(_, limit)| limit),
+            &limits.clients,
             workflow_budget.map(|(_, month)| month),
         )
         .await?

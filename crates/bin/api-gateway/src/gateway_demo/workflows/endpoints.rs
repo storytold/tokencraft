@@ -197,6 +197,7 @@ impl Reader {
 #[serde(deny_unknown_fields)]
 pub(super) struct Invocation {
     inputs: InputValues,
+    client_ref: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -291,13 +292,17 @@ fn receipt(
         .into_response())
 }
 
-async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
+async fn admit(args: Admit<'_>, inputs: InputValues, client_ref: Option<&str>) -> ApiResult<Response> {
+    requests::validate_client_ref(client_ref)?;
     if !requests::valid_idempotency_key(args.idempotency_key) {
         return Err(ApiError::BadRequest("invalid Idempotency-Key".into()));
     }
     let key_digest = args.security.digest(args.idempotency_key.as_bytes());
-    let intent = serde_json::to_vec(&(args.origin.revision(), &inputs))
-        .map_err(|_| runner::unavailable())?;
+    // Keep existing idempotency digests for untagged invocations and draft tests.
+    let intent = match client_ref {
+        Some(reference) => serde_json::to_vec(&(args.origin.revision(), &inputs, reference)),
+        None => serde_json::to_vec(&(args.origin.revision(), &inputs)),
+    }.map_err(|_| runner::unavailable())?;
     let intent_digest = args.security.digest(&intent);
     let actor = args.origin.actor();
     let mut tx = args.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
@@ -357,10 +362,11 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     let plan = graph.compile().map_err(ApiError::BadRequest)?;
     args.security.tools.validate(&graph, args.scope.account, args.scope.project)?;
     uploads::validate(&mut tx, args.scope, actor, &graph, &inputs).await?;
+    let application_ref = application.map(WorkflowAppId::as_str);
     let request_scope = RequestScope {
         account: args.scope.account,
         project: args.scope.project,
-        client_ref: application.map(WorkflowAppId::as_str),
+        client_ref: client_ref.or(application_ref),
     };
     let policies = Policies::load(&mut *tx, request_scope).await?;
     let models = planner::models(&args.catalog.current(), args.providers, Some((&policies, request_scope)));
@@ -386,6 +392,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
             id: &id,
             actor,
             version,
+            client_ref,
             webhook_subscription_id: webhook_subscription_id.as_deref(),
             budget_reserved_usd_nanos: plan.budget_reserved_usd_nanos,
             draft_revision: revision,
@@ -397,7 +404,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     )
     .await?;
     if plan.budget_reserved_usd_nanos > 0 {
-        budget::verify_reservation(&mut tx, request_scope, &policies).await?;
+        budget::verify_reservation(&mut tx, request_scope, &policies, application_ref).await?;
     }
     let retry_after = submission_limits::consume(&mut tx, args.scope.account).await?;
     if retry_after > 0 {
@@ -487,6 +494,7 @@ pub(super) async fn invoke(
             providers: providers.as_deref(),
         },
         input.inputs,
+        input.client_ref.as_deref(),
     )
     .await
 }
@@ -523,6 +531,7 @@ pub(super) async fn test(
             idempotency_key: handlers::idempotency_key(&headers)?,
         },
         input.inputs,
+        None,
     )
     .await
 }
@@ -567,6 +576,8 @@ struct RunView {
     workflow_version: Option<i32>,
     draft_revision: i64,
     created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_ref: Option<String>,
     steps: Vec<runner::Step>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     tools: BTreeMap<String, super::tool_execution::StepStatus>,
@@ -675,6 +686,7 @@ pub(super) async fn status(
         draft_revision: row.draft_revision,
         status: row.status,
         created_at: row.created_at,
+        client_ref: row.client_ref,
         steps: Vec::new(),
         tools: BTreeMap::new(),
         error: None,

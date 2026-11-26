@@ -90,6 +90,7 @@ export type Run = {
   draft_revision: number;
   status: RunStatus;
   created_at: string;
+  client_ref?: string;
   steps: { node: string; request: string; status: string }[];
   tools?: Record<string, { request_id: string; status: string; admitted_at: string; finished_at: string | null }>;
   error: string | null;

@@ -101,6 +101,7 @@ function RunDetails({ scope, run, graph, heading, onCancel }: {
     <div className="wf-panel-heading"><h3 ref={heading} tabIndex={-1}>Run timeline</h3><Status status={run.status} /></div>
     <div className="wf-muted">{run.execution?.title && `${run.execution.title} · `}
       {run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
+    {run.client_ref && <p className="wf-muted break-all">Client <code>{run.client_ref}</code></p>}
     <RunTimeline scope={scope} run={run} graph={graph} />
     {run.error && <p className="wf-error" role="alert">{run.error.replaceAll("_", " ")}</p>}
     {run.outputs && <div className="wf-stack"><h4>Outputs</h4>

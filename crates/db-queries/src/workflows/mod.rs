@@ -41,6 +41,7 @@ pub struct Run {
     pub project_id: GatewayProjectId,
     pub workflow_id: WorkflowId,
     pub actor_id: String,
+    pub client_ref: Option<String>,
     pub status: String,
     pub revision: i64,
     pub lease: i64,
