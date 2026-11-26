@@ -40,6 +40,23 @@ python3 plugins/tools/media/server.py \
 
 Use `manifest.json` for the FFmpeg binding. Other packs use `studio.manifest.json`, `documents.manifest.json`, `mesh.manifest.json`, or `delivery.manifest.json`. Use `speech.manifest.json` for the speech binding. Use the selected pack name in `--pack`. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
 
+### Serve only selected operations
+
+Provide `--manifest path/to/profile.json` to start a worker with reviewed operations from the selected pack. A profile retains the pack ID, descriptor version, and exact operation descriptors. For example, this profile serves repeatable trims and revision 2 of soundtrack replacement.
+
+```sh
+jq '.tools |= map(select(
+  (.id == "video.trim" and .revision == 1) or
+  (.id == "video.attach_audio" and .revision == 2)
+))' plugins/tools/media/manifest.json > finishing.manifest.json
+
+python3 plugins/tools/media/server.py \
+  --port 8094 --state "$PWD/.tokencraft-finishing" \
+  --manifest finishing.manifest.json
+```
+
+Configure the gateway binding with the same reviewed file. A profiled runner pins its manifest to its state directory. To change the selection, deploy a new binding with a new state directory and drain the old binding. Use separate profiles and bindings if trim and soundtrack work should run on different machines.
+
 ## Enable speech processing
 
 The `speech` pack requires FFmpeg, FFprobe, a compatible `whisper-cli`, and a local whisper.cpp model provided by the operator. Use a multilingual model for automatic language detection and translation. The runner uses CPU inference by default. Mount the model read-only and use a new binding revision when changing the model or its compute options. [whisper.cpp command-line documentation](https://github.com/ggml-org/whisper.cpp/blob/master/examples/cli/README.md)
@@ -70,6 +87,8 @@ Use `--speech-gpu` when the installed whisper.cpp executable supports your hardw
 | Speech | Transcription, English translation, WebVTT captions, and timestamped segment JSON |
 
 The manifest is authoritative for names, revisions, input slots, parameter defaults and constraints, and possible response content types. For the FFmpeg pack, geometry uses encoded pixels. A time in milliseconds refers to the normalized source timeline. A video crop has even output dimensions for 4:2:0 encoding. The runner probes each source and verifies its actual kind. Supported source containers include MP4/MOV, Matroska/WebM, WAV, MP3, FLAC, Ogg, and supported PNG, JPEG, WebP, and GIF images.
+
+`video.attach_audio` revision 2 accepts `offset_ms` and `video_mode`. The offset inserts silence before the replacement track and must fit the selected video. The runner pads or cuts the soundtrack to the end of the video. The default `encode` mode exports H.264. Select `copy_h264` for an H.264 MP4 or MOV to copy its video packets and encode only the replacement audio. Revision 1 is available for existing workflow pins.
 
 The mesh pack accepts glTF 2.0 with one embedded buffer and images stored in buffer views. Scaling wraps each scene's roots in a scale transform and preserves the embedded geometry bytes. [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#glb-file-format-specification)
 

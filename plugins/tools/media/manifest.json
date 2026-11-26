@@ -32,6 +32,22 @@
       "output": {"kind": "video", "content_types": ["video/mp4"]}
     },
     {
+      "id": "video.attach_audio",
+      "revision": 2,
+      "label": "Replace soundtrack",
+      "inputs": {"video": {"kind": "video"}, "audio": {"kind": "audio"}},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "offset_ms": {"type": "integer", "minimum": 0, "maximum": 600000, "default": 0},
+          "video_mode": {"type": "string", "enum": ["encode", "copy_h264"], "default": "encode"}
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
       "id": "video.extract_audio",
       "revision": 1,
       "label": "Extract audio",

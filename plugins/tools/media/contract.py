@@ -19,7 +19,10 @@ class Registry:
     def __init__(self, path: Path):
         self.manifest = json.loads(path.read_bytes())
         self.operations = {(entry["id"], entry["revision"]): entry for entry in self.manifest["tools"]}
-        if self.manifest["version"] != 1 or len(self.operations) != len(self.manifest["tools"]):
+        if (
+            type(self.manifest["version"]) is not int or self.manifest["version"] != 1
+            or len(self.operations) != len(self.manifest["tools"])
+        ):
             raise MediaError("unsupported or duplicate tool descriptors")
 
     def operation(self, tool_id: str, revision: int) -> dict:
@@ -29,6 +32,20 @@ class Registry:
         if operation is None:
             raise MediaError("unsupported tool or revision")
         return operation
+
+    def subset(self, path: Path) -> Registry:
+        selected = Registry(path)
+        if (
+            selected.manifest.keys() != self.manifest.keys()
+            or selected.manifest["plugin"] != self.manifest["plugin"]
+            or not selected.operations
+            or any(
+                json.dumps(self.operations.get(key), sort_keys=True) != json.dumps(tool, sort_keys=True)
+                for key, tool in selected.operations.items()
+            )
+        ):
+            raise MediaError("the selected manifest must contain exact descriptors from the requested pack")
+        return selected
 
 
 DEFAULT_REGISTRY = Registry(Path(__file__).with_name("manifest.json"))

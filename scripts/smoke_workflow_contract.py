@@ -926,7 +926,7 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     print("PASS shared submission quota for native requests, draft tests, concurrent published runs, replay, and deferred generation")
 
 
-def rehearse(gateway, admin, directory):
+def rehearse(gateway, admin, directory, *, verification=None):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
     pg = postgres_bin()
     data, password_file = directory / "pg", directory / "password"
@@ -975,6 +975,10 @@ def rehearse(gateway, admin, directory):
             for path in ("/v1/setup/status", "/v1/operations/queues", "/v1/operations/artifact-publication"):
                 expected = 200 if path in contract["paths"] else 404
                 call(api_port, f"{path}?account_id={account}", expected, headers=session)
+
+        if verification is not None:
+            verification(gateway, directory, settings, session, account, project)
+            return
 
         settings["TOKENCRAFT_ENABLE_LEGACY_OPERATIONS"] = "true"
         scoped_catalog = directory / "scoped-catalog.json"

@@ -102,3 +102,13 @@ Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the
 Project developers and admins can discover their approved bindings at `GET /v1/projects/{project}/workflow-tools?account_id={account}` with a session cookie. An admin can add `&verify=studio-media` to verify the selected binding against the live worker. A successful check returns `reachable: true` and the matching manifest. Ordinary discovery uses the reviewed local manifest and succeeds during a worker outage. The gateway keeps connector origins and credentials out of the discovery response.
 
 A binding revision identifies the binding name, operator revision, origin, and reviewed manifest. Advertised tools include their own operation revisions. Give a replacement its own binding name and keep the older entry, origin, and manifest available with `drain_only: true` until admitted runs finish. New runs against a version pinned to the older binding require a revised workflow and publication.
+
+## Trim a clip and attach narration
+
+Select **Trim video**, wire in the clip, and set the start and duration in milliseconds. Connect the result to **Replace soundtrack**, revision 2, and connect a narration upload to its audio input. Set `offset_ms` to the narration's delay. For a clip from the trim tool, select `copy_h264` to reuse the compressed video stream. Expose the master in **Response outputs**. Expose the trimmed clip too if it will be used in a separate finishing run.
+
+Operators can run both tools on one host or give each its own [reviewed runner profile](../plugins/tools/media/README.md#serve-only-selected-operations). With local gateway binaries and PostgreSQL 17, run the two-runner smoke using the same FFmpeg build required by the pack.
+
+```sh
+python3 -B scripts/smoke_media_finishing.py target/debug/api-gateway target/debug/admin-cli
+```

@@ -73,7 +73,9 @@ class Engine:
         self.ffmpeg = resolved_executable(ffmpeg)
         self.ffprobe = resolved_executable(ffprobe)
 
-    def inspect(self, source: Path, *, byte_limit: int | None = None) -> dict:
+    def inspect(
+        self, source: Path, *, byte_limit: int | None = None, include_track_duration: bool = False,
+    ) -> dict:
         if not source.is_file():
             raise MediaError("source must be a regular file")
         data_size = source.stat().st_size
@@ -85,7 +87,7 @@ class Engine:
             self.ffprobe, "-v", "error", *INPUT_OPTIONS, "-max_alloc", str(128 * 1024 * 1024),
             "-probesize", str(min(byte_limit, 8 * 1024 * 1024)), "-analyzeduration", "5000000",
             "-show_entries",
-            "format=format_name,duration:stream=codec_type,codec_name,width,height,sample_rate,channels"
+            "format=format_name,duration:stream=codec_type,codec_name,width,height,sample_rate,channels,duration"
             ":stream_disposition=attached_pic",
             "-of", "json", "-i", str(source.resolve()),
         ], min(self.limits.timeout_seconds, 15), read_output=True)
@@ -106,6 +108,8 @@ class Engine:
                 if not 0 < width <= MAX_DIMENSION or not 0 < height <= MAX_DIMENSION:
                     raise MediaError("frame dimensions exceed the configured processing envelope")
                 stream.update(width=width, height=height)
+                if include_track_duration:
+                    stream["duration_ms"] = parse_duration(item.get("duration"))
             else:
                 rate, channels = int(item.get("sample_rate", 0)), item.get("channels", 0)
                 if not 0 < rate <= 192_000 or not 0 < channels <= 16:
@@ -134,7 +138,11 @@ class Engine:
         )
 
     def render(self, tool: dict, sources: dict[str, Path], parameters: dict, staging: Path) -> str:
-        media = {slot: self.inspect(source) for slot, source in sources.items()}
+        replacing_soundtrack = tool["id"] == "video.attach_audio" and tool["revision"] == 2
+        media = {
+            slot: self.inspect(source, include_track_duration=replacing_soundtrack and slot == "video")
+            for slot, source in sources.items()
+        }
         for slot, source in media.items():
             expected = tool["inputs"][slot]["kind"]
             if expected != "media" and source["kind"] != expected:

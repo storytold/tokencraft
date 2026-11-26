@@ -9,6 +9,7 @@ from contract import MediaError
 EVEN = "scale=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1"
 STEREO = "aresample=48000,aformat=channel_layouts=stereo"
 MP4_AUDIO = ["-c:a", "aac", "-b:a", "128k"]
+MP4_CONTAINER = ["-movflags", "+faststart", "-f", "mp4"]
 AUDIO_FORMATS = {
     "wav": ("audio/wav", ["-c:a", "pcm_s16le", "-f", "wav"]),
     "mp3": ("audio/mpeg", ["-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3"]),
@@ -34,7 +35,7 @@ def seconds(milliseconds: int) -> str:
 def mp4(arguments: list[str], *, crf: int = 23) -> Recipe:
     return Recipe(arguments + [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-        "-pix_fmt", "yuv420p", *MP4_AUDIO, "-movflags", "+faststart", "-f", "mp4",
+        "-pix_fmt", "yuv420p", *MP4_AUDIO, *MP4_CONTAINER,
     ], "video/mp4")
 
 
@@ -96,6 +97,21 @@ def join_video(first: dict, second: dict) -> Recipe:
     return mp4(["-filter_complex", ";".join(segments), "-map", "[v]", "-map", "[a]"])
 
 
+def replace_soundtrack(source: dict, parameters: dict) -> Recipe:
+    video_track = stream(source, "video")
+    offset_ms = parameters["offset_ms"]
+    if offset_ms >= (video_track["duration_ms"] or duration_ms(source)):
+        raise MediaError("audio offset must be shorter than the video")
+    arguments = [
+        "-map", "0:V:0", "-map", "1:a:0", "-af", f"adelay={offset_ms}:all=1,apad", "-shortest",
+    ]
+    if parameters["video_mode"] == "copy_h264":
+        if video_track["codec"] != "h264" or "mov" not in source["formats"]:
+            raise MediaError("copy_h264 requires an H.264 MP4 or MOV source")
+        return Recipe(arguments + ["-c:v", "copy", *MP4_AUDIO, *MP4_CONTAINER], "video/mp4")
+    return mp4(arguments + ["-vf", EVEN])
+
+
 def video(name: str, media: dict, p: dict) -> Recipe:
     source = next(iter(media.values()))
     mappings = ["-map", "0:V:0", "-map", "0:a:0?"]
@@ -104,6 +120,8 @@ def video(name: str, media: dict, p: dict) -> Recipe:
     if name == "trim":
         return mp4(trim(source, p) + mappings + ["-vf", EVEN])
     if name == "attach_audio":
+        if "offset_ms" in p:
+            return replace_soundtrack(source, p)
         length = seconds(duration_ms(source))
         return mp4(["-map", "0:V:0", "-map", "1:a:0", "-vf", EVEN, "-af", "apad", "-t", length])
     if name == "extract_audio":

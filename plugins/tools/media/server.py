@@ -318,6 +318,7 @@ def main():
     parser.add_argument("--port", type=positive, default=8094)
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--pack", choices=("media", "studio", "documents", "mesh", "delivery", "speech"), default="media")
+    parser.add_argument("--manifest", type=Path, help="serve a reviewed subset of the selected pack")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--speech-model", type=Path)
@@ -360,9 +361,17 @@ def main():
         for name in required:
             if not re.search(rf"^\s*[A-Z.]+\s+{name}\s", encoders, re.MULTILINE):
                 parser.error(f"FFmpeg needs the {name} encoder")
+    state_identity = engine.registry.manifest["plugin"]
+    if args.manifest is not None:
+        try:
+            engine.registry = engine.registry.subset(args.manifest)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            parser.error(f"invalid tool profile: {error}")
+        fingerprint = sha256(json.dumps(engine.registry.manifest, sort_keys=True).encode()).hexdigest()
+        state_identity = f"{state_identity}:{fingerprint}"
     store = Store(
         args.state, args.max_requests, args.retention_hours * 3600, 2 * size,
-        pack=engine.registry.manifest["plugin"],
+        pack=state_identity,
     )
     worker = Worker(engine, store)
 
