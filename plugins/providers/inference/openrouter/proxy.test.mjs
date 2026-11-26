@@ -18,7 +18,7 @@ test('forwards JSON and SSE with the vendor key and strips provider overrides', 
     const body = JSON.parse(Buffer.concat(chunks).toString());
     calls.push({ path: request.url, auth: request.headers.authorization, body });
     if (body.stream) {
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.writeHead(200, { 'content-type': 'Text/Event-Stream; charset=utf-8' });
       return response.end('data: {"choices":[]}\n\ndata: [DONE]\n\n');
     }
     response.writeHead(200, { 'content-type': 'application/json' });

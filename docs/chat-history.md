@@ -54,7 +54,7 @@ The standard successful-result deadlines apply to previous admissions and reques
 
 ## Follow a live chat stream
 
-Chat Completions and Responses return a TokenCraft request ID and a `Location` for status and result reads. If a viewer disconnects or stops receiving updates, the provider job can still finish. Use the same scoped key and request ID to poll the location. While retained, the original stream can also be replayed with the same idempotency key and request.
+Chat Completions and Responses return a TokenCraft request ID and a `Location` for status and result reads. If a viewer disconnects or stops receiving updates, the provider job can still finish. Use the same scoped key and request ID to poll the location. While retained, the original stream can also be replayed with the same idempotency key and request. Replay starts at the beginning of the retained output. Reset the partial transcript before applying replayed deltas.
 
 Each API process admits up to 32 active stream readers. A reader fetches up to 32 stored deltas at a time and uses an eight-event output buffer. It checks the caller's access on each read. The response pump has a 45-second deadline, after which the client can follow `Location`.
 

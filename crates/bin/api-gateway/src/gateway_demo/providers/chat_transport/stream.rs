@@ -49,7 +49,7 @@ impl ChatClient {
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
-            == Some("text/event-stream");
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"));
         if !is_sse {
             return Ok(SubmitOutcome::Uncertain("provider_response_unrecognized"));
         }
@@ -58,18 +58,20 @@ impl ChatClient {
         let mut buffer = Vec::new();
         let mut data = Vec::new();
         let mut received = 0;
+        let mut first_line = true;
+        let mut skip_lf = false;
         while let Ok(Some(chunk)) = response.chunk().await {
             received += chunk.len();
             if received > MAX_BODY {
                 break;
             }
             buffer.extend_from_slice(&chunk);
-            let mut consumed = 0;
-            while let Some(end) = buffer[consumed..].iter().position(|byte| *byte == b'\n') {
-                let end = consumed + end;
-                let line = &buffer[consumed..end];
-                let line = line.strip_suffix(b"\r").unwrap_or(line);
-                consumed = end + 1;
+            let mut remaining = buffer.as_slice();
+            while let Some(mut line) = next_line(&mut remaining, &mut skip_lf) {
+                if first_line {
+                    line = line.strip_prefix(b"\xef\xbb\xbf").unwrap_or(line);
+                    first_line = false;
+                }
                 if line.is_empty() && !data.is_empty() {
                     if data == b"[DONE]" {
                         return Ok(state.outcome(true));
@@ -88,6 +90,7 @@ impl ChatClient {
                     }
                 }
             }
+            let consumed = buffer.len() - remaining.len();
             buffer.drain(..consumed);
             if buffer.len() > MAX_FRAME {
                 break;
@@ -95,6 +98,18 @@ impl ChatClient {
         }
         Ok(state.outcome(false))
     }
+}
+
+fn next_line<'a>(input: &mut &'a [u8], skip_lf: &mut bool) -> Option<&'a [u8]> {
+    // A CR ends the line immediately. Its optional LF can arrive in the next chunk.
+    if !input.is_empty() && std::mem::take(skip_lf) {
+        *input = input.strip_prefix(b"\n").unwrap_or(*input);
+    }
+    let bytes = *input;
+    let end = bytes.iter().position(|byte| matches!(*byte, b'\r' | b'\n'))?;
+    *skip_lf = bytes[end] == b'\r';
+    *input = &bytes[end + 1..];
+    Some(&bytes[..end])
 }
 
 #[derive(Deserialize)]
@@ -240,4 +255,24 @@ impl Accumulator {
 
 pub(in crate::gateway_demo) fn purpose(ordinal: i16) -> String {
     format!("stream/{ordinal}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_line;
+
+    #[test]
+    fn accepts_cr_lf_and_crlf_split_across_chunks() {
+        let mut skip_lf = false;
+        let mut first = b"data: one\r".as_slice();
+        assert_eq!(next_line(&mut first, &mut skip_lf), Some(b"data: one".as_slice()));
+        assert_eq!(next_line(&mut first, &mut skip_lf), None);
+
+        let mut second = b"\n\rdata: two\n\ndata: partial".as_slice();
+        assert_eq!(next_line(&mut second, &mut skip_lf), Some(b"".as_slice()));
+        assert_eq!(next_line(&mut second, &mut skip_lf), Some(b"data: two".as_slice()));
+        assert_eq!(next_line(&mut second, &mut skip_lf), Some(b"".as_slice()));
+        assert_eq!(next_line(&mut second, &mut skip_lf), None);
+        assert_eq!(second, b"data: partial");
+    }
 }

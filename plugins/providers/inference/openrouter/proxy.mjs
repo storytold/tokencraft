@@ -69,7 +69,7 @@ export function openRouterProxy({ endpoint, upstreamKey, tenantKeys = false, gat
         await upstream.body?.cancel();
         return error(response, known.includes(upstream.status) ? upstream.status : 502, 'upstream request unavailable');
       }
-      const type = upstream.headers.get('content-type')?.split(';')[0];
+      const type = upstream.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
       if (!upstream.body || type !== (body.stream ? 'text/event-stream' : 'application/json')) {
         await upstream.body?.cancel();
         return error(response, 502, 'unexpected upstream response');
