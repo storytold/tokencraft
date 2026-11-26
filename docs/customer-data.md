@@ -50,6 +50,8 @@ For the feed, pass the `project_id` and optional `client_ref` and `after`. Valid
 
 ## Reconcile costs
 
+The reporting SQL also installs an index for scoped request and cost lookups. Run it as the destination table owner. On an existing destination, PostgreSQL holds a write lock on the events table while it builds the index, so use a quiet sync window for a large table.
+
 `tokencraft_export.request_usage` shows the admitted model and offer, attribution, estimate, provider observations, and latest supplier settlement for each imported request. `tokencraft_export.supplier_settlement_postings` keeps every supplier revision and its signed delta. A zero settlement stays zero, and an unknown amount stays null. Older events may have no app attribution.
 
 `tokencraft_export.provider_charge_observations` exposes connector charges in their original billing units. They arrive as `usage.observed` events with `data.source` set to `connector_charge` and a decimal string at `data.provider_charge.quantity`. For example, Kinovi reports credits. Group amounts by provider and unit, and use the separate USD fields for dollar totals. The request and usage APIs expose the same observations even if artifact delivery is still pending.

@@ -1,6 +1,10 @@
 -- Run in the customer database after the v1 export importer has initialized it.
 BEGIN;
 
+CREATE INDEX IF NOT EXISTS export_events_usage_scope_idx
+    ON tokencraft_export.events (source_url, project_id, (payload->>'type'), (payload->>'request_id'))
+    WHERE payload->>'type' IN ('request.accepted', 'usage.observed', 'usage.supplier_settled');
+
 CREATE OR REPLACE VIEW tokencraft_export.supplier_settlement_postings AS
 SELECT source_url,
        project_id,
