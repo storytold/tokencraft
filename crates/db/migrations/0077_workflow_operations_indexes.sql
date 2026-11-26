@@ -40,7 +40,7 @@ BEGIN
         FROM pg_catalog.pg_class c
         CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) acl
         JOIN pg_catalog.pg_roles r ON r.oid = acl.grantee
-        WHERE c.oid = 'public._sqlx_migrations'::regclass
+        WHERE c.oid = pg_catalog.to_regclass('public._sqlx_migrations')
           AND acl.privilege_type = 'SELECT' AND r.oid <> c.relowner
     LOOP
         EXECUTE format('GRANT SELECT ON public.gateway_schema_compatibility TO %I', role_name);
