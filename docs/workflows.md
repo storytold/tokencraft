@@ -8,6 +8,8 @@ Apply all migrations to the gateway database before starting its API and workers
 
 ## Build and invoke
 
+The workflow editor and planner use the selected project's catalog, including private models shared with that project. For session calls to `/v1/workflows/capabilities` and `/v1/workflows/plan`, pass both `account_id` and `project_id` for this view. Calls without either filter use the public catalog. Tests and publication check the current project's provider access.
+
 1. In a project, open **Workflows**, then create a draft. Choose generation steps and any approved tools from the component library. Connect inputs and outputs and set generation spending limits and a total run cap.
 2. Run the draft as a project developer or admin. Review the child request IDs and tool statuses, then wait for success.
 3. Publish the tested draft revision as a project admin. Create an application with only the scopes the caller needs. Save its key in the application secret store.
@@ -36,6 +38,8 @@ Admission reserves the sum of the generation step caps in the current UTC month.
 Runs have a 30-minute deadline. When the worker processes a due run past that deadline, PostgreSQL records `expired` and releases its unused reservation even if the saved checkpoint is unreadable. The status endpoint reports `run_deadline_exceeded`. Workers need a current lease to start a child or save a checkpoint. Previously admitted children retain their own execution and accounting.
 
 Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).
+
+When a video step uses a private first frame, the gateway evaluates the configured routing policy and prices across eligible connectors that accept workflow frames. The gateway encrypts the PNG in a separate queue attachment and removes it when the submit payload is cleared. The frame bytes are excluded from the child's warm history and archive.
 
 ## Receive terminal events
 

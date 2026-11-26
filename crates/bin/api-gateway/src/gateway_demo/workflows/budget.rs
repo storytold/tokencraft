@@ -3,8 +3,11 @@ use db_queries::gateway_requests::{client_budgets, monthly_budget, RequestScope}
 use super::super::routing_policy::Policies;
 use crate::error::{ApiError, ApiResult};
 
-pub(super) async fn verify_reservation(conn: &mut sqlx::PgConnection, scope: RequestScope<'_>) -> ApiResult<()> {
-    let policies = Policies::load(&mut *conn, scope).await?;
+pub(super) async fn verify_reservation(
+    conn: &mut sqlx::PgConnection,
+    scope: RequestScope<'_>,
+    policies: &Policies,
+) -> ApiResult<()> {
     let client_limit = match scope.client_ref {
         Some(reference) => client_budgets::find(&mut *conn, scope.account, scope.project, reference)
             .await?

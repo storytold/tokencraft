@@ -4,11 +4,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use db_queries::workflows as db;
+use db_queries::{gateway_requests::RequestScope, gateway_routing_policies, workflows as db};
 use ids::{AccountId, GatewayProjectId, WorkflowId};
 use serde::{Deserialize, Serialize};
 
-use super::super::{access, catalog_refresh::CatalogStore, providers::ProviderRuntime};
+use super::super::{
+    access, catalog::Catalog, catalog_refresh::CatalogStore, providers::ProviderRuntime, routing_policy::Policies,
+};
 use super::graph::Graph;
 use super::planner::{self, Model, PlanInput, Primitive};
 use crate::error::{ApiError, ApiResult};
@@ -55,6 +57,10 @@ impl Project<'_> {
             workflow,
         }
     }
+
+    fn request_scope(&self) -> RequestScope<'_> {
+        RequestScope { account: &self.query.account_id, project: self.project, client_ref: None }
+    }
 }
 
 #[derive(Serialize)]
@@ -63,19 +69,53 @@ pub(super) struct Capabilities {
     models: Vec<Model>,
 }
 
+#[derive(Deserialize)]
+pub(super) struct ModelQuery {
+    account_id: Option<AccountId>,
+    project_id: Option<GatewayProjectId>,
+}
+
+impl ModelQuery {
+    async fn models(
+        self,
+        pool: &sqlx::PgPool,
+        auth: &AuthContext,
+        catalog: &Catalog,
+        providers: Option<&ProviderRuntime>,
+    ) -> ApiResult<Vec<Model>> {
+        match (self.account_id, self.project_id) {
+            (None, None) => Ok(planner::models(catalog, providers, None)),
+            (Some(account_id), Some(project_id)) => {
+                let query = ConsoleQuery { account_id };
+                let project = Project { pool, auth, query: &query, project: &project_id };
+                project.authorize(false).await?;
+                let scope = project.request_scope();
+                let policies = Policies::load(pool, scope).await?;
+                Ok(planner::models(catalog, providers, Some((&policies, scope))))
+            }
+            _ => Err(ApiError::BadRequest("supply both account_id and project_id for a project catalog".into())),
+        }
+    }
+}
+
 pub(super) async fn capabilities(
-    _auth: AuthContext,
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Query(query): Query<ModelQuery>,
     Extension(catalog): Extension<Arc<CatalogStore>>,
     Extension(providers): Extension<Option<Arc<ProviderRuntime>>>,
-) -> Json<Capabilities> {
-    Json(Capabilities {
+) -> ApiResult<Json<Capabilities>> {
+    let catalog = catalog.current();
+    Ok(Json(Capabilities {
         primitives: planner::primitives(),
-        models: planner::models(&catalog.current().public_view(), providers.as_deref()),
-    })
+        models: query.models(&state.pool, &auth, &catalog, providers.as_deref()).await?,
+    }))
 }
 
 pub(super) async fn plan(
-    _auth: AuthContext,
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Query(query): Query<ModelQuery>,
     Extension(catalog): Extension<Arc<CatalogStore>>,
     Extension(providers): Extension<Option<Arc<ProviderRuntime>>>,
     Json(input): Json<PlanInput>,
@@ -85,11 +125,9 @@ pub(super) async fn plan(
             "describe your workflow in up to 2000 bytes".into(),
         ));
     }
-    Ok(Json(planner::plan(
-        input,
-        &catalog.current().public_view(),
-        providers.as_deref(),
-    )))
+    let catalog = catalog.current();
+    let models = query.models(&state.pool, &auth, &catalog, providers.as_deref()).await?;
+    Ok(Json(planner::plan(input, &models)))
 }
 
 #[derive(Serialize)]
@@ -310,6 +348,7 @@ pub(super) async fn publish(
     project.authorize(true).await?;
     let scope = project.scope(&workflow);
     let mut tx = state.pool.begin().await?;
+    gateway_routing_policies::lock_for_admission(&mut *tx, scope.account).await?;
     let row = db::lock_workflow(&mut *tx, scope)
         .await?
         .ok_or_else(missing)?;
@@ -321,8 +360,10 @@ pub(super) async fn publish(
     let graph = decode(row.draft.clone())?;
     graph.compile().map_err(ApiError::BadRequest)?;
     security.tools.validate(&graph, scope.account, scope.project)?;
-    planner::validate_models(&graph, &catalog.current(), providers.as_deref())
-        .map_err(ApiError::BadRequest)?;
+    let request_scope = project.request_scope();
+    let policies = Policies::load(&mut *tx, request_scope).await?;
+    let models = planner::models(&catalog.current(), providers.as_deref(), Some((&policies, request_scope)));
+    planner::validate_models(&graph, &models).map_err(ApiError::BadRequest)?;
     if !db::has_passed_test(&mut *tx, scope, row.revision).await? {
         return Err(ApiError::Conflict(
             "complete a successful test for this draft revision".into(),

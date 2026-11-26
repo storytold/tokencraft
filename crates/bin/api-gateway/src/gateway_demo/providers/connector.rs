@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{ensure, Context};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{codecs::png::PngDecoder, ImageDecoder, Limits};
 use reqwest::{header, Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ use super::super::{
 use super::{
     audio_format, mesh_format,
     completion::{CompletionGrant, CompletionTokens},
+    payloads::Payloads,
     queue::{read_body, Observation, RateLimit, Submission},
     video,
 };
@@ -99,6 +101,46 @@ pub(in crate::gateway_demo) enum MediaInput {
 pub(in crate::gateway_demo) struct WorkflowFrame {
     pub media_type: String,
     pub data_base64: String,
+}
+
+impl WorkflowFrame {
+    pub(in crate::gateway_demo) fn png(bytes: &[u8]) -> Self {
+        Self { media_type: artifacts::PNG.into(), data_base64: STANDARD.encode(bytes) }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+pub(in crate::gateway_demo) enum StoredInput {
+    StagedFrame { frame_input: MediaInput },
+    Inline(MediaInput),
+}
+
+pub(super) async fn open_input(
+    pool: &db::PgPool,
+    payloads: &Payloads,
+    run: &ClaimedProviderRun,
+) -> sqlx::Result<Option<MediaInput>> {
+    let id = run.request_id.as_str();
+    let Some(input) = payloads.open(id, "input", &run.request_payload)
+        .and_then(|bytes| serde_json::from_slice::<StoredInput>(&bytes).ok())
+    else {
+        return Ok(None);
+    };
+    match input {
+        StoredInput::Inline(input) => Ok(Some(input)),
+        StoredInput::StagedFrame { mut frame_input } => {
+            let MediaInput::Video { first_frame, .. } = &mut frame_input else {
+                return Ok(None);
+            };
+            let png = db_queries::gateway_requests::workflow_frames::read_for_submit(pool, id, run.lease)
+                .await?
+                .and_then(|bytes| payloads.open(id, "workflow-frame", &bytes));
+            let Some(png) = png else { return Ok(None) };
+            *first_frame = Some(WorkflowFrame::png(&png));
+            Ok(Some(frame_input))
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -631,6 +673,25 @@ mod tests {
             r#"{"version":1,"handle":"job_1","status":"other"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn staged_frames_and_legacy_inline_frames_have_distinct_queue_payloads() {
+        let legacy = r#"{"kind":"video","prompt":"clip","duration_seconds":5,"aspect_ratio":"4:3","resolution":"540p","first_frame":{"media_type":"image/png","data_base64":"AQID"}}"#;
+        let input: StoredInput = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(input, StoredInput::Inline(MediaInput::Video {
+            first_frame: Some(frame), ..
+        }) if frame.data_base64 == "AQID"));
+
+        let pending = StoredInput::StagedFrame { frame_input: MediaInput::Video {
+            prompt: "clip".into(), duration_seconds: 5, aspect_ratio: "4:3".into(),
+            resolution: "540p".into(), first_frame: None,
+        }};
+        let encoded = serde_json::to_vec(&pending).unwrap();
+        assert!(serde_json::from_slice::<MediaInput>(&encoded).is_err());
+        assert!(matches!(serde_json::from_slice::<StoredInput>(&encoded).unwrap(),
+            StoredInput::StagedFrame { frame_input: MediaInput::Video { first_frame: None, .. } }
+        ));
     }
 
     #[test]

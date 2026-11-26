@@ -14,7 +14,7 @@ use super::availability::{AvailabilityInput, RouteAvailability};
 use super::catalog::{digest, valid_identifier, Adapter, Catalog};
 use super::chat_input::{validate_messages, ChatInput, ChatOptions, ChatResult, Message};
 use super::providers::{
-    connector::MediaInput as ConnectorInput,
+    connector::{MediaInput as ConnectorInput, StoredInput, WorkflowFrame},
     video,
     ProviderRuntime,
 };
@@ -81,6 +81,7 @@ pub(super) enum QuoteSelection {
     Automatic,
     Advised(super::adaptive::AdvisorSelection),
     WorkflowPinned,
+    WorkflowFrame,
     Chat,
 }
 
@@ -235,7 +236,7 @@ pub(super) struct WorkflowAdmission<'a> {
     pub idempotency_key: &'a str,
     pub run: &'a ids::WorkflowRunId,
     pub lease: i64,
-    pub first_frame: Option<super::providers::connector::WorkflowFrame>,
+    pub first_frame: Option<Vec<u8>>,
 }
 
 pub(super) async fn submit_workflow(
@@ -256,7 +257,7 @@ async fn submit_inner(
     access: &Access,
     idempotency_key: &str,
     mut request: AdmissionInput,
-    workflow: Option<(&ids::WorkflowRunId, i64, Option<super::providers::connector::WorkflowFrame>)>,
+    workflow: Option<(&ids::WorkflowRunId, i64, Option<Vec<u8>>)>,
 ) -> ApiResult<(AcceptedRequest, bool)> {
     if !valid_idempotency_key(idempotency_key) {
         return Err(ApiError::BadRequest(
@@ -275,8 +276,12 @@ async fn submit_inner(
     }
     let pinned_offer = request.pinned_offer_id.as_deref();
     let workflow_pinned = matches!(request.selection, QuoteSelection::WorkflowPinned);
+    let first_frame = workflow.as_ref().and_then(|(_, _, frame)| frame.as_ref());
     if workflow_pinned && (workflow.is_none() || pinned_offer.is_none()) {
         return Err(ApiError::BadRequest("workflow execution requires a selected offer".into()));
+    }
+    if matches!(request.selection, QuoteSelection::WorkflowFrame) && first_frame.is_none() {
+        return Err(ApiError::BadRequest("workflow frame routing requires a private first frame".into()));
     }
     if pinned_offer.is_some_and(|id| !super::catalog::valid_identifier(id))
         || (pinned_offer.is_some() && !workflow_pinned && !matches!(request.selection, QuoteSelection::Declared(_)))
@@ -321,16 +326,18 @@ async fn submit_inner(
             fingerprint = Some(runtime.payloads.fingerprint(&encoded));
         }
     }
-    let first_frame = workflow.as_ref().and_then(|(_, _, frame)| frame.as_ref());
     if let Some(frame) = first_frame {
         let runtime = providers.ok_or_else(|| ApiError::BadRequest("workflow frames require a connector".into()))?;
-        let identity = serde_json::to_vec(&(fingerprint.as_deref(), frame))
+        let identity = serde_json::to_vec(&(fingerprint.as_deref(), WorkflowFrame::png(frame)))
             .map_err(|_| ApiError::Internal("could not encode workflow frame intent".into()))?;
         fingerprint = Some(runtime.payloads.fingerprint(&identity));
     }
     let intent = digest(
         match &request.selection {
-            QuoteSelection::WorkflowPinned => serde_json::to_vec(&("workflow_pinned", &request.input, &fingerprint)),
+            QuoteSelection::WorkflowPinned | QuoteSelection::WorkflowFrame => {
+                // First-frame admissions used the pinned marker before selecting eligible routes at admission.
+                serde_json::to_vec(&("workflow_pinned", &request.input, &fingerprint))
+            }
             QuoteSelection::Declared(quote_id) | QuoteSelection::DeclaredMedia(quote_id) => {
                 match (&subscription, &fingerprint) {
                     (_, Some(fingerprint)) => serde_json::to_vec(&(
@@ -425,13 +432,17 @@ async fn submit_inner(
     let profile = match &request.selection {
         QuoteSelection::Chat => QuoteProfile::Chat,
         QuoteSelection::Automatic | QuoteSelection::DeclaredMedia(_) | QuoteSelection::Advised(_) => QuoteProfile::QueueMedia,
-        QuoteSelection::Declared(_) | QuoteSelection::WorkflowPinned => QuoteProfile::Native,
+        QuoteSelection::Declared(_) | QuoteSelection::WorkflowPinned | QuoteSelection::WorkflowFrame => QuoteProfile::Native,
     };
     let chat = profile == QuoteProfile::Chat;
     let availability = RouteAvailability::load(&mut *tx, AvailabilityInput {
         scope: key.scope, catalog, providers, quote: &request.input, policies: &policies,
     }).await?;
-    let quote = if profile == QuoteProfile::QueueMedia {
+    let quote = if matches!(request.selection, QuoteSelection::WorkflowFrame) {
+        catalog.scoped_media_quote(request.input, key.scope, &policies, &availability, |offer| {
+            providers.is_some_and(|runtime| runtime.accepts_workflow_frame(offer))
+        })?
+    } else if profile == QuoteProfile::QueueMedia {
         let has_prompt = match request.input.workload {
             Workload::Image { .. } => request.image_prompt.is_some(),
             Workload::Video { .. } => request.video_prompt.is_some(),
@@ -535,7 +546,11 @@ async fn submit_inner(
     if first_frame.is_some() && !providers.is_some_and(|runtime| runtime.accepts_workflow_frame(offer)) {
         return Err(ApiError::Conflict("the selected connector cannot use a workflow frame".into()));
     }
-    let first_frame = workflow.and_then(|(_, _, frame)| frame);
+    let staged_frame = workflow.and_then(|(_, _, frame)| frame).map(|png| {
+        providers.and_then(|runtime| runtime.payloads.seal(id.as_str(), "workflow-frame", png))
+            .ok_or_else(|| ApiError::Internal("could not seal the workflow frame".into()))
+    }).transpose()?;
+    let mut archived_input = None;
     let provider_payload = match offer.adapter {
         Adapter::Mock
             if request.messages.is_none()
@@ -602,7 +617,7 @@ async fn submit_inner(
                 },
                 Workload::Video { duration_seconds, resolution, .. } => ConnectorInput::Video {
                     prompt: prompt(request.video_prompt)?, duration_seconds: *duration_seconds,
-                    aspect_ratio: ratio()?, resolution: resolution.clone(), first_frame,
+                    aspect_ratio: ratio()?, resolution: resolution.clone(), first_frame: None,
                 },
                 Workload::Audio { duration_seconds, format } => ConnectorInput::Audio {
                     prompt: prompt(request.audio_prompt)?, duration_seconds: *duration_seconds,
@@ -613,8 +628,17 @@ async fn submit_inner(
                 },
                 Workload::Text { .. } => return Err(ApiError::Internal("connector offer has an incompatible workload".into())),
             };
-            let body = serde_json::to_vec(&input)
-                .map_err(|_| ApiError::Internal("could not encode connector payload".into()))?;
+            let invalid = || ApiError::Internal("could not encode connector payload".into());
+            let body = if staged_frame.is_some() {
+                if runtime.content_archive.as_ref().is_some_and(|store| store.retain_media) {
+                    let metadata = serde_json::to_vec(&input).map_err(|_| invalid())?;
+                    archived_input = Some(runtime.payloads.seal(id.as_str(), "input", metadata)
+                        .ok_or_else(invalid)?);
+                }
+                serde_json::to_vec(&StoredInput::StagedFrame { frame_input: input }).map_err(|_| invalid())?
+            } else {
+                serde_json::to_vec(&input).map_err(|_| invalid())?
+            };
             let encrypted = runtime.payloads.seal(id.as_str(), "input", body)
                 .ok_or_else(|| ApiError::Internal("could not seal connector payload".into()))?;
             let model = offer.upstream_model.as_deref().ok_or_else(|| {
@@ -701,11 +725,16 @@ async fn submit_inner(
             },
         )
         .await?;
+        if let Some(frame) = staged_frame.as_deref() {
+            gateway_requests::workflow_frames::insert(&mut *tx, &id, frame).await?;
+        }
         if let Some(store) = providers.and_then(|runtime| runtime.content_archive.as_ref()) {
             if offer.adapter == Adapter::OpenAiCompatibleChat
                 || (offer.adapter == Adapter::ConnectorQueue && store.retain_media)
             {
-                gateway_requests::content_history::enroll(&mut tx, &id, store.target(), payload).await?;
+                gateway_requests::content_history::enroll(
+                    &mut tx, &id, store.target(), archived_input.as_deref().unwrap_or(payload),
+                ).await?;
             }
         }
     }

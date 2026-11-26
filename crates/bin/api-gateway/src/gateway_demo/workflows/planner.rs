@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use db_queries::gateway_requests::RequestScope;
 use serde::{Deserialize, Serialize};
 
-use super::super::catalog::{public_model_id, Adapter, Catalog, Pricing};
+use super::super::catalog::{public_model_id, Adapter, Catalog, Offer, Pricing};
 use super::super::providers::ProviderRuntime;
+use super::super::routing_policy::Policies;
 use super::graph::{Binding, Graph, InputField, Kind, Node, Setting, Value, ValueType};
 
 #[derive(Serialize)]
@@ -41,35 +43,46 @@ pub(super) struct Model {
     pub accepts_first_frame: bool,
 }
 
-pub(super) fn models(catalog: &Catalog, runtime: Option<&ProviderRuntime>) -> Vec<Model> {
+pub(super) fn available_offers<'a>(
+    catalog: &'a Catalog,
+    scope: Option<(&'a Policies, RequestScope<'a>)>,
+) -> impl Iterator<Item = &'a Offer> {
+    catalog.offers.iter().filter(move |offer| match scope {
+        Some((policies, scope)) => policies.allows_offer(catalog, offer, scope),
+        None => catalog.visible_to(offer, None),
+    })
+}
+
+pub(super) fn offer_kind(offer: &Offer) -> Option<Kind> {
+    match (&offer.pricing, offer.adapter) {
+        (Pricing::Text { .. }, adapter) if adapter.supports_chat() || adapter == Adapter::Mock => Some(Kind::Text),
+        (Pricing::Image { .. }, Adapter::ConnectorQueue | Adapter::Mock) => Some(Kind::Image),
+        (Pricing::Video { .. }, Adapter::ConnectorQueue | Adapter::Mock) => Some(Kind::Video),
+        _ => None,
+    }
+}
+
+pub(super) fn models(
+    catalog: &Catalog,
+    runtime: Option<&ProviderRuntime>,
+    scope: Option<(&Policies, RequestScope<'_>)>,
+) -> Vec<Model> {
     let mut entries = BTreeMap::new();
-    for offer in &catalog.offers {
-        let kind = match (&offer.pricing, offer.adapter) {
-            (Pricing::Text { .. }, adapter)
-                if adapter.supports_chat() || adapter == Adapter::Mock =>
-            {
-                Kind::Text
-            }
-            (
-                Pricing::Image { .. },
-                Adapter::ConnectorQueue | Adapter::Mock,
-            ) => Kind::Image,
-            (
-                Pricing::Video { .. },
-                Adapter::ConnectorQueue | Adapter::Mock,
-            ) => Kind::Video,
-            _ => continue,
-        };
+    for offer in available_offers(catalog, scope) {
+        let Some(kind) = offer_kind(offer) else { continue };
         let id = public_model_id(&offer.model);
-        let entry = entries.entry((id, kind as u8)).or_insert_with(|| Model {
-            id: id.to_owned(),
-            kind,
-            providers: BTreeSet::new(),
-            aspect_ratios: BTreeSet::new(),
-            durations: BTreeSet::new(),
-            resolutions: BTreeSet::new(),
-            accepts_first_frame: false,
+        let (entry, all_mock) = entries.entry((id, kind as u8)).or_insert_with(|| {
+            (Model {
+                id: id.to_owned(),
+                kind,
+                providers: BTreeSet::new(),
+                aspect_ratios: BTreeSet::new(),
+                durations: BTreeSet::new(),
+                resolutions: BTreeSet::new(),
+                accepts_first_frame: false,
+            }, true)
         });
+        *all_mock &= offer.adapter == Adapter::Mock;
         entry.providers.insert(offer.provider.as_str().to_owned());
         match &offer.pricing {
             Pricing::Image { aspect_ratios, .. } => {
@@ -84,27 +97,20 @@ pub(super) fn models(catalog: &Catalog, runtime: Option<&ProviderRuntime>) -> Ve
                 entry.aspect_ratios.extend(aspect_ratios.iter().cloned());
                 entry.durations.extend(durations_seconds);
                 entry.resolutions.insert(resolution.clone());
-                entry.accepts_first_frame |= runtime
-                    .is_some_and(|value| value.accepts_workflow_frame(offer))
-                    || (offer.adapter == Adapter::Mock
-                        && catalog
-                            .offers
-                            .iter()
-                            .filter(|other| public_model_id(&other.model) == id)
-                            .all(|other| other.adapter == Adapter::Mock));
+                entry.accepts_first_frame |= runtime.is_some_and(|value| value.accepts_workflow_frame(offer));
             }
             _ => {}
         }
     }
-    entries.into_values().collect()
+    entries.into_values()
+        .map(|(mut model, all_mock)| {
+            model.accepts_first_frame |= model.kind == Kind::Video && all_mock;
+            model
+        })
+        .collect()
 }
 
-pub(super) fn validate_models(
-    graph: &Graph,
-    catalog: &Catalog,
-    runtime: Option<&ProviderRuntime>,
-) -> Result<(), String> {
-    let models = models(catalog, runtime);
+pub(super) fn validate_models(graph: &Graph, models: &[Model]) -> Result<(), String> {
     for node in &graph.nodes {
         if node.kind == Kind::Tool {
             continue;
@@ -145,12 +151,7 @@ pub(super) struct RequestedStep {
     pub animated_image: bool,
 }
 
-pub(super) fn plan(
-    input: PlanInput,
-    catalog: &Catalog,
-    runtime: Option<&ProviderRuntime>,
-) -> Graph {
-    let models = models(catalog, runtime);
+pub(super) fn plan(input: PlanInput, models: &[Model]) -> Graph {
     let requested = input
         .primitives
         .filter(|steps| {

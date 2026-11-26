@@ -117,7 +117,7 @@ function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
       if (failure instanceof ApiError && failure.status === 404) return [];
       throw failure;
     });
-    Promise.all([workflowApi.capabilities(controller.signal), workflowApi.list(scope, controller.signal), tools])
+    Promise.all([workflowApi.capabilities(scope, controller.signal), workflowApi.list(scope, controller.signal), tools])
       .then(([available, existing, tools]) => {
         if (controller.signal.aborted) return;
         setCapabilities({ ...available, tools }); setWorkflows(existing);
@@ -171,7 +171,7 @@ function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
         </span>
       </button>)}
     </section>
-    {intent && <IntentDialog onCreate={create} onClose={() => setIntent(false)} />}
+    {intent && <IntentDialog scope={scope} onCreate={create} onClose={() => setIntent(false)} />}
     {importing && <Dialog title="Import workflow definition" onClose={() => setImporting(false)}>
       <form className="wf-stack" onSubmit={async (event) => {
         event.preventDefault();

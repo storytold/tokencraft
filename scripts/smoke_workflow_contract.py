@@ -356,6 +356,42 @@ def verify_tool_rollout(gateway, directory, settings, registry, sibling_project,
     print("PASS rollout checks queued tool pins, accepts drain-only retention, and preserves project authorization")
 
 
+def verify_project_catalog(port, session, account, project):
+    private = "a_private_image"
+    caps_path = "/v1/workflows/capabilities"
+    account_query = f"?account_id={account}"
+    owner_scope = account_query + f"&project_id={project}"
+    sibling, _ = call(port, "/v1/projects" + account_query, 201, method="POST", headers=session,
+                      body={"name": "Catalog scope fixture"})
+    sibling_scope = account_query + f"&project_id={sibling['id']}"
+    for query in ("", sibling_scope):
+        caps, _ = call(port, caps_path + query, 200, headers=session)
+        assert private not in {model["id"] for model in caps["models"]}
+    caps, _ = call(port, caps_path + owner_scope, 200, headers=session)
+    assert private in {model["id"] for model in caps["models"]}
+    call(port, caps_path + account_query, 400, headers=session)
+
+    intent = {"intent": "Create a hero image", "primitives": [{"kind": "image", "title": "Generate image"}]}
+    graph, _ = call(port, "/v1/workflows/plan" + owner_scope, 200, method="POST", headers=session, body=intent)
+    sibling_graph, _ = call(port, "/v1/workflows/plan" + sibling_scope, 200, method="POST", headers=session, body=intent)
+    assert graph["nodes"][0]["model"] == private and sibling_graph["nodes"][0]["model"] == "runtime_image"
+
+    for target in (project, sibling["id"]):
+        route = f"/v1/projects/{target}/workflows"
+        draft, _ = call(port, route + account_query, 201, method="POST", headers=session, body=graph)
+        manage = f"{route}/{draft['id']}"
+        run, _ = call(port, manage + "/test-runs" + account_query, 202 if target == project else 400,
+                      method="POST", headers={**session, "Idempotency-Key": token_hex(16)},
+                      body={"revision": draft["revision"], "inputs": {"brief": "Synthetic image"}})
+        if target == project:
+            wait_for_run(port, run, session)
+            call(port, manage + "/versions" + account_query, 200, method="POST", headers=session,
+                 body={"revision": draft["revision"], "active_version": None})
+        else:
+            assert run["error"]["code"] == "bad_request"
+    print("PASS workflow discovery, planning, testing, and publication enforce the scoped custom catalog")
+
+
 def verify_workflow(port, peer, session, account, project, stop_worker, restart_worker, receiver, check_rollout):
     project_path = f"/v1/projects/{project}"
     query = f"?account_id={account}"
@@ -785,6 +821,14 @@ def rehearse(gateway, admin, directory):
                 call(api_port, f"{path}?account_id={account}", expected, headers=session)
 
         settings["TOKENCRAFT_ENABLE_LEGACY_OPERATIONS"] = "true"
+        scoped_catalog = directory / "scoped-catalog.json"
+        catalog = json.loads((FIXTURES / "runtime-catalog.json").read_bytes())
+        catalog["offers"].append({
+            **catalog["offers"][0], "id": "a_private_image", "model": "a_private_image", "provider": "fixture_private",
+        })
+        catalog["connection_access"] = {"fixture_private": {"account": account, "projects": [project]}}
+        scoped_catalog.write_text(json.dumps(catalog))
+        settings["TOKENCRAFT_CORE_CATALOG"] = str(scoped_catalog)
         media_port, token = loopback_port(), token_hex(32)
         stack.enter_context(service("delivery", [sys.executable, "-B", MEDIA / "server.py", "--pack", "delivery",
             "--host", HOST, "--port", str(media_port), "--state", directory / "delivery"], directory,
@@ -841,6 +885,7 @@ def rehearse(gateway, admin, directory):
 
             verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
                             check_rollout)
+            verify_project_catalog(api_port, session, account, project)
             verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver)
 
 

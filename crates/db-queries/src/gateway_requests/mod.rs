@@ -34,6 +34,7 @@ mod recheck_provider;
 mod rollout_backlog;
 mod remove_content;
 mod report_usage;
+pub mod workflow_frames;
 
 pub use cancel_mock_attempts::cancel_mock_attempts;
 pub use cancel_request::{begin_provider_submission, cancel_request};

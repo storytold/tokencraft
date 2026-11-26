@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::{
     artifacts, catalog_refresh::CatalogStore, handlers, providers::ProviderRuntime, requests,
+    routing_policy::Policies,
 };
 use super::graph::{Graph, InputValues, Output, ValueType};
 use super::management::{self, ConsoleQuery, Project};
@@ -356,8 +357,14 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     let plan = graph.compile().map_err(ApiError::BadRequest)?;
     args.security.tools.validate(&graph, args.scope.account, args.scope.project)?;
     uploads::validate(&mut tx, args.scope, actor, &graph, &inputs).await?;
-    planner::validate_models(&graph, &args.catalog.current(), args.providers)
-        .map_err(ApiError::BadRequest)?;
+    let request_scope = RequestScope {
+        account: args.scope.account,
+        project: args.scope.project,
+        client_ref: application.map(WorkflowAppId::as_str),
+    };
+    let policies = Policies::load(&mut *tx, request_scope).await?;
+    let models = planner::models(&args.catalog.current(), args.providers, Some((&policies, request_scope)));
+    planner::validate_models(&graph, &models).map_err(ApiError::BadRequest)?;
     let active = db::count_active_runs(&mut *tx, args.scope, application, MAX_ACTIVE_RUNS_PER_WORKFLOW)
         .await?;
     if active.workflow >= MAX_ACTIVE_RUNS_PER_WORKFLOW || active.application >= MAX_ACTIVE_RUNS_PER_APP {
@@ -390,11 +397,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     )
     .await?;
     if plan.budget_reserved_usd_nanos > 0 {
-        budget::verify_reservation(&mut tx, RequestScope {
-            account: args.scope.account,
-            project: args.scope.project,
-            client_ref: application.map(WorkflowAppId::as_str),
-        }).await?;
+        budget::verify_reservation(&mut tx, request_scope, &policies).await?;
     }
     let retry_after = submission_limits::consume(&mut tx, args.scope.account).await?;
     if retry_after > 0 {

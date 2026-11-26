@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
 use db_queries::{gateway_requests::RequestScope, workflows as db};
 use ids::GatewayRequestId;
@@ -13,14 +12,14 @@ use super::super::artifacts;
 use super::super::catalog::{public_model_id, Adapter};
 use super::super::catalog_refresh::CatalogStore;
 use super::super::chat_input::{message_input_bound, Message, Role};
-use super::super::providers::connector::WorkflowFrame;
 use super::super::providers::ProviderRuntime;
 use super::super::quote::{QuoteInput, Workload};
 use super::super::requests::{
     self, AdmissionInput, NativeProviderResult, QuoteSelection, RequestStatus,
 };
+use super::super::routing_policy::Policies;
 use super::graph::{Binding, InputValues, Kind, Node, Output, Value, ValueType};
-use super::{management, tool_execution, uploads};
+use super::{management, planner, tool_execution, uploads};
 use super::Security;
 use crate::error::{ApiError, ApiResult};
 
@@ -340,12 +339,12 @@ async fn submit(
     progress: &State,
 ) -> ApiResult<GatewayRequestId> {
     let catalog = runtime.catalog.current();
-    let mut matching = catalog
-        .offers
-        .iter()
-        .filter(|offer| public_model_id(&offer.model) == node.model);
+    let scope = scope(row);
+    let policies = Policies::load(&runtime.pool, scope).await?;
+    let mut matching = planner::available_offers(&catalog, Some((&policies, scope)))
+        .filter(|offer| public_model_id(&offer.model) == node.model && planner::offer_kind(offer) == Some(node.kind));
     let candidate = matching.next();
-    let mut pin = candidate
+    let pin = candidate
         .filter(|offer| {
             offer.adapter == Adapter::Mock && matching.all(|offer| offer.adapter == Adapter::Mock)
         })
@@ -394,7 +393,7 @@ async fn submit(
                 Some(Output::Image { request_id }) if !fixture => {
                     Some(artifacts::read_verified(artifacts::ScopedDownload {
                         pool: &runtime.pool,
-                        scope: scope(row),
+                        scope,
                         runtime: provider,
                         request: request_id,
                         slot: 0,
@@ -414,20 +413,22 @@ async fn submit(
             _ => return Err(invalid()),
         };
         if let Some((bytes, media_type, _)) = source {
-            pin = catalog.offers.iter().find(|offer| {
-                public_model_id(&offer.model) == node.model
-                    && provider.is_some_and(|runtime| runtime.accepts_workflow_frame(offer))
-            }).map(|offer| offer.id.clone());
-            if pin.is_none() {
-                return Err(ApiError::BadRequest("choose a model binding that accepts a private image".into()));
-            }
             if media_type != artifacts::PNG || bytes.len() > artifacts::MAX_BYTES {
                 return Err(ApiError::BadRequest("the first frame must be a bounded PNG".into()));
             }
-            first_frame = Some(WorkflowFrame { media_type, data_base64: STANDARD.encode(bytes) });
+            first_frame = Some(bytes);
         }
     }
-    let access = Access::workflow(scope(row), row.id.as_str().to_owned());
+    let selection = if first_frame.is_some() {
+        QuoteSelection::WorkflowFrame
+    } else if pin.is_some() {
+        QuoteSelection::WorkflowPinned
+    } else if node.kind == Kind::Text {
+        QuoteSelection::Chat
+    } else {
+        QuoteSelection::Automatic
+    };
+    let access = Access::workflow(scope, row.id.as_str().to_owned());
     let idempotency = step_key(&row.id, &node.id);
     let (accepted, _) = requests::submit_workflow(
         requests::WorkflowAdmission {
@@ -441,13 +442,7 @@ async fn submit(
             first_frame,
         },
         AdmissionInput {
-            selection: if pin.is_some() {
-                QuoteSelection::WorkflowPinned
-            } else if node.kind == Kind::Text {
-                QuoteSelection::Chat
-            } else {
-                QuoteSelection::Automatic
-            },
+            selection,
             pinned_offer_id: pin,
             input: QuoteInput {
                 model: node.model.clone(),

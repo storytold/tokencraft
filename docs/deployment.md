@@ -54,6 +54,8 @@ The API checks the same database and schema state before handling operational re
 
 Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
+Use the same drain and restart when moving to schema 78. It adds a separate encrypted attachment for queued workflow first frames. The new worker can still read inline frames queued by earlier versions. Reapply the runtime grants before starting the new fleet.
+
 ## Connect existing compute endpoints
 
 In the organization console, open **Providers → Compute → Connect endpoint**. Choose AWS, Firebase / Cloud Run, Render, or Custom endpoint. All four templates use the same OpenAI-compatible chat request and response. Supply the deployed endpoint, target name, placement, and priority. Use HTTPS and the name of a bearer token environment variable for a remote endpoint. Local fixtures can use loopback HTTP. The review step validates configuration without calling the endpoint.

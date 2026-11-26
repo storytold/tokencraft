@@ -134,6 +134,17 @@ def check_queries(pg_bin, directory):
     assert sample()["eligible_sample"] == 0
     print("PASS sampler sees eligible work and excludes delayed, cooling-down and paused requests")
 
+    query("-c", """
+        INSERT INTO gateway_provider_workflow_frames (request_id, encrypted_png)
+        VALUES ('old-eligible', decode(repeat('a0', 32796), 'hex'));
+        UPDATE gateway_provider_runs SET request_payload = decode('bb', 'hex')
+        WHERE request_id = 'old-eligible';
+    """)
+    assert query("-c", "SELECT octet_length(encrypted_png) FROM gateway_provider_workflow_frames") == "32796"
+    query("-c", "UPDATE gateway_provider_runs SET request_payload = NULL WHERE request_id = 'old-eligible'")
+    assert query("-c", "SELECT count(*) FROM gateway_provider_workflow_frames") == "0"
+    print("PASS a large workflow frame survives a payload update and is cleared with the submit payload")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

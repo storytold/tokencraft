@@ -1,4 +1,4 @@
-import { gatewayRequest, type ProjectScope } from "@/lib/gateway";
+import { gatewayRequest, withProject, type ProjectScope } from "@/lib/gateway";
 import type { AppKey, Capabilities, Graph, InvocationInput, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, ToolBinding, UploadReference, Workflow, WorkflowSummary } from "./types";
 
 const scopeSuffix = (scope: ProjectScope) => `?account_id=${encodeURIComponent(scope.account_id)}`;
@@ -14,14 +14,16 @@ function write(body: object, method = "POST", extra?: HeadersInit): RequestInit 
 }
 
 export const workflowApi = {
-  capabilities: (signal?: AbortSignal) => gatewayRequest<Capabilities>("/v1/workflows/capabilities", { signal }),
+  capabilities: (scope: ProjectScope, signal?: AbortSignal) =>
+    gatewayRequest<Capabilities>(withProject("/v1/workflows/capabilities", scope.project_id, scope.account_id), { signal }),
   tools: (scope: ProjectScope, signal?: AbortSignal) =>
     gatewayRequest<ToolBinding[]>(projectRoot(scope) + "/workflow-tools" + scopeSuffix(scope), { signal }),
-  plan: (intent: string, useAdvisor: boolean, signal: AbortSignal) =>
+  plan: (scope: ProjectScope, intent: string, useAdvisor: boolean, signal: AbortSignal) =>
     (useAdvisor
       ? gatewayRequest<{ primitives: ProposedStep[] }>("/v1/model-advisor/workflow-plan", { ...write({ intent }), signal })
       : Promise.resolve(undefined)
-    ).then((plan) => gatewayRequest<Graph>("/v1/workflows/plan", { ...write({ intent, primitives: plan?.primitives }), signal })),
+    ).then((plan) => gatewayRequest<Graph>(withProject("/v1/workflows/plan", scope.project_id, scope.account_id),
+      { ...write({ intent, primitives: plan?.primitives }), signal })),
   list: (scope: ProjectScope, signal?: AbortSignal) => gatewayRequest<WorkflowSummary[]>(consoleRoot(scope) + scopeSuffix(scope), { signal }),
   read: (scope: ProjectScope, id: string, signal?: AbortSignal) => gatewayRequest<Workflow>(consoleRoot(scope, id) + scopeSuffix(scope), { signal }),
   create: (scope: ProjectScope, graph: Graph) => gatewayRequest<Workflow>(consoleRoot(scope) + scopeSuffix(scope), write(graph)),

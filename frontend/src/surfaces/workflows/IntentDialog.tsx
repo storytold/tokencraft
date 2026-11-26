@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, X } from "lucide-react";
-import { errorMessage } from "@/lib/gateway";
+import { errorMessage, type ProjectScope } from "@/lib/gateway";
 import { advisorApi } from "@/surfaces/models/model-advisor";
 import { workflowApi } from "./api";
 import type { Graph } from "./types";
@@ -19,7 +19,9 @@ export function Dialog({ title, children, onClose }: { title: string; children: 
   </dialog>;
 }
 
-export function IntentDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (graph: Graph) => Promise<void> }) {
+export function IntentDialog({ scope, onClose, onCreate }: {
+  scope: ProjectScope; onClose: () => void; onCreate: (graph: Graph) => Promise<void>;
+}) {
   const [intent, setIntent] = useState("");
   const [advisor, setAdvisor] = useState(false);
   const [online, setOnline] = useState(false);
@@ -42,7 +44,7 @@ export function IntentDialog({ onClose, onCreate }: { onClose: () => void; onCre
     setError("");
     setProposal(undefined);
     try {
-      const graph = await workflowApi.plan(intent.trim(), advisor, controller.signal);
+      const graph = await workflowApi.plan(scope, intent.trim(), advisor, controller.signal);
       if (!controller.signal.aborted) setProposal(graph);
     } catch (failure) {
       if (!controller.signal.aborted) setError(errorMessage(failure));

@@ -474,9 +474,7 @@ async fn submit_connector(
 ) -> sqlx::Result<()> {
     let id = run.request_id.as_str();
     let submitted = match runtime.connectors.by_digest(&run.binding_digest) {
-        Some(connector) => match runtime.payloads.open(id, "input", &run.request_payload)
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        {
+        Some(connector) => match connector::open_input(pool, &runtime.payloads, &run).await? {
             Some(input) => {
                 let key = runtime.pinned_credential(pool, id, &run.binding_digest, run.credential_version).await?;
                 if connector.tenant_keys != run.credential_version.is_some()
