@@ -60,6 +60,8 @@ Use the same drain and restart when moving to schema 78. It adds a separate encr
 
 Migration 79 adds the active workflow deadline index and supports overlap with schema-78 API and worker binaries. The index build pauses writes to the workflow runs table until it commits. On the new worker, deadline processing uses batches of up to 64 overdue runs and works while execution slots are busy. A row held by another transaction is picked up after that transaction releases it.
 
+Use a coordinated drain and restart when moving to schema 80. Published workflows can supply a customer reference, and workers store it on each child alongside the application budget identity. Upgrade all API servers and workers in the cell before reopening admissions. The migration adds an application spending index to the request table.
+
 ## Connect existing compute endpoints
 
 In the organization console, open **Providers → Compute → Connect endpoint**. Choose AWS, Firebase / Cloud Run, Render, or Custom endpoint. All four templates use the same OpenAI-compatible chat request and response. Supply the deployed endpoint, target name, placement, and priority. Use HTTPS and the name of a bearer token environment variable for a remote endpoint. Local fixtures can use loopback HTTP. The review step validates configuration without calling the endpoint.

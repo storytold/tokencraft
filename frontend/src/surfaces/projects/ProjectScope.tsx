@@ -47,6 +47,9 @@ export function ProjectProvider({ accountId, includeAccountInUrl = false, childr
     next.set("project_id", id);
     if (includeAccountInUrl && accountId) next.set("account_id", accountId);
     next.delete("request_id");
+    next.delete("workflow_id");
+    next.delete("run_id");
+    next.delete("workflow_view");
     next.delete("webhook_subscription_id");
     setParams(next);
   }

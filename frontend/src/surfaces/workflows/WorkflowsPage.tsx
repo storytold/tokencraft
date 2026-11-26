@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ArrowLeft, Braces, Download, ListChecks, Play, Plus, Save, Sparkles, Upload, Workflow as WorkflowIcon } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { errorMessage, type ProjectScope } from "@/lib/gateway";
@@ -20,15 +21,26 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
 }) {
   const [workflow, setWorkflow] = useState(initial);
   const [graph, setGraph] = useState(initial.draft);
-  const [view, setView] = useState<View>("build");
+  const [params, setParams] = useSearchParams();
+  const run = params.get("run_id") ?? undefined;
+  const requestedView = params.get("workflow_view");
+  const view = tabs.find(([id]) => id === requestedView)?.[0] ?? (run ? "runs" : "build");
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<"test" | "reuse" | "publish">();
-  const [run, setRun] = useState<string>();
   const [lastTest, setLastTest] = useState<{ id: string; revision: number; inputs: Record<string, InvocationInput> }>();
   const dirty = graph !== workflow.draft;
   const reuseSource = !dirty && lastTest?.id === run && lastTest?.revision === workflow.revision ? lastTest : undefined;
+
+  function openView(nextView: View, nextRun?: string) {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set("workflow_view", nextView);
+      if (nextRun) next.set("run_id", nextRun);
+      return next;
+    });
+  }
 
   async function save() {
     if (!dirty) return workflow;
@@ -75,13 +87,13 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
     </header>
     <nav className="wf-tabs" aria-label="Workflow views">
       {tabs.map(([id, label, Icon]) => <button type="button" key={id} aria-current={view === id ? "page" : undefined}
-        onClick={() => { setView(id); setError(""); }}><Icon size={15} /> {label}</button>)}
+        onClick={() => { openView(id); setError(""); }}><Icon size={15} /> {label}</button>)}
       {workflow.active_version !== null && <span className="wf-live"><span />{workflow.paused ? "Production paused" : `Version ${workflow.active_version} live`}</span>}
     </nav>
     {error && <p className="wf-banner wf-error" role="alert">{error}</p>}
     {saved && <p className="wf-banner wf-muted" role="status">{saved}</p>}
     {view === "build" && <Canvas workflowId={workflow.id} graph={graph} capabilities={capabilities} onChange={(next) => { setGraph(next); setSaved(""); }} />}
-    {view === "runs" && <Runs scope={scope} id={workflow.id} graph={workflow.draft} selected={run} onSelect={setRun}
+    {view === "runs" && <Runs scope={scope} id={workflow.id} graph={workflow.draft} selected={run} onSelect={(id) => openView("runs", id)}
       onReuse={reuseSource ? () => setModal("reuse") : undefined} />}
     {view === "endpoint" && <Endpoint scope={scope} workflow={workflow} admin={admin} onUpdate={(next) => {
       setWorkflow(next);
@@ -93,7 +105,7 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
       onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
       const launched = await workflowApi.test(scope, workflow, inputs, key, modal === "reuse" ? reuseSource?.id : undefined);
       setLastTest({ id: launched.id, revision: workflow.revision, inputs });
-      setRun(launched.id); setView("runs"); setModal(undefined);
+      openView("runs", launched.id); setModal(undefined);
     }} />}
     {modal === "publish" && <Dialog title="Publish workflow" onClose={() => setModal(undefined)}>
       <div className="wf-stack">
@@ -101,7 +113,7 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
         {error && <p role="alert" className="wf-error">{error}</p>}
         <div className="wf-actions"><button type="button" className="wf-button wf-primary" disabled={busy} onClick={() => void perform(async () => {
           const next = await workflowApi.publish(scope, workflow);
-          setWorkflow(next); setGraph(next.draft); setModal(undefined); setView("endpoint");
+          setWorkflow(next); setGraph(next.draft); setModal(undefined); openView("endpoint");
         })}>Publish endpoint</button></div>
       </div>
     </Dialog>}
@@ -111,7 +123,10 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
 function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
   const [capabilities, setCapabilities] = useState<Capabilities>();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>();
-  const [current, setCurrent] = useState<Workflow>();
+  const [params, setParams] = useSearchParams();
+  const workflowId = params.get("workflow_id");
+  const [opened, setOpened] = useState<{ id: string; workflow?: Workflow; error?: string }>();
+  const [openAttempt, setOpenAttempt] = useState(0);
   const [intent, setIntent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -136,21 +151,50 @@ function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
     return () => controller.abort();
   }, [scope]);
 
-  async function open(id: string) {
-    setError(""); setBusy(true);
-    try { setCurrent(await workflowApi.read(scope, id)); }
-    catch (failure) { setError(errorMessage(failure)); }
-    finally { setBusy(false); }
+  const selection = opened?.id === workflowId ? opened : undefined;
+  const hasWorkflow = Boolean(selection?.workflow);
+  useEffect(() => {
+    if (!workflowId || hasWorkflow) return;
+    const controller = new AbortController();
+    workflowApi.read(scope, workflowId, controller.signal).then((workflow) => {
+      if (!controller.signal.aborted) setOpened({ id: workflowId, workflow });
+    }).catch((failure) => {
+      if (!controller.signal.aborted) setOpened({ id: workflowId, error: errorMessage(failure) });
+    });
+    return () => controller.abort();
+  }, [scope, workflowId, hasWorkflow, openAttempt]);
+
+  function open(id?: string) {
+    setError("");
+    if (id && id === workflowId && selection?.error) {
+      setOpened(undefined);
+      setOpenAttempt((attempt) => attempt + 1);
+      return;
+    }
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (id) next.set("workflow_id", id);
+      else next.delete("workflow_id");
+      next.delete("run_id");
+      next.delete("workflow_view");
+      return next;
+    });
   }
 
   async function create(graph: Graph) {
     const created = await workflowApi.create(scope, graph);
     setWorkflows((existing) => [created, ...(existing ?? [])]);
-    setCurrent(created); setIntent(false);
+    setOpened({ id: created.id, workflow: created }); open(created.id); setIntent(false);
   }
 
-  if (current && capabilities) return <Editor key={current.id} scope={scope} initial={current} capabilities={capabilities} admin={admin}
-    onBack={(updated) => { setWorkflows((list) => list?.map((item) => item.id === updated.id ? updated : item)); setCurrent(undefined); }} />;
+  if (selection?.workflow && capabilities) {
+    return <Editor key={selection.workflow.id} scope={scope} initial={selection.workflow} capabilities={capabilities} admin={admin}
+      onBack={(updated) => {
+        setWorkflows((list) => list?.map((item) => item.id === updated.id ? updated : item));
+        setOpened(undefined);
+        open();
+      }} />;
+  }
 
   return <div className="wf-studio">
     <header className="wf-header wf-library-header">
@@ -169,9 +213,11 @@ function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
     <section className="wf-library-list">
       {disabled && <p role="status" className="wf-muted">Workflows is disabled on this gateway. Set TOKENCRAFT_WORKFLOW_KEY to enable it.</p>}
       {!workflows && !disabled && !error && <p role="status" className="wf-muted">Loading workflows…</p>}
+      {workflowId && !selection && <p role="status" className="wf-muted">Opening workflow…</p>}
+      {selection?.error && <p role="alert" className="wf-error">{selection.error}</p>}
       {error && <p role="alert" className="wf-error">{error}</p>}
       {workflows?.length === 0 && <p className="wf-muted">Create your first workflow to get started.</p>}
-      {workflows?.map((item) => <button type="button" className="wf-workflow-row" key={item.id} disabled={busy} onClick={() => void open(item.id)}>
+      {workflows?.map((item) => <button type="button" className="wf-workflow-row" key={item.id} disabled={busy} onClick={() => open(item.id)}>
         <span className="wf-node-icon"><WorkflowIcon size={17} /></span><strong>{item.title}</strong>
         <span className={`wf-status ${item.active_version && !item.paused ? "wf-status-succeeded" : ""}`}>
           {item.active_version ? item.paused ? "Paused" : `Version ${item.active_version} live` : "Draft"}

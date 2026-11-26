@@ -228,6 +228,9 @@
 .wf-timeline { list-style: none; margin: 0; padding: 0; }
 .wf-timeline li { display: flex; justify-content: space-between; align-items: start; padding: .45rem 0; gap: .5rem; border-bottom: 1px solid var(--wf-line); }
 .wf-timeline small { display: block; overflow-wrap: anywhere; }
+.wf-timeline-step { min-width: 0; overflow-wrap: anywhere; }
+.wf-timeline-step strong { display: block; }
+.wf-trace-link { color: var(--wf-brand); text-decoration: underline; text-underline-offset: 2px; }
 .wf-library-list { display: grid; padding: .9rem 1.25rem 1.25rem; gap: .35rem; border-top: 1px solid var(--wf-line); }
 .wf-workflow-row strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .wf-banner { padding: .55rem 1rem; border-bottom: 1px solid var(--wf-line); }

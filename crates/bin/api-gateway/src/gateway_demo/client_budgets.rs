@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -7,7 +9,7 @@ use db_queries::{
     account_audit_logs::{self, NewAccountAuditLog},
     gateway_requests::{
         client_budgets::{self, ClientBudget},
-        monthly_budget,
+        monthly_budget, RequestScope,
     },
     gateway_routing_policies,
 };
@@ -195,6 +197,30 @@ pub(super) async fn update(
     let report = view(&mut tx, &account, &project.id, budget).await?;
     tx.commit().await?;
     Ok(Json(report))
+}
+
+pub(super) struct AdmissionLimits<'a> {
+    pub evidence: Option<(i32, i64)>,
+    pub clients: BTreeMap<&'a str, i64>,
+}
+
+pub(super) async fn admission_limits<'a>(
+    conn: &mut sqlx::PgConnection,
+    scope: RequestScope<'a>,
+    application: Option<&'a str>,
+) -> sqlx::Result<AdmissionLimits<'a>> {
+    let mut limits = AdmissionLimits { evidence: None, clients: BTreeMap::new() };
+    let application = application.filter(|reference| Some(*reference) != scope.client_ref);
+    for reference in scope.client_ref.into_iter().chain(application) {
+        let budget = client_budgets::find(&mut *conn, scope.account, scope.project, reference).await?;
+        if let Some((revision, limit)) = budget.and_then(|row| row.limit_usd_nanos.map(|cap| (row.revision, cap))) {
+            limits.clients.insert(reference, limit);
+            if Some(reference) == scope.client_ref {
+                limits.evidence = Some((revision, limit));
+            }
+        }
+    }
+    Ok(limits)
 }
 
 async fn current(

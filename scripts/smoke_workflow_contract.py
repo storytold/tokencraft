@@ -888,8 +888,9 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     set_credits(1)
     quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=direct,
                     body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
-    call(port, "/v1/requests", 202, method="POST", body={"quote_id": quote["id"], "input": quote["input"]},
-         headers={**direct, "Idempotency-Key": token_hex(16)})
+    direct_receipt, _ = call(port, "/v1/requests", 202, method="POST",
+                             body={"quote_id": quote["id"], "input": quote["input"]},
+                             headers={**direct, "Idempotency-Key": token_hex(16)})
     draft_denied, draft_headers = call(peer, manage + "/test-runs" + query, 429, method="POST",
                                       body={**empty, "revision": draft["revision"]},
                                       headers={**session, "Idempotency-Key": token_hex(16)})
@@ -924,6 +925,121 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
                     account=account) == "0"
     assert_on_hold(estimate * 4, estimate * 2)
     print("PASS shared submission quota for native requests, draft tests, concurrent published runs, replay, and deferred generation")
+
+    status = receipt["status_url"]
+    console = status + query + "&include_execution=true"
+    child = finished["steps"][0]["request"]
+
+    def before_retirement():
+        view, headers = call(port, console, 200, headers=session)
+        assert any("no-store" in value for value in headers.get_all("Cache-Control", [])), headers
+        assert not view["execution"]["evidence_expired"]
+        (node,) = view["execution"]["nodes"]
+        assert node["status"] == "succeeded" and node["request"] == child
+        return node
+
+    original_step = before_retirement()
+    app_view, _ = call(port, status + "?include_execution=true", 200, headers=auth)
+    assert "execution" not in app_view
+    sibling, _ = call(port, "/v1/projects" + query, 201, method="POST", headers=session,
+                      body={"name": "Another history scope"})
+    call(port, console.replace(f"/projects/{project}/", f"/projects/{sibling['id']}/"), 404, headers=session)
+
+    # Reproduce the state left by the retention worker without waiting for its minute-long sweep.
+    query_db("UPDATE workflow_runs SET content = NULL WHERE id = :'run'", run=receipt["id"])
+    retained, _ = call(peer, console, 200, headers=session)
+    assert retained["execution"]["evidence_expired"] and "outputs" not in retained and not retained["steps"]
+    (step,) = retained["execution"]["nodes"]
+    assert step == original_step and step["title"] == "Generate"
+    assert step["request_status"] == "succeeded" and step["provider"] == "self_hosted"
+    assert step["admitted_at"] and step["finished_at"]
+    print("PASS the session-only execution timeline retains its scoped request trace after run content expires")
+
+    parents = base + "/workflow-activity/parents/"
+    parent, _ = call(port, parents + child + query, 200, headers=session)
+    assert parent == {"workflow_id": draft["id"], "run_id": receipt["id"], "title": "Paid workflow fixture"}
+    direct_parent, _ = call(port, parents + direct_receipt["id"] + query, 200, headers=session)
+    assert direct_parent is None
+    sibling_parents = f"/v1/projects/{sibling['id']}/workflow-activity/parents/"
+    sibling_parent, _ = call(port, sibling_parents + child + query, 200, headers=session)
+    assert sibling_parent is None
+    call(port, parents + child + query, 401, headers=auth)
+    print("PASS a retained request finds its parent only through the matching project session")
+
+    client_field = spec["paths"][runs]["post"]["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert client_field["client_ref"]["type"] == "string"
+    references = ("studio-alpha", "studio-beta")
+
+    def client_limit(reference, revision, limit):
+        path = base + f"/client-budgets/{reference}" + query
+        call(port, path, 200, method="PUT", headers=session,
+             body={"expected_revision": revision, "limit_usd_nanos": limit})
+
+    def budget_for(reference):
+        view, _ = call(peer, base + f"/client-budgets/{reference}" + query, 200, headers=session)
+        return int(view["reserved_usd_nanos"])
+
+    # Disable shared org and project caps so the concurrent requests use their client and app locks.
+    set_caps(3, None, estimate * 2 + run_cap + 100_000)
+    for reference in references:
+        client_limit(reference, 0, run_cap)
+    set_credits(20)
+    stop_worker()
+    bodies = [{**empty, "client_ref": reference} for reference in references]
+    attempts = [{**auth, "Idempotency-Key": token_hex(16)} for _ in references]
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        pending = [threads.submit(call, target, runs, (202, 409), method="POST", body=body, headers=headers)
+                   for target, body, headers in zip((port, peer), bodies, attempts)]
+        results = [future.result()[0] for future in pending]
+    (winner,) = [index for index, result in enumerate(results) if "status_url" in result]
+    loser = 1 - winner
+    assert results[loser]["error"]["code"] == "monthly_budget_exceeded"
+    assert budget_for(app["app_id"]) == estimate * 2 + run_cap
+    assert budget_for(references[winner]) == run_cap and budget_for(references[loser]) == 0
+    replay, _ = call(peer, runs, 200, method="POST", body=bodies[winner], headers=attempts[winner])
+    assert replay == {**results[winner], "replayed": True}
+    changed, _ = call(peer, runs, 409, method="POST", body=bodies[loser], headers=attempts[winner])
+    assert changed["error"]["code"] == "conflict"
+    call(peer, runs, 400, method="POST", body={**empty, "client_ref": "customer with spaces"}, headers=attempts[winner])
+
+    start_worker()
+    first, _ = wait_for_run(port, results[winner], auth)
+    assert budget_for(app["app_id"]) == estimate * 3
+    assert budget_for(references[winner]) == estimate
+    set_caps(4, None, 20_000_000)
+    client_limit(references[loser], 1, run_cap - 1)
+    denied, _ = call(peer, runs, 409, method="POST", body=bodies[loser], headers=attempts[loser])
+    assert denied["error"]["code"] == "monthly_budget_exceeded"
+    client_limit(references[loser], 2, run_cap)
+    accepted, _ = call(peer, runs, 202, method="POST", body=bodies[loser], headers=attempts[loser])
+    second, _ = wait_for_run(port, accepted, auth)
+    assert budget_for(app["app_id"]) == estimate * 4
+
+    requests = [first, second]
+    clients = [references[winner], references[loser]]
+    for item, reference in zip(requests, clients):
+        assert item["client_ref"] == reference and budget_for(reference) == estimate
+        child = item["steps"][0]["request"]
+        filters = query + f"&project_id={project}&client_ref={reference}"
+        history, _ = call(port, "/v1/requests" + filters, 200, headers=session)
+        assert [entry["id"] for entry in history["requests"]] == [child]
+        usage, _ = call(peer, "/v1/usage" + filters, 200, headers=session)
+        assert usage["totals"]["requests"] == 1 and usage["totals"]["estimated_usd_nanos"] == str(estimate)
+        parent, _ = call(port, parents + child + query, 200, headers=session)
+        assert parent["run_id"] == item["id"]
+        timeline, _ = call(peer, runs + f"/{item['id']}" + query + "&include_execution=true", 200, headers=session)
+        assert timeline["execution"]["nodes"][0]["request"] == child
+
+    bound, _ = call(port, base + "/service-principals" + query, 201, method="POST", headers=session,
+                    body={"name": "One workflow customer", "scopes": ["requests:read", "usage:read"],
+                          "client_ref": clients[0]})
+    credential = {"Authorization": "Bearer " + bound["token"]}
+    history, _ = call(peer, "/v1/requests", 200, headers=credential)
+    assert [entry["id"] for entry in history["requests"]] == [requests[0]["steps"][0]["request"]]
+    usage, _ = call(peer, "/v1/usage", 200, headers=credential)
+    assert usage["client_ref"] == clients[0] and usage["totals"]["requests"] == 1
+    call(peer, f"/v1/usage?client_ref={clients[1]}", 404, headers=credential)
+    print("PASS shared workflow key attributes distinct customers while preserving app budgets and scoped usage")
 
 
 def rehearse(gateway, admin, directory, *, verification=None):

@@ -198,6 +198,7 @@ impl Reader {
 pub(super) struct Invocation {
     inputs: InputValues,
     reuse_run_id: Option<WorkflowRunId>,
+    client_ref: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -293,14 +294,20 @@ fn receipt(
         .into_response())
 }
 
-async fn admit(args: Admit<'_>, inputs: InputValues, reuse_run_id: Option<WorkflowRunId>) -> ApiResult<Response> {
+async fn admit(
+    args: Admit<'_>, inputs: InputValues, client_ref: Option<&str>, reuse_run_id: Option<WorkflowRunId>,
+) -> ApiResult<Response> {
+    requests::validate_client_ref(client_ref)?;
     if !requests::valid_idempotency_key(args.idempotency_key) {
         return Err(ApiError::BadRequest("invalid Idempotency-Key".into()));
     }
     let key_digest = args.security.digest(args.idempotency_key.as_bytes());
-    let intent = match &reuse_run_id {
-        Some(run) => serde_json::to_vec(&(args.origin.revision(), &inputs, run)),
-        None => serde_json::to_vec(&(args.origin.revision(), &inputs)),
+    // Existing invocations retain their original intent digests across upgrades.
+    let revision = args.origin.revision();
+    let intent = match (client_ref, &reuse_run_id) {
+        (_, Some(source)) => serde_json::to_vec(&(revision, &inputs, client_ref, source)),
+        (Some(reference), None) => serde_json::to_vec(&(revision, &inputs, reference)),
+        (None, None) => serde_json::to_vec(&(revision, &inputs)),
     }.map_err(|_| runner::unavailable())?;
     let intent_digest = args.security.digest(&intent);
     let actor = args.origin.actor();
@@ -369,7 +376,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues, reuse_run_id: Option<Workfl
     let mut budget_reserved = plan.budget_reserved_usd_nanos;
     let required_uploads = if let Some(source) = reuse_run_id {
         let row = db::find_run(&mut *tx, args.scope, &source).await?
-            .filter(|prior| prior.actor_id == actor)
+            .filter(|prior| prior.actor_id == actor && prior.client_ref.as_deref() == client_ref)
             .ok_or_else(management::missing)?;
         if row.status != "succeeded" || row.version != version || row.draft_revision != revision {
             return Err(reuse::unavailable());
@@ -391,10 +398,11 @@ async fn admit(args: Admit<'_>, inputs: InputValues, reuse_run_id: Option<Workfl
         None
     };
     uploads::validate(&mut tx, args.scope, actor, &graph, &progress.inputs, required_uploads.as_ref()).await?;
+    let application_ref = application.map(WorkflowAppId::as_str);
     let request_scope = RequestScope {
         account: args.scope.account,
         project: args.scope.project,
-        client_ref: application.map(WorkflowAppId::as_str),
+        client_ref: client_ref.or(application_ref),
     };
     let policies = Policies::load(&mut *tx, request_scope).await?;
     let models = planner::models(&args.catalog.current(), args.providers, Some((&policies, request_scope)));
@@ -420,6 +428,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues, reuse_run_id: Option<Workfl
             id: &id,
             actor,
             version,
+            client_ref,
             webhook_subscription_id: webhook_subscription_id.as_deref(),
             budget_reserved_usd_nanos: budget_reserved,
             draft_revision: revision,
@@ -431,7 +440,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues, reuse_run_id: Option<Workfl
     )
     .await?;
     if budget_reserved > 0 {
-        budget::verify_reservation(&mut tx, request_scope, &policies).await?;
+        budget::verify_reservation(&mut tx, request_scope, &policies, application_ref).await?;
     }
     let retry_after = submission_limits::consume(&mut tx, args.scope.account).await?;
     if retry_after > 0 {
@@ -521,6 +530,7 @@ pub(super) async fn invoke(
             providers: providers.as_deref(),
         },
         input.inputs,
+        input.client_ref.as_deref(),
         input.reuse_run_id,
     )
     .await
@@ -558,6 +568,7 @@ pub(super) async fn test(
             idempotency_key: handlers::idempotency_key(&headers)?,
         },
         input.inputs,
+        None,
         input.reuse_run_id,
     )
     .await
@@ -603,6 +614,8 @@ struct RunView {
     workflow_version: Option<i32>,
     draft_revision: i64,
     created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_ref: Option<String>,
     steps: Vec<runner::Step>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     tools: BTreeMap<String, super::tool_execution::StepStatus>,
@@ -719,6 +732,7 @@ pub(super) async fn status(
         draft_revision: row.draft_revision,
         status: row.status,
         created_at: row.created_at,
+        client_ref: row.client_ref,
         steps: Vec::new(),
         tools: BTreeMap::new(),
         reuse: None,

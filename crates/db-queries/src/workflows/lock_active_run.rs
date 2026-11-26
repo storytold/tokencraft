@@ -3,6 +3,7 @@ use ids::WorkflowRunId;
 
 pub struct LockedRun {
     pub budget_month_start: Option<DateTime<Utc>>,
+    pub application_id: Option<String>,
 }
 
 pub async fn lock_active_run<'e, E: sqlx::PgExecutor<'e>>(
@@ -12,9 +13,9 @@ pub async fn lock_active_run<'e, E: sqlx::PgExecutor<'e>>(
 ) -> sqlx::Result<Option<LockedRun>> {
     sqlx::query_as!(
         LockedRun,
-        "SELECT budget_month_start FROM workflow_runs WHERE id = $1 AND lease = $2
-        AND status IN ('queued','running','reconciling')
-        AND next_at > clock_timestamp() AND deadline > clock_timestamp() FOR UPDATE",
+        r#"SELECT budget_month_start, CASE WHEN version IS NOT NULL THEN actor_id END AS "application_id?"
+        FROM workflow_runs WHERE id = $1 AND lease = $2 AND status IN ('queued','running','reconciling')
+        AND next_at > clock_timestamp() AND deadline > clock_timestamp() FOR UPDATE"#,
         run.as_str(),
         lease
     )

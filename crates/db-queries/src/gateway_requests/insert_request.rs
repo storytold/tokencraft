@@ -27,6 +27,7 @@ pub struct NewGatewayRequest<'a> {
     pub estimated_usd_nanos: i64,
     pub budget_reserved_usd_nanos: i64,
     pub workflow_budget_month_start: Option<DateTime<Utc>>,
+    pub workflow_app_id: Option<&'a str>,
     pub correlation: RequestCorrelation<'a>,
     pub client_budget: Option<(i32, i64)>,
     pub credential: Option<&'a Effective>,
@@ -43,9 +44,9 @@ pub async fn insert_request<'e, E: PgExecutor<'e>>(
           budget_reserved_usd_nanos, app_ref,
           trace_id, admission_span_id, caller_trace_id, caller_span_id,
           client_budget_revision, client_budget_limit_usd_nanos, provider_credential_scope_id,
-          provider_credential_binding_slot, provider_credential_version, workflow_budget_month_start)
+          provider_credential_binding_slot, provider_credential_version, workflow_budget_month_start, workflow_app_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                 $21, $22, $23, $24, $25, $26, $27)
+                 $21, $22, $23, $24, $25, $26, $27, $28)
          ON CONFLICT (account_id, project_id, actor_id, idempotency_digest) DO NOTHING",
         request.id.as_str(),
         request.key.scope.account.as_str(),
@@ -76,6 +77,7 @@ pub async fn insert_request<'e, E: PgExecutor<'e>>(
         request.credential.map(|key| key.binding.as_str()),
         request.credential.map(|key| key.version),
         request.workflow_budget_month_start,
+        request.workflow_app_id,
     )
     .execute(exec)
     .await?

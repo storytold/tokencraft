@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { useSearchParams } from "react-router-dom";
 import { Clock, Radio, RefreshCw } from "lucide-react";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
-import type { ProjectScope } from "@/lib/gateway";
+import { demoEnabled, type ProjectScope } from "@/lib/gateway";
 import { comparisonApi, errorMessage, formatNanoUsd, providerLabel, usd, type ModelQuote, type PromptMode, type Trace } from "./api";
 import { costStateNames, RequestHistoryFilters, statusNames } from "./RequestHistoryFilters";
 import { ProviderTrace } from "./ProviderTrace";
@@ -15,6 +15,7 @@ import { historySearch, setHistoryFilters } from "@/surfaces/requests/historyQue
 import { diagnosticFromUrl, type InvestigationFilters } from "@/surfaces/requests/historyDiagnostics";
 import { useRequestHistory } from "@/surfaces/requests/useRequestHistory";
 import { RequestsWorkspace } from "@/surfaces/requests/RequestsWorkspace";
+import { WorkflowRunLink } from "@/surfaces/requests/WorkflowRunLink";
 import { quoteExpired, QuoteExpiry } from "./QuoteExpiry";
 
 const timestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -155,6 +156,7 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
         key={trace.id}
         scope={scope}
         trace={trace}
+        showWorkflow={demoEnabled && isDashboard && !readOnly && Boolean(trace.app_ref)}
         canceling={canceling || submitting}
         onCancel={readOnly ? undefined : cancel}
         canManageRequests={canManageRequests}
@@ -264,9 +266,10 @@ function isFinished(trace: Trace) {
   return !requestIsActive(trace.status);
 }
 
-function TraceDetail({ trace, scope, canceling, onCancel, canManageRequests, onContentRemoved, onRefresh }: {
+function TraceDetail({ trace, scope, showWorkflow, canceling, onCancel, canManageRequests, onContentRemoved, onRefresh }: {
   trace: Trace;
   scope: ProjectScope;
+  showWorkflow: boolean;
   canceling: boolean;
   onCancel?: () => void;
   canManageRequests: boolean;
@@ -287,6 +290,7 @@ function TraceDetail({ trace, scope, canceling, onCancel, canManageRequests, onC
             <Button type="button" size="sm" variant="outline" disabled={canceling} onClick={onCancel}>Cancel request</Button>}
         </div>
       </div>
+      {showWorkflow && <WorkflowRunLink scope={scope} request={trace.id} />}
       {trace.recheck && trace.status === "awaiting_reconciliation" && (
         <ProviderRecheckControls scope={scope} requestId={trace.id} recheck={trace.recheck}
           canSchedule={canManageRequests} onRefresh={onRefresh} />

@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { Play, RefreshCw } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL, ApiError } from "@/lib/api";
 import { errorMessage, type ProjectScope } from "@/lib/gateway";
 import { workflowApi } from "./api";
 import { usd } from "./editor";
 import { Dialog } from "./IntentDialog";
 import { ToolParameterInput } from "./ToolParameters";
+import { RunTimeline } from "./RunTimeline";
 import { isFileInput } from "./wiring";
 import { statusLabel, TERMINAL, type Graph, type Run, type RunSummary, type InvocationInput, type UploadKind, type UploadReference, type WorkflowInput } from "./types";
 
@@ -111,27 +112,21 @@ export function Status({ status }: { status: RunSummary["status"] }) {
   return <span className={`wf-status wf-status-${status}`}>{statusLabel[status]}</span>;
 }
 
-function RunDetails({ run, graph, onCancel, onReuse }: {
-  run: Run; graph: Graph; onCancel: () => Promise<void>; onReuse?: () => void;
+function RunDetails({ scope, run, graph, heading, onCancel, onReuse }: {
+  scope: ProjectScope; run: Run; graph: Graph; heading: Ref<HTMLHeadingElement>; onCancel: () => Promise<void>;
+  onReuse?: () => void;
 }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const steps = [
-    ...(run.reuse?.steps ?? []).map((node) => ({ node, status: "reused", detail: run.reuse?.source_run_id })),
-    ...run.steps.map((step) => ({ node: step.node, status: step.status, detail: step.request })),
-    ...Object.entries(run.tools ?? {}).map(([node, step]) => ({
-      node, status: step.status, detail: step.request_id,
-    })),
-  ];
   return <div className="wf-panel wf-stack">
-    <div className="wf-panel-heading"><h3>Run timeline</h3><Status status={run.status} /></div>
-    <div className="wf-muted">{run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
+    <div className="wf-panel-heading"><h3 ref={heading} tabIndex={-1}>Run timeline</h3><Status status={run.status} /></div>
+    <div className="wf-muted">{run.execution?.title && `${run.execution.title} · `}
+      {run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
+    {run.client_ref && <p className="wf-muted break-all">Client <code>{run.client_ref}</code></p>}
     {run.status === "succeeded" && onReuse && <div><button type="button" className="wf-button" onClick={onReuse}>
       Test with reused steps
     </button></div>}
-    {steps.length > 0 && <ol className="wf-timeline">{steps.map((step) =>
-      <li key={step.node}><span>{graph.nodes.find((item) => item.id === step.node)?.title ?? step.node}<small>{step.detail}</small></span>
-        <span>{step.status.replaceAll("_", " ")}</span></li>)}</ol>}
+    <RunTimeline scope={scope} run={run} graph={graph} />
     {run.error && <p className="wf-error" role="alert">{run.error.replaceAll("_", " ")}</p>}
     {run.outputs && <div className="wf-stack"><h4>Outputs</h4>
       {Object.entries(run.outputs).map(([name, output]) => <div className="wf-run-output" key={name}>
@@ -159,8 +154,15 @@ export function Runs({ scope, id, graph, selected, onSelect, onReuse }: {
 }) {
   const [list, setList] = useState<RunSummary[]>();
   const [run, setRun] = useState<Run>();
+  const [runError, setRunError] = useState<{ id: string; message: string }>();
+  const timelineHeading = useRef<HTMLHeadingElement>(null);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const openRun = Boolean(run && run.id === selected);
+
+  useEffect(() => {
+    if (openRun) timelineHeading.current?.focus();
+  }, [openRun, selected]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -174,15 +176,24 @@ export function Runs({ scope, id, graph, selected, onSelect, onReuse }: {
     if (!selected) return;
     const controller = new AbortController();
     let handle: number | undefined;
+    const requested = selected;
+    setRunError(undefined);
     async function observe() {
       try {
-        const current = await workflowApi.run(scope, id, selected!, controller.signal);
+        const current = await workflowApi.run(scope, id, requested, controller.signal);
         if (controller.signal.aborted) return;
         setRun(current);
+        setRunError(undefined);
         setList((previous) => previous?.map((item) => item.id === current.id ? { ...item, status: current.status } : item));
         if (!TERMINAL.has(current.status)) handle = window.setTimeout(() => void observe(), 2000);
-      } catch {
-        if (!controller.signal.aborted) handle = window.setTimeout(() => void observe(), 5000);
+      } catch (failure) {
+        if (controller.signal.aborted) return;
+        setRunError({ id: requested, message: errorMessage(failure) });
+        if (!(failure instanceof ApiError) || failure.status === 0 || failure.status === 429 || failure.status >= 500) {
+          handle = window.setTimeout(() => void observe(), 5000);
+        } else {
+          setRun((current) => current?.id === requested ? undefined : current);
+        }
       }
     }
     void observe();
@@ -201,7 +212,9 @@ export function Runs({ scope, id, graph, selected, onSelect, onReuse }: {
       </button>)}
       {list?.length === 0 && <p className="wf-muted">Run a draft or call a published endpoint to see results here.</p>}
     </section>
-    {run && run.id === selected && <RunDetails key={run.id} run={run} graph={graph} onReuse={onReuse} onCancel={async () => {
+    {!openRun && runError?.id === selected && runError && <div className="wf-panel"><p className="wf-error" role="alert">{runError.message}</p></div>}
+    {run && openRun && <RunDetails key={run.id} scope={scope} run={run} graph={graph}
+      heading={timelineHeading} onReuse={onReuse} onCancel={async () => {
       await workflowApi.cancel(scope, id, run.id); setRefresh((value) => value + 1);
     }} />}
   </div>;

@@ -27,7 +27,7 @@ pub async fn claim_run<'e, E: sqlx::PgExecutor<'e>>(
         WHERE w.id = candidate.id
         RETURNING w.id AS "id: WorkflowRunId",
             w.account_id AS "account_id: AccountId", w.project_id AS "project_id: GatewayProjectId",
-            w.workflow_id AS "workflow_id: WorkflowId", w.actor_id, w.status AS "status!", w.revision AS "revision!",
+            w.workflow_id AS "workflow_id: WorkflowId", w.actor_id, w.client_ref, w.status AS "status!", w.revision AS "revision!",
             w.lease, w.version, w.draft_revision, w.graph, w.content, w.deadline, w.created_at"#,
         tool_pins,
     )

@@ -132,7 +132,8 @@ def verify_media(gateway, directory, settings, session, account, project):
         inputs = {key: upload(port, endpoint + "/uploads", auth, file, mime) for key, file, mime in files}
         call(port, endpoint + "/runs", 400, method="POST", body={"inputs": {**inputs, "delay": -1}},
              headers={**auth, "Idempotency-Key": token_hex(16)})
-        delayed = {"inputs": {**inputs, "delay": 300}}
+        client = "finishing_fixture_client"
+        delayed = {"inputs": {**inputs, "delay": 300}, "client_ref": client}
         submit = {**auth, "Idempotency-Key": token_hex(16)}
         receipt, _ = call(port, endpoint + "/runs", 202, method="POST", body=delayed, headers=submit)
         replay, _ = call(port, endpoint + "/runs", 200, method="POST", body=delayed, headers=submit)
@@ -159,7 +160,7 @@ def verify_media(gateway, directory, settings, session, account, project):
         assert [stream["codec_type"] for stream in info["streams"]] == ["video", "audio"]
 
         origin = {**auth, "Idempotency-Key": token_hex(16)}
-        reuse_body = {"inputs": inputs, "reuse_run_id": receipt["id"]}
+        reuse_body = {"inputs": inputs, "reuse_run_id": receipt["id"], "client_ref": client}
         for scopes, expected in ((["runs:submit"], 403), (["runs:submit", "runs:read", "outputs:read"], 404)):
             other, _ = call(port, manage + "/apps" + query, 201, method="POST", headers=session, body={
                 "name": "Reuse isolation fixture", "days": 1, "scopes": scopes,
@@ -167,10 +168,12 @@ def verify_media(gateway, directory, settings, session, account, project):
             call(port, endpoint + "/runs", expected, method="POST", body=reuse_body, headers={
                 "Authorization": "Bearer " + other["secret"], "Idempotency-Key": token_hex(16),
             })
+        call(port, endpoint + "/runs", 404, method="POST", body={**reuse_body, "client_ref": "other_client"},
+             headers={**auth, "Idempotency-Key": token_hex(16)})
         zero_delay, _ = call(port, endpoint + "/runs", 202, method="POST", body=reuse_body, headers=origin)
         repeated, _ = call(port, endpoint + "/runs", 200, method="POST", body=reuse_body, headers=origin)
         assert repeated["id"] == zero_delay["id"]
-        call(port, endpoint + "/runs", 409, method="POST", body={"inputs": inputs}, headers=origin)
+        call(port, endpoint + "/runs", 409, method="POST", body={"inputs": inputs, "client_ref": client}, headers=origin)
         immediate, _ = wait_for_run(port, zero_delay, auth)
         assert immediate["reuse"] == {"source_run_id": receipt["id"], "steps": ["trim"]}
         assert set(immediate["tools"]) == {"soundtrack"}

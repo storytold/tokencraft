@@ -70,22 +70,37 @@ export type Workflow = WorkflowSummary & { draft: Graph };
 export type Release = { version: number; draft_revision: number; published_at: string };
 export type RunStatus = "queued" | "running" | "reconciling" | "succeeded" | "failed" | "canceled" | "expired";
 export type RunSummary = { id: string; status: RunStatus; version: number | null; draft_revision: number; created_at: string };
+export type WorkflowRequestParent = { workflow_id: string; run_id: string; title: string };
 export type Receipt = { id: string; workflow_version: number | null; status_url: string; replayed: boolean };
 type RunOutput =
   | { type: "text"; text: string }
   | { type: "media"; kind: ArtifactKind; download_url: string }
   | { type: "fixture"; kind: ValueKind };
+export type ExecutionNode = {
+  id: string;
+  title: string;
+  kind: PrimitiveKind | "tool";
+  dependencies: string[];
+  status: string;
+  request: string | null;
+  request_status: string | null;
+  provider: string | null;
+  admitted_at: string | null;
+  finished_at: string | null;
+};
 export type Run = {
   id: string;
   workflow_version: number | null;
   draft_revision: number;
   status: RunStatus;
   created_at: string;
+  client_ref?: string;
   steps: { node: string; request: string; status: string }[];
   tools?: Record<string, { request_id: string; status: string; admitted_at: string; finished_at: string | null }>;
   reuse?: { source_run_id: string; steps: string[] };
   error: string | null;
   outputs?: Record<string, RunOutput>;
+  execution?: { title: string; evidence_expired: boolean; nodes: ExecutionNode[] };
 };
 export type Permission = "runs:submit" | "runs:read" | "outputs:read" | "runs:cancel";
 export type AppKey = { app_id: string; key_id: string; scopes: Permission[]; name: string; prefix: string; expires_at: string; revoked_at: string | null };
