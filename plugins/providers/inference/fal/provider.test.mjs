@@ -93,6 +93,7 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
   const state = await mkdtemp(join(tmpdir(), 'tokencraft-plugin-'));
   let plugin;
   let submitCount = 0;
+  let resultReads = 0;
   let vendorOrigin;
   const vendor = createServer(async (request, response) => {
     if (request.url !== '/artifact') assert.equal(request.headers.authorization, authorization);
@@ -102,7 +103,10 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
       return send(response, 200, acknowledgement);
     }
     if (request.url === statusPath) return send(response, 200, statusReply);
-    if (request.url === resultPath) return send(response, 200, resultReply(`${vendorOrigin}/artifact`));
+    if (request.url === resultPath) {
+      resultReads += 1;
+      return send(response, 200, resultReply(`${vendorOrigin}/artifact`));
+    }
     if (request.url === '/artifact') {
       assert.equal(request.headers.authorization, undefined);
       response.writeHead(200, { 'content-type': artifactType });
@@ -137,10 +141,12 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
     assert.equal(submitCount, 1);
     assert.deepEqual(await (await fetch(`${base}/v1/jobs/example-1`, { headers })).json(),
       { version: 1, handle: 'example-1', status: 'succeeded' });
+    assert.equal(resultReads, 0);
     assert.equal((await fetch(`${base}/v1/jobs/example-1/artifacts/0`)).status, 401);
     const artifact = await fetch(`${base}/v1/jobs/example-1/artifacts/0`, { headers });
     assert.equal(artifact.headers.get('content-type'), artifactType);
     assert.equal(await artifact.text(), 'fixture artifact');
+    assert.equal(resultReads, 1);
   } finally {
     await close(plugin);
     await close(vendor);

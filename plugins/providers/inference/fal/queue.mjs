@@ -239,7 +239,8 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
     const model = provider.model(job.model ?? legacyModel);
     if (!model) throw new Error('unknown persisted fal model');
     const observed = job.terminal === 'failed'
-      ? { status: 'failed' } : await provider.poll(model, job.outcome.handle, delegated);
+      ? { status: 'failed' }
+      : await provider.poll(model, job.outcome.handle, delegated, { includeFiles: slot !== undefined });
     if (slot === undefined) {
       return send(response, 200, { version: 1, handle: id, status: observed.status });
     }

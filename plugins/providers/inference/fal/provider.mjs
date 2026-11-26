@@ -20,7 +20,7 @@ export function fal({ origin, key, artifactOrigins }) {
       if (callbackUrl) endpoint.searchParams.set('fal_webhook', callbackUrl);
       return submitUpstream(endpoint, `Key ${delegated ?? key}`, body, (result) => result.request_id);
     },
-    async poll(model, id, delegated) {
+    async poll(model, id, delegated, { includeFiles = true } = {}) {
       const authorization = `Key ${delegated ?? key}`;
       const path = `${model.statusPath}/requests/${id}`;
       const status = await response(`${path}/status`, authorization);
@@ -28,6 +28,7 @@ export function fal({ origin, key, artifactOrigins }) {
       if (status.status === 'IN_PROGRESS') return { status: 'running' };
       if (status.status !== 'COMPLETED') throw new Error('unexpected fal job status');
       if (status.error || status.error_type) return { status: 'failed' };
+      if (!includeFiles) return { status: 'succeeded' };
       const files = model.files(await response(path, authorization));
       if (!files.length || files.some((url) => typeof url !== 'string' || !url)) {
         throw new Error('unexpected fal result');
