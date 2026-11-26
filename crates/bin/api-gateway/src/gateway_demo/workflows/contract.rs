@@ -121,12 +121,16 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
         });
     }
     if !upload_content.is_empty() {
+        let mut busy = json_response("This API process is busy. Retry the same upload.", "GatewayError");
+        busy["headers"] = json!({
+            "Retry-After": {"description":"Suggested retry delay in seconds","schema":{"type":"integer"}}
+        });
         contract["paths"][format!("{endpoint}/uploads")] = json!({"post":{
             "operationId":"uploadWorkflowInput", "x-workflow-required-scope":"runs:submit",
             "description":format!("Send the raw file with its exact Content-Length, up to {MAX_ARTIFACT} bytes. Use the returned upload_id in a run submitted with the same application credential."),
             "parameters":[{"in":"header","name":"X-TokenCraft-Content-Sha256","required":true,"schema":{"type":"string","pattern":"^[0-9a-f]{64}$"}}],
             "requestBody":{"required":true,"content":upload_content},
-            "responses":{"201":json_response("Scoped upload ID and expiration", "WorkflowUpload"),"default":gateway_error}
+            "responses":{"201":json_response("Scoped upload ID and expiration", "WorkflowUpload"),"503":busy,"default":gateway_error}
         }});
         contract["x-workflow-upload-inputs"] = json!(upload_inputs);
     }

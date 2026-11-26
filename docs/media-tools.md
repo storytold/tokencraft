@@ -49,6 +49,8 @@ curl -fsS "$WORKFLOW_ENDPOINT/runs" \
 
 Replace `source` with the key from your published contract. The upload needs `runs:submit`, the actual supported media type, and the exact body length. The same app can repeat an identical upload and receive its existing eligible ID. The gateway verifies the media signature, length, and SHA-256 and encrypts the bytes. Uploads expire after one hour. Submit the run within 30 minutes so the file remains available through its run deadline. Each workflow can hold up to 32 active files or 128 MiB, with 32 MiB per file. Workflow drafts and published apps have their own upload ownership, and app key rotation preserves the application's ownership.
 
+Each API process handles two workflow uploads at a time. If both slots are busy, follow the `Retry-After` header on the `503` response and send the same file again. The per-workflow storage quota continues to apply across API replicas.
+
 ## Implement a compatible pack
 
 A pack serves a version-1 JSON manifest at authenticated `GET /v1/tools`. The operator registers a reviewed copy at the gateway. Use a stable `plugin` ID. Give every operation a stable dot-delimited `id`, a positive integer `revision`, a label, named input slots, a closed parameter schema, and one typed result.

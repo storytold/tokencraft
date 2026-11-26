@@ -13,6 +13,7 @@ use super::Security;
 use crate::error::{ApiError, ApiResult};
 
 const CHECKSUM: &str = "x-tokencraft-content-sha256";
+pub(super) const MAX_IN_FLIGHT: usize = 2;
 const MAX_FILES: i64 = 32;
 const MAX_BYTES: i64 = 128 * 1024 * 1024;
 
@@ -51,7 +52,7 @@ pub(super) async fn receive(headers: &HeaderMap, body: Body) -> ApiResult<Pendin
     if bytes.len() != length || sha(&bytes) != checksum || !matches_type(content_type, &bytes) {
         return Err(invalid());
     }
-    Ok(Pending { content_type: content_type.into(), sha256: checksum.into(), bytes: bytes.to_vec() })
+    Ok(Pending { content_type: content_type.into(), sha256: checksum.into(), bytes: bytes.into() })
 }
 
 impl Pending {

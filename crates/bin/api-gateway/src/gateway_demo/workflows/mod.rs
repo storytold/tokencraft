@@ -5,6 +5,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use ring::hmac;
+use tokio::sync::Semaphore;
 
 use crate::state::AppState;
 
@@ -27,6 +28,7 @@ pub(super) struct Security {
     payloads: SealedBytes,
     key_mac: hmac::Key,
     tools: tool_plugins::Bindings,
+    upload_slots: Semaphore,
 }
 
 impl Security {
@@ -54,6 +56,7 @@ impl Security {
             payloads: SealedBytes::new(secret, b"tokencraft/workflows/content/1"),
             key_mac: hmac::Key::new(hmac::HMAC_SHA256, secret),
             tools: tool_plugins::Bindings::default(),
+            upload_slots: Semaphore::new(uploads::MAX_IN_FLIGHT),
         }
     }
 

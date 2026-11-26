@@ -141,6 +141,41 @@ def verify_json_response(spec, operation, code, payload, headers, expected_heade
         assert field in response["headers"] and headers[field]
 
 
+@contextmanager
+def begin_upload(port, path, headers, size):
+    # The interim response confirms the server started reading this upload.
+    connection = HTTPConnection(HOST, port, timeout=5)
+    try:
+        connection.putrequest("POST", path)
+        for name, value in headers.items():
+            connection.putheader(name, value)
+        connection.putheader("Content-Length", str(size))
+        connection.putheader("Expect", "100-continue")
+        connection.endheaders()
+        with connection.sock.makefile("rb", buffering=0) as interim:
+            assert interim.readline().split()[1:2] == [b"100"]
+            assert interim.readline() == b"\r\n"
+        yield connection
+    finally:
+        connection.close()
+
+
+def verify_upload_capacity(port, path, spec, operation, auth, file_headers, png, receipt):
+    headers = {**auth, **file_headers}
+    with begin_upload(port, path, headers, len(png)) as first, begin_upload(port, path, headers, len(png)) as second:
+        error, response = call(port, path, 503, method="POST", body=png, headers=headers)
+        verify_json_response(spec, operation, 503, error, response, expected_headers=("Retry-After",))
+        assert error["error"]["code"] == "service_unavailable" and int(response["Retry-After"]) > 0
+        call(port, path, 401, method="POST", body=png, headers=file_headers)
+        for connection in (first, second):
+            connection.send(png)
+            with connection.getresponse() as completed:
+                assert completed.status == 201 and json.load(completed) == receipt
+    retried, _ = call(port, path, 201, method="POST", body=png, headers=headers)
+    assert retried == receipt
+    print("PASS two authenticated upload slots, retry hint, and stable replay after capacity frees")
+
+
 def verify_workflow(port, session, account, project):
     project_path = f"/v1/projects/{project}"
     query = f"?account_id={account}"
@@ -192,6 +227,7 @@ def verify_workflow(port, session, account, project):
 
     uploaded, upload_headers = call(port, endpoint + "/uploads", 201, method="POST", body=png, headers={**auth, **file_headers})
     verify_json_response(spec, uploads, 201, uploaded, upload_headers)
+    verify_upload_capacity(port, endpoint + "/uploads", spec, uploads, auth, file_headers, png, uploaded)
     body = {"inputs": {"image": {"upload_id": uploaded["upload_id"]}}}
     invoke = {**auth, "Idempotency-Key": token_hex(16)}
     receipt, accepted = call(port, endpoint + "/runs", 202, method="POST", body=body, headers=invoke)
@@ -218,7 +254,21 @@ def verify_workflow(port, session, account, project):
     })
     read_only = {"Authorization": "Bearer " + reader["secret"]}
     call(port, endpoint + "/openapi.json", 403, headers=read_only)
+    call(port, endpoint + "/uploads", 403, method="POST", body=png, headers={**read_only, **file_headers})
     call(port, receipt["status_url"], 404, headers=read_only)
+
+    rotated, _ = call(port, manage + f"/apps/{app['app_id']}/keys" + query, 201, method="POST",
+                      headers=session, body={"days": 1})
+    assert rotated["app_id"] == app["app_id"] and rotated["key_id"] != app["key_id"]
+    call(port, manage + f"/keys/{app['key_id']}" + query, 204, method="DELETE", headers=session)
+    call(port, endpoint + "/uploads", 401, method="POST", body=png, headers={**auth, **file_headers})
+    replacement = {"Authorization": "Bearer " + rotated["secret"]}
+    reused, _ = call(port, endpoint + "/uploads", 201, method="POST", body=png, headers={**replacement, **file_headers})
+    assert reused == uploaded
+    replay_after_rotation, _ = call(port, endpoint + "/runs", 200, method="POST", body=body,
+                                   headers={**invoke, **replacement})
+    assert replay_after_rotation == replay
+    print("PASS application key rotation preserves upload ownership and run replay after revocation")
     print("PASS published workflow contract, upload, digest, replay, conditional polling, cancellation, and app isolation")
 
 

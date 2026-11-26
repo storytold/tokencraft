@@ -379,7 +379,7 @@ pub(super) async fn upload(
     Path(path): Path<WorkflowPath>,
     Extension(security): Extension<Arc<Security>>,
     request: Request,
-) -> ApiResult<(StatusCode, Json<uploads::Receipt>)> {
+) -> ApiResult<Response> {
     let (parts, body) = request.into_parts();
     let access = AccessInput {
         pool: &state.pool, security: &security, headers: &parts.headers,
@@ -398,6 +398,11 @@ pub(super) async fn upload(
         (reader.account, actor)
     };
     let scope = access.scope(&account);
+    // Hold the slot through encryption and commit as those operations also retain upload bytes.
+    let Ok(_slot) = security.upload_slots.try_acquire() else {
+        let error = ApiError::ServiceUnavailable("workflow uploads are busy; retry this file".into());
+        return Ok(([(header::RETRY_AFTER, HeaderValue::from_static("2"))], error).into_response());
+    };
     let pending = uploads::receive(&parts.headers, body).await?;
     let mut tx = state.pool.begin().await?;
     let workflow = db::lock_workflow(&mut *tx, scope).await?.ok_or_else(management::missing)?;
@@ -416,7 +421,7 @@ pub(super) async fn upload(
     }
     let receipt = pending.store(&mut tx, &security, scope, actor).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(receipt)))
+    Ok((StatusCode::CREATED, Json(receipt)).into_response())
 }
 
 pub(super) async fn invoke(
