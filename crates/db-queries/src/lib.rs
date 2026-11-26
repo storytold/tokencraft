@@ -42,6 +42,7 @@ pub mod user_audit_logs;
 pub mod user_avatar_files;
 pub mod user_avatars;
 pub mod users;
+pub mod workflows;
 
 // Row structs are re-exported at the crate root for ergonomic imports by consumers.
 pub use account_audit_logs::AccountAuditLog;

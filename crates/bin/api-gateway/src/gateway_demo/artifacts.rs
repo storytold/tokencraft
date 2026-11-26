@@ -266,35 +266,53 @@ pub(super) async fn download(
 ) -> ApiResult<Response> {
     let access = access::resolve(&state, caller, scope, Permission::ReadRequests).await?;
     let request = parse_request_id(&raw)?;
+    download_for_scope(ScopedDownload {
+        pool: &state.pool,
+        scope: access.scope(),
+        runtime: runtime.as_deref(),
+        request: &request,
+        slot,
+    }).await
+}
+
+pub(super) struct ScopedDownload<'a> {
+    pub pool: &'a db::PgPool,
+    pub scope: db_queries::gateway_requests::RequestScope<'a>,
+    pub runtime: Option<&'a ProviderRuntime>,
+    pub request: &'a GatewayRequestId,
+    pub slot: i16,
+}
+
+pub(super) async fn download_for_scope(input: ScopedDownload<'_>) -> ApiResult<Response> {
+    let (bytes, content_type, sha256) = read_verified(input).await?;
+    respond(content_type, sha256, bytes)
+}
+
+pub(super) async fn read_verified(input: ScopedDownload<'_>) -> ApiResult<(Vec<u8>, String, String)> {
+    let ScopedDownload { pool, scope, runtime, request, slot } = input;
     let missing = || ApiError::NotFound("request artifact is unavailable or expired".into());
     let runtime = runtime.ok_or_else(missing)?;
-    let mut artifact = db_artifacts::read(&state.pool, access.scope(), &request, slot, true)
+    let mut artifact = db_artifacts::read(pool, scope, request, slot, true)
         .await?
         .ok_or_else(missing)?;
     let invalid = || ApiError::Internal("could not verify stored artifact".into());
-    let plain = warm_payload(
-        &state.pool,
-        &request,
-        runtime.artifact_storage.as_deref(),
-        &mut artifact,
-    )
-    .await
-    .map_err(|code| if code == BAD_OBJECT {
-        invalid()
-    } else {
-        ApiError::ServiceUnavailable("stored artifact is unavailable".into())
-    })
-    .and_then(|payload| {
-        verify_payload(
-            &runtime, &request, slot, &artifact.content_type, artifact.byte_length, &artifact.sha256, &payload,
-        )
-        .ok_or_else(invalid)
-    });
+    let plain = warm_payload(pool, request, runtime.artifact_storage.as_deref(), &mut artifact)
+        .await
+        .map_err(|code| if code == BAD_OBJECT {
+            invalid()
+        } else {
+            ApiError::ServiceUnavailable("stored artifact is unavailable".into())
+        })
+        .and_then(|payload| {
+            verify_payload(
+                runtime, request, slot, &artifact.content_type, artifact.byte_length, &artifact.sha256, &payload,
+            ).ok_or_else(invalid)
+        });
     // The storage read can overlap expiry or an administrator removing content.
-    if db_artifacts::read(&state.pool, access.scope(), &request, slot, false).await?.is_none() {
+    if db_artifacts::read(pool, scope, request, slot, false).await?.is_none() {
         return Err(missing());
     }
-    respond(artifact.content_type, artifact.sha256, plain?)
+    Ok((plain?, artifact.content_type, artifact.sha256))
 }
 
 pub(super) async fn warm_payload(

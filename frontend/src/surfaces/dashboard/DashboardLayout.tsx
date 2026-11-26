@@ -13,6 +13,7 @@ import {
   Settings as SettingsIcon,
   Sparkles,
   Wallet,
+  Workflow,
 } from "lucide-react";
 import { ApiStatusBanner } from "@/components/ApiStatusBanner";
 import { Badge, Logo, ThemeToggle } from "@/components/ui";
@@ -25,7 +26,7 @@ import { cn } from "@/lib/cn";
 import { demoEnabled, withProject } from "@/lib/gateway";
 import { ProjectPicker, ProjectProvider, useProject } from "@/surfaces/projects/ProjectScope";
 
-const projectPages = new Set(["/usage", "/requests", "/projects", "/billing"]);
+const projectPages = new Set(["/usage", "/requests", "/projects", "/workflows", "/billing"]);
 
 /** Account-scoped pages — hrefs are built via `withScope` so multi-org users keep the
  * `/dashboard/{account_id}/…` prefix as they navigate. User Settings is user-scoped and
@@ -35,6 +36,7 @@ const NAV = [
   { rest: "/requests", label: "Requests", icon: ListTree },
   ...(demoEnabled ? [
     { rest: "/projects", label: "Projects", icon: Folder },
+    { rest: "/workflows", label: "Workflows", icon: Workflow },
     { rest: "/providers", label: "Providers", icon: Plug },
   ] : []),
   { rest: "/keys", label: "API keys", icon: KeyRound },

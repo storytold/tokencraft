@@ -1,0 +1,186 @@
+{"version": 1, "plugin": "tokencraft-media", "tools": [
+    {
+      "id": "media.inspect",
+      "revision": 1,
+      "label": "Inspect media",
+      "inputs": {"source": {"kind": "media"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "metadata", "content_types": ["application/json"]}
+    },
+    {
+      "id": "video.trim",
+      "revision": 1,
+      "label": "Trim video",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"start_ms": {"type": "integer", "minimum": 0, "maximum": 600000}, "duration_ms": {"type": "integer", "minimum": 1, "maximum": 600000}}, "required": ["start_ms", "duration_ms"], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.concat",
+      "revision": 1,
+      "label": "Join videos",
+      "inputs": {"first": {"kind": "video"}, "second": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.attach_audio",
+      "revision": 1,
+      "label": "Replace soundtrack",
+      "inputs": {"video": {"kind": "video"}, "audio": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.extract_audio",
+      "revision": 1,
+      "label": "Extract audio",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav"]}
+    },
+    {
+      "id": "video.mute",
+      "revision": 1,
+      "label": "Mute video",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.resize",
+      "revision": 1,
+      "label": "Resize video",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"width": {"type": "integer", "minimum": 2, "maximum": 4096, "multipleOf": 2}, "height": {"type": "integer", "minimum": 2, "maximum": 4096, "multipleOf": 2}}, "required": ["width", "height"], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.crop",
+      "revision": 1,
+      "label": "Crop video",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"width": {"type": "integer", "minimum": 2, "maximum": 4096, "multipleOf": 2}, "height": {"type": "integer", "minimum": 2, "maximum": 4096, "multipleOf": 2}, "x": {"type": "integer", "minimum": 0, "maximum": 4094}, "y": {"type": "integer", "minimum": 0, "maximum": 4094}}, "required": ["width", "height", "x", "y"], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.transcode",
+      "revision": 1,
+      "label": "Transcode video",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"crf": {"type": "integer", "minimum": 16, "maximum": 35, "default": 23}}, "required": [], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.change_speed",
+      "revision": 1,
+      "label": "Change video speed",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"factor": {"type": "number", "minimum": 0.5, "maximum": 2}}, "required": ["factor"], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    },
+    {
+      "id": "video.thumbnail",
+      "revision": 1,
+      "label": "Extract a frame",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"at_ms": {"type": "integer", "minimum": 0, "maximum": 600000}}, "required": ["at_ms"], "additionalProperties": false},
+      "output": {"kind": "image", "content_types": ["image/png"]}
+    },
+    {
+      "id": "video.to_gif",
+      "revision": 1,
+      "label": "Make an animated GIF",
+      "inputs": {"video": {"kind": "video"}},
+      "parameters": {"type": "object", "properties": {"start_ms": {"type": "integer", "minimum": 0, "maximum": 600000}, "duration_ms": {"type": "integer", "minimum": 100, "maximum": 15000}, "width": {"type": "integer", "minimum": 16, "maximum": 1280}, "fps": {"type": "integer", "minimum": 1, "maximum": 24}}, "required": ["start_ms", "duration_ms", "width", "fps"], "additionalProperties": false},
+      "output": {"kind": "image", "content_types": ["image/gif"]}
+    },
+    {
+      "id": "audio.trim",
+      "revision": 1,
+      "label": "Trim audio",
+      "inputs": {"audio": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {"start_ms": {"type": "integer", "minimum": 0, "maximum": 600000}, "duration_ms": {"type": "integer", "minimum": 1, "maximum": 600000}}, "required": ["start_ms", "duration_ms"], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav"]}
+    },
+    {
+      "id": "audio.concat",
+      "revision": 1,
+      "label": "Join audio tracks",
+      "inputs": {"first": {"kind": "audio"}, "second": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav"]}
+    },
+    {
+      "id": "audio.mix",
+      "revision": 1,
+      "label": "Mix audio tracks",
+      "inputs": {"first": {"kind": "audio"}, "second": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav"]}
+    },
+    {
+      "id": "audio.normalize",
+      "revision": 1,
+      "label": "Normalize loudness",
+      "inputs": {"audio": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {"lufs": {"type": "integer", "minimum": -30, "maximum": -10}}, "required": ["lufs"], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav"]}
+    },
+    {
+      "id": "audio.fade",
+      "revision": 1,
+      "label": "Fade audio in and out",
+      "inputs": {"audio": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {"in_ms": {"type": "integer", "minimum": 0, "maximum": 600000}, "out_ms": {"type": "integer", "minimum": 0, "maximum": 600000}}, "required": ["in_ms", "out_ms"], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav"]}
+    },
+    {
+      "id": "audio.convert",
+      "revision": 1,
+      "label": "Convert audio",
+      "inputs": {"audio": {"kind": "audio"}},
+      "parameters": {"type": "object", "properties": {"format": {"type": "string", "enum": ["wav", "mp3", "flac"]}}, "required": ["format"], "additionalProperties": false},
+      "output": {"kind": "audio", "content_types": ["audio/wav", "audio/mpeg", "audio/flac"]}
+    },
+    {
+      "id": "image.resize",
+      "revision": 1,
+      "label": "Resize image",
+      "inputs": {"image": {"kind": "image"}},
+      "parameters": {"type": "object", "properties": {"width": {"type": "integer", "minimum": 2, "maximum": 4096}, "height": {"type": "integer", "minimum": 2, "maximum": 4096}}, "required": ["width", "height"], "additionalProperties": false},
+      "output": {"kind": "image", "content_types": ["image/png"]}
+    },
+    {
+      "id": "image.crop",
+      "revision": 1,
+      "label": "Crop image",
+      "inputs": {"image": {"kind": "image"}},
+      "parameters": {"type": "object", "properties": {"width": {"type": "integer", "minimum": 2, "maximum": 4096}, "height": {"type": "integer", "minimum": 2, "maximum": 4096}, "x": {"type": "integer", "minimum": 0, "maximum": 4094}, "y": {"type": "integer", "minimum": 0, "maximum": 4094}}, "required": ["width", "height", "x", "y"], "additionalProperties": false},
+      "output": {"kind": "image", "content_types": ["image/png"]}
+    },
+    {
+      "id": "image.convert",
+      "revision": 1,
+      "label": "Convert image",
+      "inputs": {"image": {"kind": "image"}},
+      "parameters": {"type": "object", "properties": {"format": {"type": "string", "enum": ["png", "jpeg", "webp"]}}, "required": ["format"], "additionalProperties": false},
+      "output": {"kind": "image", "content_types": ["image/png", "image/jpeg", "image/webp"]}
+    },
+    {
+      "id": "image.overlay",
+      "revision": 1,
+      "label": "Overlay an image",
+      "inputs": {"image": {"kind": "image"}, "overlay": {"kind": "image"}},
+      "parameters": {"type": "object", "properties": {"x": {"type": "integer", "minimum": 0, "maximum": 4094}, "y": {"type": "integer", "minimum": 0, "maximum": 4094}}, "required": ["x", "y"], "additionalProperties": false},
+      "output": {"kind": "image", "content_types": ["image/png"]}
+    },
+    {
+      "id": "image.to_video",
+      "revision": 1,
+      "label": "Turn an image into a clip",
+      "inputs": {"image": {"kind": "image"}},
+      "parameters": {"type": "object", "properties": {"duration_ms": {"type": "integer", "minimum": 100, "maximum": 60000}}, "required": ["duration_ms"], "additionalProperties": false},
+      "output": {"kind": "video", "content_types": ["video/mp4"]}
+    }
+]}

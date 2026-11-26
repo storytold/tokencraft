@@ -80,6 +80,7 @@ pub(super) enum QuoteSelection {
     DeclaredMedia(String),
     Automatic,
     Advised(super::adaptive::AdvisorSelection),
+    WorkflowPinned,
     Chat,
 }
 
@@ -221,7 +222,41 @@ pub(super) async fn submit(
     seals: Option<&super::quote_seals::QuoteSeals>,
     access: &Access,
     idempotency_key: &str,
+    request: AdmissionInput,
+) -> ApiResult<(AcceptedRequest, bool)> {
+    submit_inner(pool, catalog, webhooks, providers, seals, access, idempotency_key, request, None).await
+}
+
+pub(super) struct WorkflowAdmission<'a> {
+    pub pool: &'a db::PgPool,
+    pub catalog: &'a Catalog,
+    pub providers: Option<&'a ProviderRuntime>,
+    pub access: &'a Access,
+    pub idempotency_key: &'a str,
+    pub run: &'a ids::WorkflowRunId,
+    pub lease: i64,
+    pub first_frame: Option<super::providers::connector::WorkflowFrame>,
+}
+
+pub(super) async fn submit_workflow(
+    context: WorkflowAdmission<'_>,
+    request: AdmissionInput,
+) -> ApiResult<(AcceptedRequest, bool)> {
+    let WorkflowAdmission { pool, catalog, providers, access, idempotency_key, run, lease, first_frame } = context;
+    submit_inner(pool, catalog, None, providers, None, access, idempotency_key, request,
+        Some((run, lease, first_frame))).await
+}
+
+async fn submit_inner(
+    pool: &db::PgPool,
+    catalog: &Catalog,
+    webhooks: Option<&WebhookConfig>,
+    providers: Option<&ProviderRuntime>,
+    seals: Option<&super::quote_seals::QuoteSeals>,
+    access: &Access,
+    idempotency_key: &str,
     mut request: AdmissionInput,
+    workflow: Option<(&ids::WorkflowRunId, i64, Option<super::providers::connector::WorkflowFrame>)>,
 ) -> ApiResult<(AcceptedRequest, bool)> {
     if !valid_idempotency_key(idempotency_key) {
         return Err(ApiError::BadRequest(
@@ -239,8 +274,12 @@ pub(super) async fn submit(
         }
     }
     let pinned_offer = request.pinned_offer_id.as_deref();
+    let workflow_pinned = matches!(request.selection, QuoteSelection::WorkflowPinned);
+    if workflow_pinned && (workflow.is_none() || pinned_offer.is_none()) {
+        return Err(ApiError::BadRequest("workflow execution requires a selected offer".into()));
+    }
     if pinned_offer.is_some_and(|id| !super::catalog::valid_identifier(id))
-        || (pinned_offer.is_some() && !matches!(request.selection, QuoteSelection::Declared(_)))
+        || (pinned_offer.is_some() && !workflow_pinned && !matches!(request.selection, QuoteSelection::Declared(_)))
     {
         return Err(ApiError::BadRequest("supply a valid pinned_offer_id with a native quote".into()));
     }
@@ -282,8 +321,16 @@ pub(super) async fn submit(
             fingerprint = Some(runtime.payloads.fingerprint(&encoded));
         }
     }
+    let first_frame = workflow.as_ref().and_then(|(_, _, frame)| frame.as_ref());
+    if let Some(frame) = first_frame {
+        let runtime = providers.ok_or_else(|| ApiError::BadRequest("workflow frames require a connector".into()))?;
+        let identity = serde_json::to_vec(&(fingerprint.as_deref(), frame))
+            .map_err(|_| ApiError::Internal("could not encode workflow frame intent".into()))?;
+        fingerprint = Some(runtime.payloads.fingerprint(&identity));
+    }
     let intent = digest(
         match &request.selection {
+            QuoteSelection::WorkflowPinned => serde_json::to_vec(&("workflow_pinned", &request.input, &fingerprint)),
             QuoteSelection::Declared(quote_id) | QuoteSelection::DeclaredMedia(quote_id) => {
                 match (&subscription, &fingerprint) {
                     (_, Some(fingerprint)) => serde_json::to_vec(&(
@@ -358,6 +405,10 @@ pub(super) async fn submit(
         .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
         .await?;
     gateway_routing_policies::lock_for_admission(&mut *tx, key.scope.account).await?;
+    if let Some((run, lease, _)) = &workflow {
+        db_queries::workflows::lock_active_run(&mut *tx, run, *lease).await?
+            .ok_or_else(|| ApiError::Conflict("workflow execution is no longer active".into()))?;
+    }
     if let Some(accepted) = replay(&mut *tx, key, &intent).await? {
         return Ok((accepted, true));
     }
@@ -369,7 +420,7 @@ pub(super) async fn submit(
     let profile = match &request.selection {
         QuoteSelection::Chat => QuoteProfile::Chat,
         QuoteSelection::Automatic | QuoteSelection::DeclaredMedia(_) | QuoteSelection::Advised(_) => QuoteProfile::QueueMedia,
-        QuoteSelection::Declared(_) => QuoteProfile::Native,
+        QuoteSelection::Declared(_) | QuoteSelection::WorkflowPinned => QuoteProfile::Native,
     };
     let chat = profile == QuoteProfile::Chat;
     let availability = RouteAvailability::load(&mut *tx, AvailabilityInput {
@@ -476,6 +527,10 @@ pub(super) async fn submit(
         return Err(ApiError::QuoteStale);
     }
     let quote_expiry = quote.expires_at;
+    if first_frame.is_some() && !providers.is_some_and(|runtime| runtime.accepts_workflow_frame(offer)) {
+        return Err(ApiError::Conflict("the selected connector cannot use a workflow frame".into()));
+    }
+    let first_frame = workflow.and_then(|(_, _, frame)| frame);
     let provider_payload = match offer.adapter {
         Adapter::Mock
             if request.messages.is_none()
@@ -542,7 +597,7 @@ pub(super) async fn submit(
                 },
                 Workload::Video { duration_seconds, resolution, .. } => ConnectorInput::Video {
                     prompt: prompt(request.video_prompt)?, duration_seconds: *duration_seconds,
-                    aspect_ratio: ratio()?, resolution: resolution.clone(),
+                    aspect_ratio: ratio()?, resolution: resolution.clone(), first_frame,
                 },
                 Workload::Audio { duration_seconds, format } => ConnectorInput::Audio {
                     prompt: prompt(request.audio_prompt)?, duration_seconds: *duration_seconds,
@@ -1040,6 +1095,10 @@ pub struct RequestEvents {
 }
 
 impl RequestView {
+    pub(super) fn fixture_output(&self) -> bool {
+        self.mock_result.is_some()
+    }
+
     pub(super) fn accepted_at(&self) -> DateTime<Utc> {
         self.events[0].at
     }

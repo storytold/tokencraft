@@ -133,6 +133,7 @@
 .wf-node-heading small { font-size: .66rem; }
 .wf-node-icon { background: var(--wf-accent); color: var(--wf-brand); width: 1.75rem; height: 1.75rem; border-radius: .4rem; display: grid; place-items: center; flex: none; }
 .wf-node-text { color: light-dark(#65488d, #d6c3ef); background: light-dark(#eee7f6, #3d334e); }
+.wf-node-tool { color: light-dark(#4b6156, #b7d1c1); background: light-dark(#e9f0ec, #2e4238); }
 .wf-node-video { color: light-dark(#325a79, #a6d0ea); background: light-dark(#e6edf5, #2b3b49); }
 .wf-node-output { color: var(--wf-success); background: light-dark(#e6eee8, #293a31); }
 .wf-node-ports { max-height: 10rem; overflow: auto; padding: .18rem 0; }
@@ -153,6 +154,7 @@
 }
 .wf-port[data-kind="text"] i { color: light-dark(#6a5390, #d6c3ef); }
 .wf-port[data-kind="image"] i { color: var(--wf-brand); }
+.wf-port:is([data-kind="audio"], [data-kind="media"], [data-kind="metadata"], [data-kind="mesh"], [data-kind="document"], [data-kind="archive"]) i { color: light-dark(#4b6156, #b7d1c1); }
 .wf-port[data-kind="video"] i { color: light-dark(#325a79, #a6d0ea); }
 .wf-port[data-kind="integer"] i { color: var(--wf-success); }
 .wf-port[data-connected] i, .wf-port[aria-pressed="true"] i { background: currentColor; }

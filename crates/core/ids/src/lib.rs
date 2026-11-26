@@ -34,6 +34,12 @@ define_id!(pub struct GatewayWebhookDeliveryId => "whd");
 define_id!(pub struct GatewayExportId => "exp");
 define_id!(pub struct GatewayArchiveId => "arc");
 
+define_id!(pub struct WorkflowId => "wf");
+define_id!(pub struct WorkflowRunId => "wfr");
+define_id!(pub struct WorkflowAppId => "wfa");
+define_id!(pub struct WorkflowKeyId => "wfk");
+define_id!(pub struct WorkflowUploadId => "wfu");
+
 // ── Jobs, files, assets, queue ──
 define_id!(pub struct JobId => "job");
 define_id!(pub struct GatewayRequestId => "req");

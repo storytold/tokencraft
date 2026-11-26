@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "plugin": "tokencraft-speech",
+  "tools": [
+    {
+      "id": "speech.transcribe",
+      "revision": 1,
+      "label": "Transcribe speech",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "en",
+              "es",
+              "fr",
+              "de",
+              "it",
+              "pt",
+              "ja",
+              "ko",
+              "zh",
+              "ru",
+              "ar",
+              "hi"
+            ],
+            "default": "auto"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/plain"
+        ]
+      }
+    },
+    {
+      "id": "speech.translate",
+      "revision": 1,
+      "label": "Translate speech to English",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "en",
+              "es",
+              "fr",
+              "de",
+              "it",
+              "pt",
+              "ja",
+              "ko",
+              "zh",
+              "ru",
+              "ar",
+              "hi"
+            ],
+            "default": "auto"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/plain"
+        ]
+      }
+    },
+    {
+      "id": "speech.captions",
+      "revision": 1,
+      "label": "Generate speech captions",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "en",
+              "es",
+              "fr",
+              "de",
+              "it",
+              "pt",
+              "ja",
+              "ko",
+              "zh",
+              "ru",
+              "ar",
+              "hi"
+            ],
+            "default": "auto"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "document",
+        "content_types": [
+          "text/vtt"
+        ]
+      }
+    },
+    {
+      "id": "speech.segments",
+      "revision": 1,
+      "label": "Extract timestamped speech segments",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "en",
+              "es",
+              "fr",
+              "de",
+              "it",
+              "pt",
+              "ja",
+              "ko",
+              "zh",
+              "ru",
+              "ar",
+              "hi"
+            ],
+            "default": "auto"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    }
+  ]
+}

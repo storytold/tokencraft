@@ -6,6 +6,7 @@ The console opens the docs at `/docs`, the searchable operation reference at `/d
 
 - [Follow a request from quote to delivery](api-schema.md)
 - [Read and export the API contracts](api-contracts.md)
+- [Run a private workflow](workflows.md)
 - [Use the Rust SDK](../sdk/rust/README.md) or [TypeScript SDK](../sdk/typescript/README.md)
 
 ## Configure providers
@@ -13,6 +14,7 @@ The console opens the docs at `/docs`, the searchable operation reference at `/d
 - [Run provider plugins or configure compute endpoints](../plugins/providers/README.md)
 - [Connect providers and curate the catalog](provider-connectors.md)
 - [Map primitives to provider APIs](provider-mapping.md)
+- [Run the optional media tool plugin](media-tools.md)
 
 ## Run and operate TokenCraft
 

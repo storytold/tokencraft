@@ -129,6 +129,12 @@ impl ProviderRuntime {
         pin_catalog(catalog, &self.local_chat, &self.connectors)
     }
 
+    pub(super) fn accepts_workflow_frame(&self, offer: &Offer) -> bool {
+        self.queue_offer_binding(offer)
+            .and_then(|binding| self.connectors.by_digest(binding))
+            .is_some_and(|connector| connector.accepts_workflow_frames)
+    }
+
     pub(super) fn queue_offer_binding(&self, offer: &Offer) -> Option<&str> {
         match offer.adapter {
             Adapter::ConnectorQueue => self.connectors

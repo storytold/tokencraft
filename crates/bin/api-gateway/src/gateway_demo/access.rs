@@ -109,6 +109,17 @@ pub struct Access {
 }
 
 impl Access {
+    pub(super) fn workflow(scope: RequestScope<'_>, actor_id: String) -> Self {
+        Self {
+            account: scope.account.clone(),
+            project: scope.project.clone(),
+            actor_id,
+            client_ref: scope.client_ref.map(str::to_owned),
+            can_read_requests: true,
+            can_restore_content: false,
+        }
+    }
+
     pub fn scope(&self) -> RequestScope<'_> {
         RequestScope {
             account: &self.account,

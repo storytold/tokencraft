@@ -84,7 +84,7 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
       setWorkflow(next);
       if (!dirty) setGraph(next.draft);
     }} />}
-    {modal === "test" && <TestDialog graph={workflow.draft} onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
+    {modal === "test" && <TestDialog graph={workflow.draft} onUpload={(file, type, digest) => workflowApi.upload(scope, workflow.id, file, type, digest)} onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
       const launched = await workflowApi.test(scope, workflow, inputs, key);
       setRun(launched.id); setView("runs"); setModal(undefined);
     }} />}
@@ -113,10 +113,14 @@ function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all([workflowApi.capabilities(controller.signal), workflowApi.list(scope, controller.signal)])
-      .then(([available, existing]) => {
+    const tools = workflowApi.tools(scope, controller.signal).catch((failure: unknown) => {
+      if (failure instanceof ApiError && failure.status === 404) return [];
+      throw failure;
+    });
+    Promise.all([workflowApi.capabilities(controller.signal), workflowApi.list(scope, controller.signal), tools])
+      .then(([available, existing, tools]) => {
         if (controller.signal.aborted) return;
-        setCapabilities(available); setWorkflows(existing);
+        setCapabilities({ ...available, tools }); setWorkflows(existing);
       }).catch((failure) => {
         if (controller.signal.aborted) return;
         if (failure instanceof ApiError && failure.status === 404) setDisabled(true);
@@ -143,7 +147,7 @@ function Library({ scope, admin }: { scope: ProjectScope; admin: boolean }) {
 
   return <div className="wf-studio">
     <header className="wf-header wf-library-header">
-      <div><h1>Workflows</h1><p className="wf-muted">Connect models and publish a private endpoint for your application.</p></div>
+      <div><h1>Workflows</h1><p className="wf-muted">Connect models and approved tools, then publish a private endpoint for your application.</p></div>
       {capabilities && <div className="wf-actions">
         <button type="button" className="wf-button wf-primary" disabled={busy} onClick={async () => {
           setBusy(true); setError("");

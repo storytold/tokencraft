@@ -110,6 +110,10 @@ export function Endpoint({ scope, workflow, admin, onUpdate }: {
       </section>
       {active !== null && <section className="wf-panel wf-stack">
         <div className="wf-panel-heading"><h3>Request example</h3>{contract && <CopyAction value={example} label="Copy cURL" />}</div>
+        {contract?.["x-workflow-upload-inputs"] && <p className="wf-muted">
+          Upload source files to <code>{endpoint}/uploads</code> with the application key, file media type, and SHA-256 header.
+          Use each returned upload ID in the request.
+        </p>}
         {contract ? <pre>{example}</pre> : <p className="wf-muted">Loading the published contract…</p>}
         <p className="wf-muted">Store the key on your application server. Save the run ID and poll the URL in the receipt.</p>
         {contract && <div><button type="button" className="wf-button wf-small" aria-expanded={showContract}

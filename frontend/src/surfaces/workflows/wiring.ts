@@ -1,4 +1,4 @@
-import type { Binding, Graph, Setting, Step, ValueKind } from "./types";
+import type { Binding, Graph, Setting, Step, UploadKind, ValueKind } from "./types";
 
 export type WireSource = Extract<Binding, { source: "request" | "step" }>;
 export type WireTarget = { step: Step; setting: Setting };
@@ -20,15 +20,40 @@ export function wireSources(binding: Binding | undefined): WireSource[] {
 }
 
 export function sourceKind(graph: Graph, source: WireSource): ValueKind | undefined {
-  return source.source === "request" ? graph.inputs[source.field]?.kind : graph.nodes.find((node) => node.id === source.step)?.kind;
+  if (source.source === "request") return graph.inputs[source.field]?.kind;
+  const node = graph.nodes.find((item) => item.id === source.step);
+  return node && stepOutput(node);
+}
+
+export function stepOutput(step: Step): ValueKind | undefined {
+  return step.kind === "tool" ? step.tool?.output : step.kind;
+}
+
+export function stepSettings(step: Step, settings: Setting[] = []): Setting[] {
+  if (!step.tool) return settings;
+  return Object.entries(step.tool.inputs).map(([name, kind]) => ({
+    name, kind, required: true, label: name.replaceAll("_", " "),
+  }));
+}
+
+export function artifactKind(kind: ValueKind | undefined) {
+  return kind === "image" || kind === "video" || kind === "audio" || kind === "mesh" || kind === "document";
 }
 
 export function sourceName(graph: Graph, source: WireSource) {
   return source.source === "request" ? graph.inputs[source.field]?.title : graph.nodes.find((node) => node.id === source.step)?.title;
 }
 
+export function isFileInput(kind: ValueKind | undefined): kind is UploadKind {
+  return kind === "media" || artifactKind(kind);
+}
+
+export function acceptsKind(target: ValueKind, source: ValueKind | undefined) {
+  return source === target || (target === "media" && artifactKind(source));
+}
+
 export function canWire(graph: Graph, source: WireSource, { step, setting }: WireTarget): boolean {
-  if (sourceKind(graph, source) !== setting.kind) return false;
+  if (!acceptsKind(setting.kind, sourceKind(graph, source))) return false;
   if (source.source === "request") return true;
   const seen = new Set<string>();
   const steps = new Map(graph.nodes.map((node) => [node.id, node]));
