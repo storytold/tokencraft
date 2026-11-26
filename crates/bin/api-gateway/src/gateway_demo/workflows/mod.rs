@@ -12,6 +12,7 @@ use super::sealed::SealedBytes;
 use super::DemoConfig;
 
 mod activity;
+mod contract;
 mod endpoints;
 mod execution;
 mod graph;

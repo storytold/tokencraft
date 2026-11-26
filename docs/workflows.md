@@ -21,6 +21,8 @@ curl --request POST "$TOKENCRAFT_URL/v1/projects/$PROJECT_ID/workflow-endpoints/
   --data '{"inputs":{"brief":"A studio portrait on a blue background."}}'
 ```
 
+Fetch the workflow's OpenAPI document at `GET /v1/projects/{project_id}/workflow-endpoints/{workflow_id}/openapi.json` with an application key that has `runs:submit`. The document includes the active version's input fields, accepted upload media types, and named outputs. Each operation lists its required permission in `x-workflow-required-scope`. Set your deployed gateway URL as the base URL when importing the contract. Use `Retry-After` from the run receipt and `ETag` from the status response to poll efficiently.
+
 Only published application keys with `runs:submit` can invoke that endpoint. Use `runs:read` to read the application's runs, `outputs:read` to retrieve its output artifacts, and `runs:cancel` to stop new child admission. Rotating a key preserves the application identity. A pending connector job retains its own lifecycle after a run stops.
 
 Workflow versions pin the graph. The backend checkpoints runs under database leases and replays child admission using a stable step key. Each generation step passes the current project allocation and provider policy checks. Each tool step pins a reviewed project binding and an operation revision. Media results are accessed under the workflow's existing project and app scope.

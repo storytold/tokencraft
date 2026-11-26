@@ -308,8 +308,8 @@ impl MediaKind {
             && values.iter().all(|value| self.accepts_type(value))
     }
 
-    fn accepts_type(self, value: &str) -> bool {
-        let allowed: &[&str] = match self {
+    fn content_types(self) -> &'static [&'static str] {
+        match self {
             Self::Image => &["image/png", "image/jpeg", "image/webp", "image/gif"],
             Self::Video => &["video/mp4", "video/webm", "video/quicktime"],
             Self::Audio => &["audio/wav", "audio/mpeg", "audio/flac", "audio/ogg"],
@@ -317,18 +317,32 @@ impl MediaKind {
             Self::Mesh => &["model/gltf-binary"],
             Self::Document => &["application/pdf", "text/plain", "text/vtt", "model/gltf+json"],
             Self::Archive => &["application/zip"],
-            Self::Media => return [Self::Image, Self::Video, Self::Audio, Self::Mesh, Self::Document]
-                .into_iter().any(|kind| kind.accepts_type(value)),
-        };
-        allowed.contains(&value)
+            Self::Media => &[],
+        }
+    }
+
+    fn accepts_type(self, value: &str) -> bool {
+        match self {
+            Self::Media => upload_kind(value).is_some(),
+            kind => kind.content_types().contains(&value),
+        }
     }
 }
 
+const UPLOAD_KINDS: [MediaKind; 5] = [
+    MediaKind::Image, MediaKind::Video, MediaKind::Audio, MediaKind::Mesh, MediaKind::Document,
+];
+
 pub(super) fn upload_kind(content_type: &str) -> Option<ValueType> {
-    [MediaKind::Image, MediaKind::Video, MediaKind::Audio, MediaKind::Mesh, MediaKind::Document]
-        .into_iter()
-        .find(|kind| kind.accepts_type(content_type))
+    UPLOAD_KINDS.into_iter()
+        .find(|kind| kind.content_types().contains(&content_type))
         .map(MediaKind::value_type)
+}
+
+pub(super) fn upload_content_types(kind: ValueType) -> impl Iterator<Item = &'static str> {
+    UPLOAD_KINDS.into_iter()
+        .filter(move |source| kind.accepts(source.value_type()))
+        .flat_map(|source| source.content_types().iter().copied())
 }
 
 fn slot_name(value: &str) -> bool {

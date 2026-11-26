@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::super::{
     artifacts, catalog_refresh::CatalogStore, handlers, providers::ProviderRuntime, requests,
 };
-use super::graph::{Graph, InputValues, Output, ValueType, MAX_INPUT_BYTES};
+use super::graph::{Graph, InputValues, Output, ValueType};
 use super::management::{self, ConsoleQuery, Project};
 use super::{execution, planner, runner, uploads, Security};
 use crate::{
@@ -781,96 +781,8 @@ pub(super) async fn contract(
             .ok_or_else(management::missing)?
             .graph,
     )?;
-    let mut fields = BTreeMap::new();
-    let mut required = Vec::new();
-    let mut example = BTreeMap::new();
-    let mut upload_inputs = BTreeMap::new();
-    for (name, field) in &graph.inputs {
-        let (mut schema, sample) = match field.kind {
-            ValueType::Text => (serde_json::json!({"type":"string","minLength":1,"maxLength":MAX_INPUT_BYTES}), serde_json::json!("Example value")),
-            ValueType::Integer => (serde_json::json!({"type":"integer","minimum":1,"maximum":32000}), serde_json::json!(1)),
-            kind => {
-                upload_inputs.insert(name, kind);
-                (serde_json::json!({
-                    "type":"object","required":["upload_id"],"additionalProperties":false,
-                    "properties":{"upload_id":{"type":"string","description":"ID returned by the authenticated upload endpoint"}}
-                }), serde_json::json!({"upload_id":"REPLACE_WITH_UPLOAD_ID"}))
-            }
-        };
-        if let Some(default) = &field.default {
-            schema["default"] = serde_json::to_value(default).map_err(|_| runner::unavailable())?;
-        } else {
-            required.push(name);
-            example.insert(name, sample);
-        }
-        fields.insert(name, schema);
-    }
-    let output_types: BTreeMap<_, _> = graph
-        .outputs
-        .iter()
-        .filter_map(|(name, node)| graph.output_kind(node).map(|kind| (name, kind)))
-        .collect();
-    let base = format!(
-        "/v1/projects/{}/workflow-endpoints/{}/runs",
-        path.project, path.workflow
-    );
-    let mut contract = serde_json::json!({
-        "openapi": "3.1.0", "info": { "title": graph.title, "version": version.to_string() },
-        "components": { "securitySchemes": { "workflowKey": { "type": "http", "scheme": "bearer" } } },
-        "security": [{ "workflowKey": [] }],
-        "paths": {
-            (base.clone()): { "post": {
-                "operationId": "invokeWorkflow",
-                "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "minLength":8, "maxLength":128 } }],
-                "requestBody": { "required": true, "content": { "application/json": { "schema": {
-                    "type":"object", "required":["inputs"], "additionalProperties":false,
-                    "properties":{"inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required}}
-                } } } },
-                "responses": { "202": { "description": "Run accepted", "headers": { "Location": { "schema": { "type": "string" } } } }, "200": { "description": "Prior receipt replayed" } }
-            } },
-            (format!("{base}/{{run_id}}")): {
-                "parameters": [{ "in":"path", "name":"run_id", "required":true, "schema": { "type": "string" } }],
-                "get": { "operationId":"getWorkflowRun", "responses": {"200":{"description":"Run status and permitted outputs"}, "304":{"description":"Status unchanged"}} }
-            },
-            (format!("{base}/{{run_id}}/outputs/{{name}}")): {
-                "parameters": [
-                    { "in":"path", "name":"run_id", "required":true, "schema": { "type": "string" } },
-                    { "in":"path", "name":"name", "required":true, "schema": { "type": "string" } }
-                ],
-                "get": {
-                    "operationId":"downloadWorkflowOutput",
-                    "description":"Download a named artifact with the outputs:read scope.",
-                    "responses": {
-                        "200":{"description":"Verified artifact in its original media type"},
-                        "404":{"description":"Artifact unavailable in this application or retention window"}
-                    }
-                }
-            }
-        },
-        "x-workflow-example-inputs": example,
-        "x-workflow-output-types": output_types,
-    });
-    if !upload_inputs.is_empty() {
-        let uploads = base.trim_end_matches("/runs").to_owned() + "/uploads";
-        contract["paths"][&uploads] = serde_json::json!({
-            "post": {
-                "operationId":"uploadWorkflowInput",
-                "description":"Upload a file in a media type accepted by the workflow with the runs:submit scope.",
-                "parameters":[
-                    {"in":"header","name":"X-TokenCraft-Content-Sha256","required":true,"schema":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-                ],
-                "requestBody":{"required":true,"content":{"*/*":{"schema":{"type":"string","format":"binary"}}}},
-                "responses":{"201":{"description":"Scoped upload ID and expiration"}}
-            }
-        });
-        contract["x-workflow-upload-inputs"] = serde_json::to_value(upload_inputs)
-            .map_err(|_| runner::unavailable())?;
-    }
-    Ok((
-        [(header::CONTENT_TYPE, "application/json")],
-        contract.to_string(),
-    )
-        .into_response())
+    let endpoint = format!("/v1/projects/{}/workflow-endpoints/{}", path.project, path.workflow);
+    Ok(Json(super::contract::document(&graph, &endpoint, version)).into_response())
 }
 
 #[derive(Deserialize)]
