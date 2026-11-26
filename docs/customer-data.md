@@ -22,7 +22,13 @@ The first command pulls a fixed snapshot. Run it again to continue from the last
 
 An event ID keeps the same payload across snapshots, the live feed, and archive restores. Identical events deduplicate when a project-wide feed overlaps a client feed. If a stored event's payload differs, the importer stops and rolls back the page and its checkpoint update together.
 
-After preparing the tables, a sync role can use `--no-init`. Grant it `USAGE` on the schema, `SELECT` and `INSERT` on `events`, `SELECT`, `INSERT`, and `UPDATE` on `checkpoints`, and permission to create temporary tables in the destination database. Scope any reporting access separately.
+After preparing the tables, use a dedicated destination login for continuous sync. Run the [grant script](../examples/postgres/grant_sync_role.sql) with that login's role name. Use the import table owner with permission to grant temporary table access on the destination database.
+
+```sh
+psql -X -w -v sync_role=tokencraft_export_sync -f examples/postgres/grant_sync_role.sql
+```
+
+Point libpq at the sync login and use `--no-init`. The grants let it insert and check events, advance checkpoints, and create temporary tables in the destination. Scope reporting access separately.
 
 ## Follow the live feed
 

@@ -28,8 +28,11 @@ BINARIES = ("tokencraft", "api-gateway", "admin-cli")
 SERVER_TOOLS = ("postgres", "initdb", "pg_ctl", "pg_isready", "createdb")
 SUPPORT_FILES = (
     "LICENSE", "README.md", "catalog/artcraft-v1.json", "docs/setup.md", "docs/deployment.md",
-    "docs/provider-connectors.md", "examples/connector/catalog.json",
+    "docs/provider-connectors.md", "docs/customer-data.md", "docs/event-archives.md",
+    "docs/chat-history.md", "examples/connector/catalog.json",
     "examples/connector/bindings.json", "examples/connector/smoke.sh",
+    "examples/postgres/export_to_postgres.py", "examples/postgres/postgres_usage_views.sql",
+    "examples/postgres/grant_sync_role.sql", "examples/postgres/smoke.py",
     "deploy/postgres/grant-runtime.sql",
 )
 
