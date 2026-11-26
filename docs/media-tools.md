@@ -6,6 +6,17 @@ The independently started [media runner](../plugins/tools/media/README.md) uses 
 
 Start each selected pack as a separate worker with its own reviewed manifest and state directory. A workflow can pass a PDF page from Poppler to an FFmpeg image recipe or send speech captions to the studio pack for a selectable video track. CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
 
+| Pack | Operations | Runtime |
+| --- | ---: | --- |
+| `media` | 23 | FFmpeg and FFprobe |
+| `studio` | 24 | FFmpeg and FFprobe with VP9 and Opus encoders |
+| `documents` | 6 | Poppler |
+| `mesh` | 4 | Python standard library |
+| `delivery` | 3 | Python standard library |
+| `speech` | 4 | FFmpeg, whisper.cpp, and an operator-supplied model |
+
+Attach only the packs your project needs. Each pack starts independently and can use a different worker host. [Operations and prerequisites](../plugins/tools/media/README.md#operations)
+
 ## Workflow execution
 
 On a self-hosted gateway with a binding registered for the current project, open **Workflows** and choose a recipe under **Media tools** in the component library. Connect the required named ports to typed uploads, generation steps, or earlier tool steps. Set any required parameters and expose the desired results in **Response outputs**. Save, test, then publish through the usual workflow controls. Use the binding revision and operation revision returned by discovery when authoring graphs directly.
@@ -52,14 +63,14 @@ A pack serves a version-1 JSON manifest at authenticated `GET /v1/tools`. The op
 
 See the [documents and caption manifest](../plugins/tools/media/documents.manifest.json) for a complete example and the [runner protocol](../plugins/tools/media/README.md#tool-protocol-version-1) for paths, headers, and payloads. Keep behavior stable for each published operation revision. For cutover, stage a new binding and keep the older service running until pinned jobs finish.
 
-## Planned tool coverage
+## Extension areas
 
-| Pack | Coverage to verify |
+| Pack | Candidate additions |
 | --- | --- |
-| Editing and delivery | Crossfades and additional editing export formats |
+| Editing and delivery | Additional editing export formats |
 | Audio | Stem separation and more channel routing options |
 | Image | Model-backed upscaling, background removal, and batch preparation |
-| Analysis | Shot boundaries and additional quality checks |
+| Analysis | Additional audio, video, and image quality checks |
 | Specialist assets | Vector assets and mesh formats beyond self-contained glTF |
 | Publishing | Extend fixed-size delivery bundles to larger project packages |
 

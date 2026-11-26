@@ -60,9 +60,9 @@ Use `--speech-gpu` when the installed whisper.cpp executable supports your hardw
 | Video | Trim, join with scale and audio normalization, replace soundtrack, extract audio, mute, resize, crop, transcode to H.264, change speed, extract a frame, and create a GIF |
 | Audio | Trim, concatenate, mix, apply loudness normalization or fades, and convert to WAV, MP3, or FLAC |
 | Images | Resize, crop, convert to PNG, JPEG, or WebP, overlay, and extend a still into an MP4 |
-| Studio video | Letterbox, rotate, change frame rate, overlay an image, make a contact sheet, attach a selectable caption track, and export VP9 WebM |
-| Studio audio | Change speed and gain, reduce steady noise, resample, downmix to mono, and measure peak and RMS waveform |
-| Studio images | Letterbox, rotate, flip, convert to monochrome, apply alpha masks, and estimate an image palette |
+| Studio video | Letterbox, rotate, change frame rate, overlay an image, make a contact sheet, attach a selectable caption track, crossfade clips, export VP9 WebM, and detect shot changes |
+| Studio audio | Change speed and gain, reduce steady noise, resample, downmix to mono, crossfade tracks, and measure waveforms and quiet intervals |
+| Studio images | Letterbox, rotate, flip, convert to monochrome, apply alpha masks or chroma key, and estimate a palette |
 | Documents | Inspect PDF page count and version, render a page as PNG, and extract text across a bounded page range |
 | Captions | Normalize UTF-8 SRT or WebVTT, shift timing, and extract a plain-text transcript |
 | Mesh | Inspect self-contained GLB files, scale scenes, strip application extras, and convert embedded glTF JSON into a GLB |

@@ -7,17 +7,20 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
+import re
 import sys
 
 from contract import MediaError, Registry
 from documents import render_captions
 from engine import Engine, INPUT_OPTIONS, run_command
-from recipes import EVEN, Recipe, duration_ms, mp4, picture, seconds, sound, stream
+from recipes import EVEN, STEREO, Recipe, duration_ms, mp4, picture, seconds, sound, stream
 
 ROTATION = {"clockwise": "transpose=clock", "counterclockwise": "transpose=cclock", "half": "hflip,vflip"}
 VIDEO = ["-map", "0:V:0", "-map", "0:a:0?"]
 IMAGE = ["-map", "0:V:0"]
 AUDIO = ["-map", "0:a:0"]
+SHOTS = re.compile(rb"pts_time:\s*([0-9]+(?:\.[0-9]+)?)")
+CHROMA = {"green": "0x00ff00", "blue": "0x0000ff", "white": "0xffffff", "black": "0x000000"}
 
 
 def frame(width: int, height: int) -> str:
@@ -25,6 +28,19 @@ def frame(width: int, height: int) -> str:
         f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
     )
+
+
+def fades(media: dict, length: int) -> tuple[str, str]:
+    first, second = (seconds(duration_ms(media[slot])) for slot in ("first", "second"))
+    if length >= min(duration_ms(source) for source in media.values()):
+        raise MediaError("crossfade must be shorter than both sources")
+    graph = []
+    for index, slot in enumerate(("first", "second")):
+        source = media[slot]
+        audio = f"[{index}:a:0]{STEREO},apad" if stream(source, "audio") else "anullsrc=r=48000:cl=stereo"
+        graph.append(f"{audio},atrim=duration={(first, second)[index]},asetpts=PTS-STARTPTS[a{index}]")
+    graph.append(f"[a0][a1]acrossfade=d={seconds(length)}:c1=tri:c2=tri[a]")
+    return ";".join(graph), seconds(duration_ms(media["first"]) - length)
 
 
 def video_recipe(name: str, media: dict, p: dict) -> Recipe:
@@ -53,6 +69,18 @@ def video_recipe(name: str, media: dict, p: dict) -> Recipe:
             f"fps={count * 1000}/{length},{frame(tile, tile)},"
             f"tile={p['columns']}x{p['rows']}:nb_frames={count}:padding=2:margin=2"
         )])
+    if name == "crossfade":
+        source = stream(media["first"], "video")
+        width = (source["width"] + 1) // 2 * 2
+        height = (source["height"] + 1) // 2 * 2
+        audio, offset = fades(media, p["duration_ms"])
+        normalize = f"{frame(width, height)},fps=24,format=yuv444p,settb=AVTB,setpts=PTS-STARTPTS"
+        transition = p["transition"]
+        graph = (
+            f"[0:V:0]{normalize}[first];[1:V:0]{normalize}[second];"
+            f"[first][second]xfade=transition={transition}:duration={seconds(p['duration_ms'])}:offset={offset}[v];{audio}"
+        )
+        return mp4(["-filter_complex", graph, "-map", "[v]", "-map", "[a]"])
     if name == "to_webm":
         return Recipe(VIDEO + [
             "-vf", EVEN, "-c:v", "libvpx-vp9", "-crf", str(p["quality"]), "-b:v", "0",
@@ -71,6 +99,8 @@ def image_recipe(name: str, media: dict, p: dict) -> Recipe:
         return picture(IMAGE + ["-vf", "hflip" if p["axis"] == "horizontal" else "vflip"])
     if name == "monochrome":
         return picture(IMAGE + ["-vf", "format=gray"])
+    if name == "chroma_key":
+        return picture(IMAGE + ["-vf", f"format=rgba,colorkey={CHROMA[p['color']]}:{p['similarity']}:{p['blend']}"])
     if name == "alpha_mask":
         image, mask = (stream(media[key], "video") for key in ("image", "mask"))
         if (image["width"], image["height"]) != (mask["width"], mask["height"]):
@@ -80,7 +110,7 @@ def image_recipe(name: str, media: dict, p: dict) -> Recipe:
     raise MediaError("unsupported studio image operation")
 
 
-def audio_recipe(name: str, _media: dict, p: dict) -> Recipe:
+def audio_recipe(name: str, media: dict, p: dict) -> Recipe:
     if name == "change_speed":
         return sound(AUDIO + ["-af", f"atempo={p['factor']}"])
     if name == "gain":
@@ -91,19 +121,27 @@ def audio_recipe(name: str, _media: dict, p: dict) -> Recipe:
         return sound(AUDIO, sample_rate=p["rate"])
     if name == "mono":
         return sound(AUDIO + ["-ac", "1"])
+    if name == "crossfade":
+        graph, _ = fades(media, p["duration_ms"])
+        return sound(["-filter_complex", graph, "-map", "[a]"])
     raise MediaError("unsupported studio audio operation")
 
 
 STUDIO_RECIPES = {"video": video_recipe, "image": image_recipe, "audio": audio_recipe}
 
 
-def waveform(data: bytes, count: int) -> dict:
+def pcm_samples(data: bytes) -> array:
     if not data or len(data) % 2:
         raise MediaError("audio did not produce usable samples")
     samples = array("h")
     samples.frombytes(data)
     if sys.byteorder != "little":
         samples.byteswap()
+    return samples
+
+
+def waveform(data: bytes, count: int) -> dict:
+    samples = pcm_samples(data)
     rate = 8000
     count = min(count, len(samples))
     points = []
@@ -113,6 +151,25 @@ def waveform(data: bytes, count: int) -> dict:
         rms = math.sqrt(sum(value * value for value in window) / len(window)) / 32768
         points.append({"peak": round(peak, 5), "rms": round(rms, 5)})
     return {"duration_ms": round(len(samples) * 1000 / rate), "points": points}
+
+
+def silence(data: bytes, dbfs: int, minimum_ms: int) -> dict:
+    samples = pcm_samples(data)
+    threshold = 32768 * 10 ** (dbfs / 20)
+    minimum = 8 * minimum_ms
+    start = None
+    intervals = []
+    for index, value in enumerate(samples):
+        if abs(value) <= threshold:
+            if start is None:
+                start = index
+        elif start is not None:
+            if index - start >= minimum:
+                intervals.append({"start_ms": round(start / 8), "end_ms": round(index / 8)})
+            start = None
+    if start is not None and len(samples) - start >= minimum:
+        intervals.append({"start_ms": round(start / 8), "end_ms": round(len(samples) / 8)})
+    return {"duration_ms": round(len(samples) / 8), "quiet": intervals}
 
 
 def palette(data: bytes, count: int) -> dict:
@@ -152,20 +209,42 @@ class Studio(Engine):
         return super().render(tool, sources, parameters, staging)
 
     def analyze(self, name: str, sources: dict[str, Path], parameters: dict, staging: Path) -> str:
-        expected = "audio" if name == "analysis.waveform" else "image"
+        if name == "analysis.shots":
+            expected = "video"
+        elif name == "analysis.palette":
+            expected = "image"
+        else:
+            expected = "audio"
         source = sources[expected]
         if self.inspect(source)["kind"] != expected:
             raise MediaError(f"analysis requires {expected} input")
+        source_options = [*self.command(), *INPUT_OPTIONS, "-threads", "1", "-noautorotate", "-i", str(source)]
+        if expected == "video":
+            score = parameters["sensitivity"]
+            raw = run_command([
+                *self.command(), "-t", "600", *INPUT_OPTIONS, "-threads", "1", "-noautorotate",
+                "-i", str(source), *IMAGE, "-an",
+                "-vf", f"scale=320:-2,select=gt(scene\\,{score}),metadata=mode=print:file=-",
+                "-f", "null", "-",
+            ], self.limits.timeout_seconds, read_output=True)
+            shot_times = [round(float(match) * 1000) for match in SHOTS.findall(raw)]
+            result = {"cuts_ms": shot_times[:1000], "truncated": len(shot_times) > 1000}
+            staging.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+            return "application/json"
         raw = staging.with_suffix(".raw")
         if expected == "audio":
             options = [*AUDIO, "-t", "600", "-ar", "8000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le"]
         else:
             options = [*IMAGE, "-vf", "scale=64:64", "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo"]
         run_command([
-            *self.command(), *INPUT_OPTIONS, "-threads", "1", "-noautorotate", "-i", str(source),
-            *options, "-threads", "1", str(raw),
+            *source_options, *options, "-threads", "1", str(raw),
         ], self.limits.timeout_seconds)
         data = raw.read_bytes()
-        record = waveform(data, parameters["points"]) if expected == "audio" else palette(data, parameters["colors"])
+        if name == "analysis.waveform":
+            record = waveform(data, parameters["points"])
+        elif name == "analysis.silence":
+            record = silence(data, parameters["threshold_dbfs"], parameters["minimum_ms"])
+        else:
+            record = palette(data, parameters["colors"])
         staging.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
         return "application/json"
