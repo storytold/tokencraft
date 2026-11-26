@@ -1,6 +1,7 @@
 """Exercise a published workflow contract with disposable gateway and delivery worker processes."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from hashlib import sha256
 from http.client import HTTPConnection
@@ -38,6 +39,7 @@ def command(*args, cwd, env):
 
 
 def call(port, path, expected, *, method="GET", body=None, headers=None):
+    statuses = (expected,) if isinstance(expected, int) else expected
     fields = {"Origin": f"http://localhost:{port}", **(headers or {})}
     if body is not None and not isinstance(body, bytes):
         fields["Content-Type"] = "application/json"
@@ -46,7 +48,7 @@ def call(port, path, expected, *, method="GET", body=None, headers=None):
     try:
         connection.request(method, path, body, fields)
         result = connection.getresponse()
-        if result.status != expected:
+        if result.status not in statuses:
             raise RuntimeError(f"{method} {path.split('?')[0]} returned {result.status}, expected {expected}")
         data = result.read(2 * 1024 * 1024 + 1)
         if len(data) > 2 * 1024 * 1024:
@@ -176,7 +178,29 @@ def verify_upload_capacity(port, path, spec, operation, auth, file_headers, png,
     print("PASS two authenticated upload slots, retry hint, and stable replay after capacity frees")
 
 
-def verify_workflow(port, session, account, project):
+def verify_run_capacity(port, peer, path, spec, body, original, rotated):
+    initial = {**original, "Idempotency-Key": token_hex(16)}
+    first, _ = call(port, path, 202, method="POST", body=body, headers=initial)
+    attempts = [{**auth, "Idempotency-Key": token_hex(16)} for auth in (original, rotated)]
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        pending = [threads.submit(call, target, path, (202, 429), method="POST", body=body, headers=headers)
+                   for target, headers in zip((port, peer), attempts)]
+        responses = [future.result() for future in pending]
+    (denied,) = [index for index, (payload, _) in enumerate(responses) if "error" in payload]
+    error, response = responses[denied]
+    verify_json_response(spec, spec["paths"][path]["post"], 429, error, response, expected_headers=("Retry-After",))
+    assert error["error"]["code"] == "active_request_limit" and int(response["Retry-After"]) > 0
+    assert responses[1 - denied][0]["id"] != first["id"]
+
+    replay, _ = call(peer, path, 200, method="POST", body=body, headers={**initial, **rotated})
+    assert replay == {**first, "replayed": True}
+    call(peer, first["status_url"] + "/cancel", 204, method="POST", headers=rotated)
+    retried, _ = call(port, path, 202, method="POST", body=body, headers=attempts[denied])
+    assert retried["replayed"] is False
+    print("PASS two active runs across API replicas and keys, receipt replay at capacity, and admission after cancellation")
+
+
+def verify_workflow(port, peer, session, account, project, stop_worker):
     project_path = f"/v1/projects/{project}"
     query = f"?account_id={account}"
     tools, _ = call(port, project_path + "/workflow-tools" + query + "&verify=fixture-delivery", 200, headers=session)
@@ -201,10 +225,10 @@ def verify_workflow(port, session, account, project):
     file_headers = {"Content-Type": "image/png", "X-TokenCraft-Content-Sha256": digest}
     uploaded, _ = call(port, endpoint + "/uploads" + query, 201, method="POST",
                        body=png, headers={**session, **file_headers})
-    checked, _ = call(port, manage + "/test-runs" + query, 202, method="POST",
-                      headers={**session, "Idempotency-Key": token_hex(16)}, body={
-                          "revision": draft["revision"], "inputs": {"image": {"upload_id": uploaded["upload_id"]}},
-                      })
+    trial = {"revision": draft["revision"], "inputs": {"image": {"upload_id": uploaded["upload_id"]}}}
+    test_path = manage + "/test-runs" + query
+    checked, _ = call(port, test_path, 202, method="POST",
+                      headers={**session, "Idempotency-Key": token_hex(16)}, body=trial)
     verify_output(port, checked, session, digest, len(png))
     released, _ = call(port, manage + "/versions" + query, 200, method="POST", headers=session,
                        body={"revision": draft["revision"], "active_version": None})
@@ -260,9 +284,31 @@ def verify_workflow(port, session, account, project):
     rotated, _ = call(port, manage + f"/apps/{app['app_id']}/keys" + query, 201, method="POST",
                       headers=session, body={"days": 1})
     assert rotated["app_id"] == app["app_id"] and rotated["key_id"] != app["key_id"]
+    replacement = {"Authorization": "Bearer " + rotated["secret"]}
+    # Keep new runs queued while testing admission across independent API processes.
+    stop_worker()
+    verify_run_capacity(port, peer, endpoint + "/runs", spec, body, auth, replacement)
+
+    sibling, _ = call(port, manage + "/apps" + query, 201, method="POST", headers=session, body={
+        "name": "Independent submitting app", "days": 1, "scopes": ["runs:submit"],
+    })
+    sibling_auth = {"Authorization": "Bearer " + sibling["secret"]}
+    sibling_upload, _ = call(peer, endpoint + "/uploads", 201, method="POST",
+                             body=png, headers={**sibling_auth, **file_headers})
+    sibling_body = {"inputs": {"image": {"upload_id": sibling_upload["upload_id"]}}}
+    call(peer, endpoint + "/runs", 202, method="POST", body=sibling_body,
+         headers={**sibling_auth, "Idempotency-Key": token_hex(16)})
+    # Two runs for the original app, one for the sibling, and seven draft tests fill the workflow.
+    for _ in range(7):
+        call(port, test_path, 202, method="POST", body=trial, headers={**session, "Idempotency-Key": token_hex(16)})
+    full, full_headers = call(peer, endpoint + "/runs", 429, method="POST", body=sibling_body,
+                              headers={**sibling_auth, "Idempotency-Key": token_hex(16)})
+    assert full["error"]["code"] == "active_request_limit" and int(full_headers["Retry-After"]) > 0
+    call(port, test_path, 429, method="POST", body=trial, headers={**session, "Idempotency-Key": token_hex(16)})
+    print("PASS independent app capacity and the shared ten-run ceiling for published and draft runs")
+
     call(port, manage + f"/keys/{app['key_id']}" + query, 204, method="DELETE", headers=session)
     call(port, endpoint + "/uploads", 401, method="POST", body=png, headers={**auth, **file_headers})
-    replacement = {"Authorization": "Bearer " + rotated["secret"]}
     reused, _ = call(port, endpoint + "/uploads", 201, method="POST", body=png, headers={**replacement, **file_headers})
     assert reused == uploaded
     replay_after_rotation, _ = call(port, endpoint + "/runs", 200, method="POST", body=body,
@@ -329,11 +375,16 @@ def rehearse(gateway, admin, directory):
             "account": account, "projects": [project],
         }]}))
         settings.update(TOKENCRAFT_WORKFLOW_TOOL_BINDINGS=str(registry), TOKENCRAFT_CONNECTOR_TOKEN_FIXTURE_DELIVERY=token)
-        worker_port = loopback_port()
-        stack.enter_context(service("worker", [gateway], directory,
-            dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)), lambda: ready(worker_port)))
-        with service("api", [gateway], directory, settings, lambda: ready(api_port)):
-            verify_workflow(api_port, session, account, project)
+        stack.enter_context(service("api", [gateway], directory, settings, lambda: ready(api_port)))
+        peer_port = loopback_port()
+        stack.enter_context(service("peer-api", [gateway], directory,
+            dict(settings, API_GATEWAY_PORT=str(peer_port), APP_BASE_URL=f"http://localhost:{peer_port}"),
+            lambda: ready(peer_port)))
+        with ExitStack() as workers:
+            worker_port = loopback_port()
+            workers.enter_context(service("worker", [gateway], directory,
+                dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)), lambda: ready(worker_port)))
+            verify_workflow(api_port, peer_port, session, account, project, workers.close)
 
 
 def main():

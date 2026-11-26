@@ -16,7 +16,10 @@ use super::super::{
 };
 use super::graph::{Graph, InputValues, Output, ValueType};
 use super::management::{self, ConsoleQuery, Project};
-use super::{execution, planner, runner, uploads, Security};
+use super::{
+    execution, planner, runner, uploads, Security, MAX_ACTIVE_RUNS_PER_APP,
+    MAX_ACTIVE_RUNS_PER_WORKFLOW,
+};
 use crate::{
     error::{ApiError, ApiResult},
     middleware::AuthContext,
@@ -297,12 +300,15 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     let row = db::lock_workflow(&mut *tx, args.scope)
         .await?
         .ok_or_else(management::missing)?;
-    if let Origin::App(app) = &args.origin {
+    let application = if let Origin::App(app) = &args.origin {
         db::find_credential(&mut *tx, &app.digest)
             .await?
             .filter(|key| key.app_id == app.principal)
             .ok_or_else(|| ApiError::Unauthorized("invalid workflow credential".into()))?;
-    }
+        Some(&app.principal)
+    } else {
+        None
+    };
     if let Some(replay) = db::find_replay(
         &mut *tx,
         db::ReplayLookup {
@@ -348,8 +354,13 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     uploads::validate(&mut tx, args.scope, actor, &graph, &inputs).await?;
     planner::validate_models(&graph, &args.catalog.current(), args.providers)
         .map_err(ApiError::BadRequest)?;
-    if db::count_active_runs(&mut *tx, args.scope).await? >= 10 {
-        return Err(ApiError::ActiveRequestLimit);
+    let active = db::count_active_runs(&mut *tx, args.scope, application, MAX_ACTIVE_RUNS_PER_WORKFLOW)
+        .await?;
+    if active.workflow >= MAX_ACTIVE_RUNS_PER_WORKFLOW || active.application >= MAX_ACTIVE_RUNS_PER_APP {
+        return Ok((
+            [(header::RETRY_AFTER, HeaderValue::from_static("2"))],
+            ApiError::ActiveRequestLimit,
+        ).into_response());
     }
     let id = WorkflowRunId::generate();
     let content = runner::State::new(inputs).seal(args.security, &id)?;

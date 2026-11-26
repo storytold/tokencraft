@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use super::graph::{Graph, ValueType, MAX_INPUT_BYTES};
 use super::tool_execution::MAX_ARTIFACT;
 use super::tool_plugins::upload_content_types;
+use super::{MAX_ACTIVE_RUNS_PER_APP, MAX_ACTIVE_RUNS_PER_WORKFLOW};
 
 pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
     let mut fields = BTreeMap::new();
@@ -53,6 +54,11 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
     replay["description"] = json!("Previously accepted run returned for the same key and input");
     let mut status = json_response("Run status and permitted outputs", "WorkflowRun");
     status["headers"] = json!({"ETag":{"schema":{"type":"string"}}});
+    let at_capacity = retry_response(&format!(
+        "An application can have {MAX_ACTIVE_RUNS_PER_APP} active runs. A workflow can have \
+         {MAX_ACTIVE_RUNS_PER_WORKFLOW} active runs across its applications and draft tests. \
+         Retry with the same idempotency key."
+    ));
     let mut contract = json!({
         "openapi":"3.1.0", "info":{"title":graph.title,"version":version.to_string()},
         "components":{
@@ -80,7 +86,7 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                         "properties":{"inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required}}},
                     "example":{"inputs":example}
                 }}},
-                "responses":{"202":accepted,"200":replay,"default":gateway_error}
+                "responses":{"202":accepted,"200":replay,"429":at_capacity,"default":gateway_error}
             }},
             (&run):{
                 "parameters":[run_id],
@@ -121,10 +127,7 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
         });
     }
     if !upload_content.is_empty() {
-        let mut busy = json_response("This API process is busy. Retry the same upload.", "GatewayError");
-        busy["headers"] = json!({
-            "Retry-After": {"description":"Suggested retry delay in seconds","schema":{"type":"integer"}}
-        });
+        let busy = retry_response("This API process is busy. Retry the same upload.");
         contract["paths"][format!("{endpoint}/uploads")] = json!({"post":{
             "operationId":"uploadWorkflowInput", "x-workflow-required-scope":"runs:submit",
             "description":format!("Send the raw file with its exact Content-Length, up to {MAX_ARTIFACT} bytes. Use the returned upload_id in a run submitted with the same application credential."),
@@ -141,6 +144,14 @@ fn json_response(description: &str, schema: &str) -> Value {
     json!({"description":description,"content":{"application/json":{
         "schema":{"$ref":format!("#/components/schemas/{schema}")}
     }}})
+}
+
+fn retry_response(description: &str) -> Value {
+    let mut response = json_response(description, "GatewayError");
+    response["headers"] = json!({
+        "Retry-After": {"description":"Suggested retry delay in seconds","schema":{"type":"integer"}}
+    });
+    response
 }
 
 fn schemas() -> Value {

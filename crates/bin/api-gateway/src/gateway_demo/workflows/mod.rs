@@ -24,6 +24,9 @@ mod tool_plugins;
 mod tool_execution;
 mod uploads;
 
+const MAX_ACTIVE_RUNS_PER_WORKFLOW: i64 = 10;
+const MAX_ACTIVE_RUNS_PER_APP: i64 = 2;
+
 pub(super) struct Security {
     payloads: SealedBytes,
     key_mac: hmac::Key,

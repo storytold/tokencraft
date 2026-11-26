@@ -25,6 +25,8 @@ Fetch the workflow's OpenAPI document at `GET /v1/projects/{project_id}/workflow
 
 Only published application keys with `runs:submit` can invoke that endpoint. Use `runs:read` to read the application's runs, `outputs:read` to retrieve its output artifacts, and `runs:cancel` to stop new child admission. Rotating a key preserves the application identity. A pending connector job retains its own lifecycle after a run stops.
 
+An application can have two active runs across all its keys and API replicas. A workflow can have ten active runs across all applications and draft tests. Queued, running, and reconciling runs count toward capacity. On `429` with `active_request_limit`, wait for the `Retry-After` delay and retry with the same body and idempotency key. An identical replay of an already admitted run still returns its receipt.
+
 Workflow versions pin the graph. The backend checkpoints runs under database leases and replays child admission using a stable step key. Each generation step passes the current project allocation and provider policy checks. Each tool step pins a reviewed project binding and an operation revision. Media results are accessed under the workflow's existing project and app scope.
 
 Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).
