@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
-import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
+import { logRequestTrace, monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 
 const current = 'new-fixture-service-token-0123456789';
 const previous = 'prior-fixture-service-token-0123456789';
@@ -106,4 +106,36 @@ test('private JSON probe reports finished, throttled, and interrupted traffic on
   });
   assert.deepEqual(result.operations.chat.latency_ms.buckets, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   assert.equal(result.operations.chat.latency_ms.sum, 73);
+});
+
+test('connector trace logs accept one scoped context and expose no request data', (t) => {
+  const traceId = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const spanId = '00f067aa0ba902b7';
+  const value = `00-${traceId}-${spanId}-01`;
+  const entries = [];
+  const log = (values, completed) => {
+    const response = new EventEmitter();
+    response.headersSent = completed;
+    response.statusCode = 200;
+    response.writableFinished = completed;
+    logRequestTrace({ headersDistinct: { traceparent: values, authorization: ['private-fixture-key'],
+      baggage: ['private-tenant=example'], tracestate: ['vendor=example'] } },
+    response, 'fixture', 'submit', (entry) => entries.push(entry));
+    response.emit('close');
+  };
+  t.mock.method(performance, 'now', () => 100);
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-26T12:00:00Z'));
+  for (const malformed of [undefined, [value, value], [value.replace(traceId, '0'.repeat(32))],
+    [value.replace(spanId, '0'.repeat(16))], [value + '\n'], [value.toUpperCase()], ['bad']]) {
+    log(malformed, true);
+  }
+  assert.deepEqual(entries, []);
+  log([value], true);
+  log([value], false);
+  assert.deepEqual(entries, [true, false].map((complete) => ({
+    event: 'connector_request', timestamp: '2026-11-26T12:00:00.000Z',
+    service: 'fixture', operation: 'submit',
+    trace_id: traceId, parent_span_id: spanId, elapsed_ms: 0,
+    http_status: complete ? 200 : null, interrupted: !complete,
+  })));
 });

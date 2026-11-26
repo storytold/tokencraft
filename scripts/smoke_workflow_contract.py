@@ -30,6 +30,13 @@ FIXTURES = ROOT / ".github/fixtures/container"
 MEDIA = ROOT / "plugins/tools/media"
 MONITOR = ROOT / "deploy/monitoring"
 HOST = "127.0.0.1"
+CALLER_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+CALLER_SPAN_ID = "00f067aa0ba902b7"
+CALLER_CONTEXT = {
+    "traceparent": f"00-{CALLER_TRACE_ID}-{CALLER_SPAN_ID}-01",
+    "tracestate": "fixture=private",
+    "baggage": "customer=private",
+}
 
 
 def loopback_port():
@@ -65,6 +72,14 @@ def call(port, path, expected, *, method="GET", body=None, headers=None):
         return data, result.headers
     finally:
         connection.close()
+
+
+def provider_traceparent(port, request_id, auth):
+    document, _ = call(port, f"/v1/requests/{request_id}/trace/otlp", 200, headers=auth)
+    root = document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    assert root["traceId"] != CALLER_TRACE_ID
+    assert root["links"] == [{"traceId": CALLER_TRACE_ID, "spanId": CALLER_SPAN_ID}]
+    return f"00-{root['traceId']}-{root['spanId']}-01"
 
 
 def assert_private_response(headers):
@@ -1113,6 +1128,8 @@ class ComputeFixture(BaseHTTPRequestHandler):
         if payload["model"] != self.server.model or payload["stream"]:
             return self.json_reply(400, {"error": {"message": "unexpected fixture request"}})
         self.server.requests += 1
+        self.server.trace_headers.append((self.headers.get("traceparent"),
+                                          self.headers.get("tracestate"), self.headers.get("baggage")))
         if self.server.throttled:
             return self.json_reply(429, {"error": {"message": "fixture capacity busy"}})
         self.json_reply(200, {
@@ -1148,6 +1165,7 @@ def compute_profile(directory):
                 server.model = upstream
                 server.throttled = label == "primary"
                 server.requests = 0
+                server.trace_headers = []
                 thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
                 thread.start()
                 stack.callback(thread.join, 2)
@@ -1175,12 +1193,18 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
     })
     bearer = {"Authorization": "Bearer " + principal["token"]}
     for model, expected in (("fixture-chat", "standby"), ("fixture-partner", "partner")):
-        result, _ = call(api_port, "/v1/chat/completions", 200, method="POST", headers=bearer, body={
+        result, headers = call(api_port, "/v1/chat/completions", 200, method="POST",
+                               headers={**bearer, **CALLER_CONTEXT}, body={
             "model": model, "messages": [{"role": "user", "content": "Synthetic operations fixture"}],
             "max_tokens": 8,
         })
         assert result["choices"][0]["message"]["content"] == expected
+        parent = provider_traceparent(api_port, headers["TokenCraft-Request-Id"], bearer)
+        observed = ("primary", "standby") if expected == "standby" else ("partner",)
+        for label in observed:
+            assert servers[label].trace_headers == [(parent, None, None)]
     assert {name: server.requests for name, server in servers.items()} == {"primary": 1, "standby": 1, "partner": 1}
+    print("PASS configured chat targets retain the scoped OTLP parent across compute failover")
 
     password = token_hex(32)
     role = directory / "operations-role.sql"

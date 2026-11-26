@@ -13,6 +13,7 @@ const provider = fal({
 const server = await queueServer({
   token,
   tenantKeys,
+  traceLogs: process.env.TOKENCRAFT_PLUGIN_TRACE_LOGS === 'true',
   monitoringToken: process.env.TOKENCRAFT_PLUGIN_MONITOR_TOKEN,
   previousToken: process.env.TOKENCRAFT_PREVIOUS_SERVICE_TOKEN,
   previousTokenExpiresAt: process.env.TOKENCRAFT_PREVIOUS_SERVICE_TOKEN_EXPIRES_AT,

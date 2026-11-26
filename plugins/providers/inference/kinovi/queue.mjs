@@ -1,4 +1,4 @@
-import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
+import { logRequestTrace, monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { delegatedKey, keyTag, matchesKey } from './tenant-keys.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
@@ -61,7 +61,7 @@ export function required(name) {
 // Store the submit intent before the paid call. A crash at the acknowledgement
 // boundary leaves an unresolved intent, which suppresses another vendor POST.
 export async function queueServer({ state, token, provider, tenantKeys = false,
-  previousToken, previousTokenExpiresAt, monitoringToken }) {
+  previousToken, previousTokenExpiresAt, monitoringToken, traceLogs = false }) {
   const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact']);
   const authorize = serviceAuthorization(token, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 24,
@@ -69,6 +69,11 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
   await mkdir(state, { mode: 0o700, recursive: true });
   const recordPath = (id) => join(state, `${id}.json`);
   const activeWrites = new Map();
+
+  function observe(request, response, operation) {
+    monitor?.record(operation, response);
+    if (traceLogs) logRequestTrace(request, response, 'tokencraft-plugin-kinovi', operation);
+  }
 
   async function serialize(id, action) {
     const previous = activeWrites.get(id);
@@ -200,12 +205,12 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
     try {
       if (!authorize(request)) return send(response, 401, { error: 'unauthorized' });
       if (request.method === 'POST' && request.url === '/v1/jobs') {
-        monitor?.record('submit', response);
+        observe(request, response, 'submit');
         return await submit(request, response);
       }
       const match = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,128})(?:\/artifacts\/([0-7]))?$/.exec(request.url ?? '');
       if (request.method === 'GET' && match) {
-        monitor?.record(match[2] === undefined ? 'status' : 'artifact', response);
+        observe(request, response, match[2] === undefined ? 'status' : 'artifact');
         return await lookup(request, response, match[1], match[2]);
       }
       return send(response, 404, { error: 'unknown endpoint' });

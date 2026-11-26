@@ -1,4 +1,4 @@
-import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
+import { logRequestTrace, monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { delegatedKey, keyTag, matchesKey } from './tenant-keys.mjs';
 import { legacyModel } from './models.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -67,7 +67,7 @@ export function required(name) {
 // Store the submit intent before the paid call. A crash at the acknowledgement
 // boundary leaves an unresolved intent, which suppresses another vendor POST.
 export async function queueServer({ state, token, provider, webhooks, tenantKeys = false,
-  previousToken, previousTokenExpiresAt, monitoringToken }) {
+  previousToken, previousTokenExpiresAt, monitoringToken, traceLogs = false }) {
   const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact', 'lookup']);
   const authorize = serviceAuthorization(token, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 24,
@@ -80,6 +80,11 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
   const recordPath = (id) => join(state, `${id}.json`);
   const activeWrites = new Map();
   const notifications = new Map();
+
+  function observe(request, response, operation) {
+    monitor?.record(operation, response);
+    if (traceLogs) logRequestTrace(request, response, 'tokencraft-plugin-fal', operation);
+  }
 
   async function serialize(id, action) {
     const previous = activeWrites.get(id);
@@ -279,12 +284,12 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
       if (callback) return await completionCallback(request, response, callback);
       if (!authorize(request)) return send(response, 401, { error: 'unauthorized' });
       if (request.method === 'POST' && request.url === '/v1/jobs') {
-        monitor?.record('submit', response);
+        observe(request, response, 'submit');
         return await submit(request, response);
       }
       const byRequest = /^\/v1\/jobs\/by-request\/([A-Za-z0-9_-]{1,128})$/.exec(request.url ?? '');
       if (request.method === 'GET' && byRequest) {
-        monitor?.record('lookup', response);
+        observe(request, response, 'lookup');
         const id = byRequest[1];
         const job = await load(id);
         if (job?.outcome?.status !== 'accepted') return send(response, 404, { error: 'unknown job' });
@@ -292,7 +297,7 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
       }
       const match = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,128})(?:\/artifacts\/([0-7]))?$/.exec(request.url ?? '');
       if (request.method === 'GET' && match) {
-        monitor?.record(match[2] === undefined ? 'status' : 'artifact', response);
+        observe(request, response, match[2] === undefined ? 'status' : 'artifact');
         return await lookup(request, response, match[1], match[2]);
       }
       return send(response, 404, { error: 'unknown endpoint' });

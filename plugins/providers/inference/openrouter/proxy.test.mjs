@@ -10,12 +10,23 @@ async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test('forwards JSON and SSE with the vendor key and strips provider overrides', async (t) => {
+test('forwards JSON and SSE with the vendor key and strips provider overrides', { timeout: 5000 }, async (t) => {
   const calls = [];
+  const trace = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+  let logEntry;
+  const logged = new Promise((resolve) => { logEntry = resolve; });
+  const entries = [];
+  t.mock.method(console, 'info', (entry) => {
+    entries.push(JSON.parse(entry));
+    logEntry();
+  });
   const vendor = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
+    assert.equal(request.headers.traceparent, undefined);
+    assert.equal(request.headers.tracestate, undefined);
+    assert.equal(request.headers.baggage, undefined);
     calls.push({ path: request.url, auth: request.headers.authorization, body });
     if (body.stream) {
       response.writeHead(200, { 'content-type': 'Text/Event-Stream; charset=utf-8' });
@@ -30,6 +41,7 @@ test('forwards JSON and SSE with the vendor key and strips provider overrides', 
     upstreamKey: 'test-vendor-key',
     gatewayKey: 'test-gateway-key',
     models: new Set(['vendor/model']),
+    traceLogs: true,
   });
   const url = `${await listen(proxy)}/v1/chat/completions`;
   t.after(async () => {
@@ -39,18 +51,28 @@ test('forwards JSON and SSE with the vendor key and strips provider overrides', 
     }
   });
   const body = { model: 'vendor/model', messages: [{ role: 'user', content: 'hello' }], max_tokens: 16 };
-  const submit = (value, key = 'test-gateway-key') => fetch(url, {
-    method: 'POST', headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(value),
+  const submit = (value, key = 'test-gateway-key', observe = {}) => fetch(url, {
+    method: 'POST', headers: { authorization: `Bearer ${key}`, ...observe }, body: JSON.stringify(value),
   });
-  assert.equal((await submit(body, 'wrong')).status, 401);
+  assert.equal((await submit(body, 'wrong', { traceparent: trace })).status, 401);
   assert.equal((await fetch(url, { method: 'POST', headers: { authorization: 'Bearer test-gateway-key',
     'x-tokencraft-upstream-key': `sk-or-v1-${'2'.repeat(64)}` }, body: JSON.stringify(body) })).status, 403);
   assert.equal((await submit({ ...body, model: 'different/model' })).status, 400);
   assert.deepEqual(await (await submit({ ...body, provider: { order: ['unexpected'] } })).json(), { choices: [] });
   const streamBody = { ...body, stream: true };
-  const stream = await submit(streamBody);
+  const stream = await submit(streamBody, 'test-gateway-key', {
+    traceparent: trace, tracestate: 'fixture=private', baggage: 'customer=fixture',
+  });
   assert.equal(stream.headers.get('content-type'), 'text/event-stream');
   assert.match(await stream.text(), /data: \[DONE\]/);
+  await logged;
+  assert.equal(entries.length, 1);
+  const { timestamp, elapsed_ms, ...entry } = entries[0];
+  assert.ok(Number.isFinite(Date.parse(timestamp)) && elapsed_ms >= 0);
+  assert.deepEqual(entry, {
+    event: 'connector_request', service: 'tokencraft-plugin-openrouter', operation: 'chat',
+    trace_id: trace.split('-')[1], parent_span_id: trace.split('-')[2], http_status: 200, interrupted: false,
+  });
   assert.deepEqual(calls, [body, streamBody].map((body) => ({
     path: '/api/v1/chat/completions', auth: 'Bearer test-vendor-key', body,
   })));

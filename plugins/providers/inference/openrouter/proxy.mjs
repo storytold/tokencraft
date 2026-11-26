@@ -1,4 +1,4 @@
-import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
+import { logRequestTrace, monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -25,7 +25,7 @@ async function readRequest(request) {
 }
 
 export function openRouterProxy({ endpoint, upstreamKey, tenantKeys = false, gatewayKey, models,
-  previousToken, previousTokenExpiresAt, monitoringToken }) {
+  previousToken, previousTokenExpiresAt, monitoringToken, traceLogs = false }) {
   const monitor = monitoringProbe(monitoringToken, gatewayKey, previousToken, ['chat']);
   const authorize = serviceAuthorization(gatewayKey, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 1,
@@ -39,6 +39,7 @@ export function openRouterProxy({ endpoint, upstreamKey, tenantKeys = false, gat
       return error(response, 404, 'unknown endpoint');
     }
     monitor?.record('chat', response);
+    if (traceLogs) logRequestTrace(request, response, 'tokencraft-plugin-openrouter', 'chat');
     const delegated = request.headersDistinct[tenantKeyHeader];
     const tenantKey = delegated?.length === 1 ? delegated[0] : '';
     if (tenantKeys ? !/^sk-or-v1-[a-f0-9]{64}$/.test(tenantKey) : delegated !== undefined) {

@@ -65,6 +65,7 @@ pub(super) struct ChatCall<'a> {
 pub(super) struct ChatDispatch<'a> {
     pub pool: Option<&'a db::PgPool>,
     pub request_id: &'a str,
+    pub trace_id: Option<&'a str>,
     pub lease: DateTime<Utc>,
 }
 
@@ -307,6 +308,8 @@ impl ChatClient {
         } else {
             request
         };
+        let trace_id = call.dispatch.as_ref().and_then(|dispatch| dispatch.trace_id);
+        let request = crate::middleware::trace_context::attach_provider_trace(request, trace_id);
         Ok(request.json(&WireRequest {
             model: call.model,
             messages: &input.messages,

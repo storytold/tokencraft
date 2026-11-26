@@ -19,6 +19,7 @@ if (!models.size) throw new Error('configure at least one OpenRouter model');
 openRouterProxy({
   endpoint: 'https://openrouter.ai/api/v1/chat/completions',
   upstreamKey, tenantKeys, gatewayKey, models,
+  traceLogs: process.env.TOKENCRAFT_PLUGIN_TRACE_LOGS === 'true',
   monitoringToken: process.env.TOKENCRAFT_PLUGIN_MONITOR_TOKEN,
   previousToken: process.env.TOKENCRAFT_PREVIOUS_SERVICE_TOKEN,
   previousTokenExpiresAt: process.env.TOKENCRAFT_PREVIOUS_SERVICE_TOKEN_EXPIRES_AT,

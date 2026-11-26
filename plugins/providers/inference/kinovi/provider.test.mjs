@@ -86,14 +86,28 @@ test('retries a confirmed throttle once across a restart', async () => {
   }
 });
 
-test('maps queued work, persists the handle on restart, and fetches artifact bytes', async () => {
+test('maps queued work, persists the handle on restart, and fetches artifact bytes', { timeout: 5000 }, async (t) => {
   const state = await mkdtemp(join(tmpdir(), 'tokencraft-plugin-'));
   let plugin;
+  const traceId = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const parentSpanId = '00f067aa0ba902b7';
+  const traceContext = {
+    traceparent: `00-${traceId}-${parentSpanId}-01`, tracestate: 'fixture=private', baggage: 'client=fixture',
+  };
+  const entries = [];
+  let onArtifact;
+  const artifactLogged = new Promise((resolve) => { onArtifact = resolve; });
+  t.mock.method(console, 'info', (log) => {
+    const entry = JSON.parse(log);
+    entries.push(entry);
+    if (entry.operation === 'artifact') onArtifact();
+  });
   let submitCount = 0;
   let vendorOrigin;
   let creditLiteral = '90071992547409.917';
   let vendorStatus = 'success';
   const vendor = createServer(async (request, response) => {
+    for (const header of Object.keys(traceContext)) assert.equal(request.headers[header], undefined);
     if (request.url !== '/artifact') assert.equal(request.headers.authorization, authorization);
     if (request.url === submitPath && request.method === 'POST') {
       submitCount += 1;
@@ -116,15 +130,17 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
     vendorOrigin = await listen(vendor);
     const provider = kinovi({ origin: vendorOrigin, key: 'test-vendor-key', artifactOrigins: [vendorOrigin] });
     const start = async () => {
-      plugin = await queueServer({ state, token: 'test-gateway-key', provider });
+      plugin = await queueServer({ state, token: 'test-gateway-key', provider, traceLogs: true });
       return listen(plugin);
     };
     let base = await start();
     const headers = { authorization: 'Bearer test-gateway-key', 'idempotency-key': 'example-1' };
     const job = { version: 1, request_id: 'example-1', model, input: jobInput };
-    const submit = (body = job) => fetch(`${base}/v1/jobs`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const submit = (body = job, extra = {}) => fetch(`${base}/v1/jobs`, {
+      method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body),
+    });
     const accepted = { version: 1, request_id: 'example-1', outcome: { status: 'accepted', handle: 'example-1' } };
-    assert.deepEqual(await (await submit()).json(), accepted);
+    assert.deepEqual(await (await submit(job, traceContext)).json(), accepted);
     assert.deepEqual(await (await submit()).json(), accepted);
     assert.equal((await (await submit({ ...job, input: { ...jobInput, prompt: 'changed' } })).json()).outcome.status,
       'uncertain');
@@ -133,7 +149,8 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
     base = await start();
     assert.deepEqual(await (await submit()).json(), accepted);
     assert.equal(submitCount, 1);
-    assert.deepEqual(await (await fetch(`${base}/v1/jobs/example-1`, { headers })).json(),
+    const traced = { ...headers, ...traceContext };
+    assert.deepEqual(await (await fetch(`${base}/v1/jobs/example-1`, { headers: traced })).json(),
       { version: 1, handle: 'example-1', status: 'succeeded' });
     const usage = async () => (await fetch(`${base}/v1/jobs/example-1`, {
       headers: { ...headers, 'x-tokencraft-provider-charge': '1' },
@@ -151,10 +168,21 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
       assert.deepEqual(await usage(), { version: 1, handle: 'example-1', status: expected });
     }
     vendorStatus = 'success';
-    assert.equal((await fetch(`${base}/v1/jobs/example-1/artifacts/0`)).status, 401);
-    const artifact = await fetch(`${base}/v1/jobs/example-1/artifacts/0`, { headers });
+    assert.equal((await fetch(`${base}/v1/jobs/example-1/artifacts/0`, {
+      headers: traceContext,
+    })).status, 401);
+    const artifact = await fetch(`${base}/v1/jobs/example-1/artifacts/0`, { headers: traced });
     assert.equal(artifact.headers.get('content-type'), artifactType);
     assert.equal(await artifact.text(), 'fixture artifact');
+    await artifactLogged;
+    assert.deepEqual(entries.map((entry) => entry.operation).sort(), ['artifact', 'status', 'submit']);
+    for (const { timestamp, elapsed_ms, ...entry } of entries) {
+      assert.ok(Number.isFinite(Date.parse(timestamp)) && elapsed_ms >= 0);
+      assert.deepEqual(entry, {
+        event: 'connector_request', service: 'tokencraft-plugin-kinovi', operation: entry.operation,
+        trace_id: traceId, parent_span_id: parentSpanId, http_status: 200, interrupted: false,
+      });
+    }
   } finally {
     await close(plugin);
     await close(vendor);

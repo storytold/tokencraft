@@ -10,11 +10,11 @@ use serde_json::{json, Value};
 
 use super::{
     access::{self, GatewayCaller, Permission, ScopeQuery},
-    digest, load, parse_request_id, Snapshot, Timing, Tone,
+    load, parse_request_id, Snapshot, Timing, Tone,
 };
 use crate::{
     error::{ApiError, ApiResult},
-    middleware::trace_context::valid_trace_id,
+    middleware::trace_context::{evidence_root_span_id, stable_id, valid_trace_id},
     state::AppState,
 };
 
@@ -49,15 +49,6 @@ pub(in crate::gateway_demo) async fn download(
     ))
 }
 
-fn stable_id(input: &str, len: usize) -> String {
-    let mut value = digest(input);
-    value.truncate(len);
-    if value.bytes().all(|byte| byte == b'0') {
-        value.replace_range(..1, "1");
-    }
-    value
-}
-
 fn valid_span_id(id: &str) -> bool {
     id.len() == 16
         && id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -78,7 +69,7 @@ fn encode(snapshot: &Snapshot) -> ApiResult<Value> {
                 32,
             )
         });
-    let root_id = stable_id(&format!("tokencraft.otlp.v1.root:{trace_id}"), 16);
+    let root_id = evidence_root_span_id(&trace_id);
     let step_id = |id: &str| stable_id(&format!("tokencraft.otlp.v1.step:{trace_id}:{id}"), 16);
     let observed: Vec<_> = evidence
         .steps

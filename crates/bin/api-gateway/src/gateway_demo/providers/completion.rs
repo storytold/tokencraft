@@ -112,7 +112,10 @@ async fn recover(pool: &db::PgPool, runtime: &ProviderRuntime, bindings: &[Strin
                          lookup.admission_span_id.as_deref());
     async {
         if let Some(connector) = runtime.connectors.by_digest(&lookup.binding_digest) {
-            if let Some(handle) = connector.lookup(&lookup.request_id).await {
+            if let Some(handle) = connector
+                .lookup(&lookup.request_id, lookup.trace_id.as_deref())
+                .await
+            {
                 connector_completions::reconcile(pool, &lookup, &handle).await?;
             }
         }

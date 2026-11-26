@@ -444,6 +444,7 @@ async fn submit_chat(
                 StreamSink {
                     pool,
                     request: &run.request_id,
+                    trace_id: run.trace_id.as_deref(),
                     lease: run.lease,
                     payloads: &runtime.payloads,
                 },
@@ -461,6 +462,7 @@ async fn submit_chat(
             dispatch: Some(ChatDispatch {
                 pool: Some(pool),
                 request_id: &run.request_id,
+                trace_id: run.trace_id.as_deref(),
                 lease: run.lease,
             }),
         })
@@ -544,7 +546,7 @@ async fn observe_queue(
                         pool, id, task.lease, RunOutcome::Uncertain("provider_credential_unavailable"), Default::default(),
                     ).await;
                 }
-                let status = connector.poll(&task.handle, key.as_ref()).await;
+                let status = connector.poll(&task, key.as_ref()).await;
                 let media = fetch_observed_result(pool, &task, status, async || {
                     connector.fetch(&task, key.as_ref()).await
                 }).await?;

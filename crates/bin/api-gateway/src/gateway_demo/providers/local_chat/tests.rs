@@ -130,6 +130,7 @@ async fn call(client: &ChatClient, request_id: &str) -> SubmitOutcome {
             dispatch: Some(ChatDispatch {
                 pool: None,
                 request_id,
+                trace_id: None,
                 lease: chrono::Utc::now() + chrono::Duration::seconds(40),
             }),
         })

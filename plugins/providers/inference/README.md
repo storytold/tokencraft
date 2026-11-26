@@ -19,3 +19,7 @@ These independent Node.js services translate TokenCraft's queue or chat protocol
 Give each queued plugin instance a persistent private state directory. It needs that state to resume polling after a restart. Follow the [connector rollout procedure](../../../docs/deployment.md#check-a-connector-rollout) when replacing a live binding.
 
 To register a plugin with [TokenCraft Operations](../../../deploy/monitoring/README.md#attach-providers-and-infrastructure), set a distinct **TOKENCRAFT_PLUGIN_MONITOR_TOKEN** in its environment. This enables the authenticated **GET /internal/monitoring** probe. Request JSON to read bounded, process-level traffic counts and latency buckets. Each documented plugin supports the same protocol and keeps submission and polling credentials independent.
+
+## Correlate plugin logs
+
+Set `TOKENCRAFT_PLUGIN_TRACE_LOGS=true` on the plugin to emit one `connector_request` JSON log to stdout when an authenticated request with valid gateway trace context finishes or disconnects. Log entries include the operation, execution trace ID, parent span ID, completion timestamp, elapsed milliseconds, HTTP status when sent, and an interruption flag. The entry is limited to those diagnostic fields and the plugin service name. The bundled plugins omit trace headers from vendor API and artifact requests. [Request diagnostics](../../../docs/request-diagnostics.md#follow-a-request-into-a-connector)

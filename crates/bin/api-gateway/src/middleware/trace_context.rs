@@ -4,6 +4,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use sha2::{Digest, Sha256};
 
 pub(crate) const TRACE_ID_HEADER: &str = "tokencraft-trace-id";
 
@@ -94,6 +95,31 @@ fn new_span_id() -> String {
     format!("{:016x}", rand::random::<u64>().max(1))
 }
 
+pub(crate) fn stable_id(input: &str, len: usize) -> String {
+    let mut value = format!("{:x}", Sha256::digest(input));
+    value.truncate(len);
+    if value.bytes().all(|byte| byte == b'0') {
+        value.replace_range(..1, "1");
+    }
+    value
+}
+
+pub(crate) fn evidence_root_span_id(trace_id: &str) -> String {
+    stable_id(&format!("tokencraft.otlp.v1.root:{trace_id}"), 16)
+}
+
+pub(crate) fn attach_provider_trace(
+    request: reqwest::RequestBuilder,
+    trace_id: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let Some(trace_id) = trace_id.filter(|value| valid_trace_id(value)) else {
+        return request;
+    };
+    // Connector spans can attach to the same root the scoped OTLP download exports.
+    let parent = evidence_root_span_id(trace_id);
+    request.header("traceparent", format!("00-{trace_id}-{parent}-01"))
+}
+
 pub(crate) fn work_span(
     operation: &'static str,
     request_id: &str,
@@ -154,5 +180,18 @@ mod tests {
         headers.append("traceparent", HeaderValue::from_static(VALID));
         headers.append("traceparent", HeaderValue::from_static(VALID));
         assert!(caller_link(&headers).is_none());
+    }
+
+    #[test]
+    fn provider_requests_only_carry_valid_execution_trace_ids() {
+        let client = reqwest::Client::new();
+        let request = || client.get("https://connector.example/v1/jobs");
+        for trace_id in [None, Some(VALID), Some("00000000000000000000000000000000")] {
+            let outbound = attach_provider_trace(request(), trace_id).build().unwrap();
+            assert!(!outbound.headers().contains_key("traceparent"));
+        }
+        let outbound = attach_provider_trace(request(), Some(TRACE_ID)).build().unwrap();
+        let expected = format!("00-{TRACE_ID}-{}-01", evidence_root_span_id(TRACE_ID));
+        assert_eq!(outbound.headers()["traceparent"], expected);
     }
 }

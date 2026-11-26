@@ -19,6 +19,8 @@ The development profile uses a loopback PostgreSQL connection and HTTP listener.
 
 For text, configure an `openai_compatible_chat` offer and `TOKENCRAFT_LOCAL_CHAT_BINDINGS`. The gateway uses the existing OpenAI-compatible JSON and SSE transport. A separate service can translate requests to any upstream chat API and inject its own credentials. For a local binding, use `{"version":1,"bindings":[{"name":"chat","endpoint":"http://127.0.0.1:4022/v1/chat/completions","key_env":"TOKENCRAFT_LOCAL_CHAT_KEY_CHAT"}]}` and set the matching catalog offer’s `local_binding` to `chat`. Core chat uses token usage and operator-configured rates.
 
+Traced requests carry a gateway-generated `traceparent` header on queue operations and compatible chat calls. Authenticate the gateway with the service bearer token before using its trace context. A connector can attach local diagnostics to that parent. Keep the context at the connector boundary when calling a vendor. [Request diagnostics](request-diagnostics.md#follow-a-request-into-a-connector)
+
 ## Curate your own catalog
 
 Your gateway loads the offers in your local `catalog.json`, including fully custom models. It can start and route entirely from that file and its bindings. Keep it in operator-controlled storage and review changes before deployment. You can add ArtCraft presets later using the same file as the import base.

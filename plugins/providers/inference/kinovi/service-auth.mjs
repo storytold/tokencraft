@@ -97,3 +97,24 @@ export function monitoringProbe(token, serviceToken, previousToken, operations =
     },
   };
 }
+
+export function logRequestTrace(request, response, service, operation, write = (entry) => console.info(JSON.stringify(entry))) {
+  const values = request.headersDistinct.traceparent;
+  if (values?.length !== 1 || values[0].length !== 55) return;
+  const match = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/.exec(values[0]);
+  if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return;
+
+  const [, traceId, parentSpanId] = match;
+  const start = performance.now();
+  response.once('close', () => write({
+    event: 'connector_request',
+    timestamp: new Date(Date.now()).toISOString(),
+    service,
+    operation,
+    trace_id: traceId,
+    parent_span_id: parentSpanId,
+    http_status: response.headersSent ? response.statusCode : null,
+    elapsed_ms: Math.max(0, Math.round(performance.now() - start)),
+    interrupted: !response.writableFinished,
+  }));
+}

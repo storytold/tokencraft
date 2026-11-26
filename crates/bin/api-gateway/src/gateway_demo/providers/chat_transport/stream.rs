@@ -15,6 +15,7 @@ const MAX_CHUNKS: i16 = 512;
 pub(in crate::gateway_demo::providers) struct StreamSink<'a> {
     pub pool: &'a db::PgPool,
     pub request: &'a str,
+    pub trace_id: Option<&'a str>,
     pub lease: DateTime<Utc>,
     pub payloads: &'a Payloads,
 }
@@ -36,6 +37,7 @@ impl ChatClient {
                 dispatch: Some(ChatDispatch {
                     pool: Some(sink.pool),
                     request_id: sink.request,
+                    trace_id: sink.trace_id,
                     lease: sink.lease,
                 }),
             })

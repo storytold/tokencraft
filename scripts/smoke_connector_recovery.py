@@ -16,7 +16,9 @@ from time import monotonic, sleep
 from urllib.parse import urlencode
 from zlib import compress, crc32
 
-from smoke_workflow_contract import HOST, ROOT, call, loopback_port, ready, rehearse, service
+from smoke_workflow_contract import (
+    CALLER_CONTEXT, HOST, ROOT, call, loopback_port, provider_traceparent, ready, rehearse, service,
+)
 
 
 def square_png(rgb):
@@ -40,6 +42,10 @@ class Connector(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def trace(self, operation, subject):
+        self.server.traces.append((operation, subject, self.headers.get("traceparent"),
+                                   self.headers.get("tracestate"), self.headers.get("baggage")))
+
     def do_POST(self):
         if self.path != "/v1/jobs" or self.headers.get("Authorization") != self.server.authorization:
             self.reply(404, {})
@@ -49,6 +55,7 @@ class Connector(BaseHTTPRequestHandler):
         with self.server.lock:
             self.server.submissions[request] += 1
             self.server.jobs[request] = job
+            self.trace("submit", request)
         self.reply(200, {"version": 1, "request_id": request,
                          "outcome": {"status": "accepted", "handle": "first"}})
 
@@ -61,6 +68,7 @@ class Connector(BaseHTTPRequestHandler):
             request = self.path.removeprefix(prefix)
             with self.server.lock:
                 job = self.server.jobs.get(request)
+                self.trace("lookup", request)
             if job is None:
                 self.reply(404, {})
                 return
@@ -74,12 +82,15 @@ class Connector(BaseHTTPRequestHandler):
         for handle, pixels in self.server.images.items():
             path = f"/v1/jobs/{handle}"
             if self.path == path:
+                with self.server.lock:
+                    self.trace("status", handle)
                 self.reply(200, {"version": 1, "handle": handle, "status": "succeeded",
                                  "provider_charge": {"unit": "credit", "quantity": self.server.charges[handle]}})
                 return
             if self.path == path + "/artifacts/0":
                 with self.server.lock:
                     self.server.fetches[handle] += 1
+                    self.trace("artifact", handle)
                 self.reply(200, pixels, "image/png")
                 return
         self.reply(404, {})
@@ -91,6 +102,7 @@ def connector_server(token):
         server.authorization = f"Bearer {token}"
         server.lock = Lock()
         server.jobs, server.submissions, server.fetches = {}, Counter(), Counter()
+        server.traces = []
         server.lookup_started, server.corrected = Event(), Event()
         server.images = {"first": square_png((220, 50, 20)), "second": square_png((20, 50, 220))}
         server.charges = {"first": "2.17", "second": "5.21"}
@@ -200,7 +212,7 @@ def verify_recovery(gateway, directory, settings, session, account, project):
 
         def submit(api, auth, label):
             return call(api, "/v1/image", (200, 202), method="POST",
-                        headers={**auth, "Idempotency-Key": "fixture-recovery-" + label},
+                        headers={**auth, **CALLER_CONTEXT, "Idempotency-Key": "fixture-recovery-" + label},
                         body={"model": "example_image", "task": "text_to_image", "prompt": label,
                               "count": 1, "aspect_ratio": "1:1"})[0]
 
@@ -244,6 +256,16 @@ def verify_recovery(gateway, directory, settings, session, account, project):
             }]
         assert connector.submissions == {first["id"]: 1, second["id"]: 1}
         assert connector.fetches == {"first": 1, "second": 1}
+        expected = {}
+        for label, receipt, auth in (("first", first, first_client), ("second", second, second_client)):
+            parent = provider_traceparent(port, receipt["id"], auth)
+            expected[label] = parent
+            expected[receipt["id"]] = parent
+        assert expected["first"] != expected["second"]
+        assert {operation for operation, *_ in connector.traces} == {"submit", "lookup", "status", "artifact"}
+        for operation, subject, parent, state, baggage in connector.traces:
+            assert (parent, state, baggage) == (expected[subject], None, None), operation
+        print("PASS connector requests use the scoped OTLP parent across recovery without caller metadata")
         print("PASS conflicting handle stayed unconfirmed, then recovered with the right output and charge after restart")
         verify_read_views(port, peer, session, account, project, first, second, first_client, second_client)
 

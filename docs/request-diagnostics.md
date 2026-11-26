@@ -26,3 +26,11 @@ Send your application's active span in the `traceparent` header on submission. U
 TokenCraft assigns its own execution trace ID and records the caller's trace and span IDs in the request's `correlation` field. The root span in the OTLP export links to the caller span. For a replay, the original link remains attached to the durable request.
 
 Use `GET /v1/requests?trace_id=<trace-id>` to find requests by either execution or caller trace ID. The regular project and client permissions apply.
+
+## Follow a request into a connector
+
+The gateway sends its execution trace ID and the span ID of the root in its OTLP export to the configured provider endpoint in a W3C `traceparent` header. Submit, recovery lookup, status polling, artifact downloads, and compatible chat calls use the same parent across worker restarts and compute failover. The gateway keeps caller trace headers and baggage out of provider requests.
+
+Enable `TOKENCRAFT_PLUGIN_TRACE_LOGS=true` on the fal, Kinovi, or OpenRouter plugin. Find its JSON logs by the execution `trace_id` and match `parent_span_id` to the downloaded OTLP root. Keep these logs in your operator log store. The scoped OTLP download contains gateway evidence.
+
+[Inference plugin setup](../plugins/providers/inference/README.md#correlate-plugin-logs) · [W3C Trace Context](https://www.w3.org/TR/trace-context/#traceparent-header)

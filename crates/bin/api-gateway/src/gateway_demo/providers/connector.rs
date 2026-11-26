@@ -24,6 +24,8 @@ use super::{
 };
 use db_queries::gateway_requests::{queued_runs::{ClaimedQueuePoll, ProviderCharge}, ClaimedProviderRun};
 
+use crate::middleware::trace_context::attach_provider_trace;
+
 const CONFIG: &str = "TOKENCRAFT_CONNECTORS";
 const VERSION: u8 = 1;
 const MAX_CONFIG_BYTES: u64 = 32 * 1024;
@@ -418,15 +420,18 @@ impl Connector {
         key: Option<&header::HeaderValue>,
     ) -> Submission {
         let request_id = run.request_id.as_str();
-        let request = self.authorize(self.client.post(self.endpoint(&["v1", "jobs"])), key)
-            .header("idempotency-key", request_id)
-            .json(&Submit {
-                version: VERSION,
-                request_id,
-                model: &run.upstream_model,
-                input,
-                completion: self.completion_webhooks.then(|| tokens.issue(request_id)),
-            });
+        let request = attach_provider_trace(
+            self.authorize(self.client.post(self.endpoint(&["v1", "jobs"])), key),
+            run.trace_id.as_deref(),
+        )
+        .header("idempotency-key", request_id)
+        .json(&Submit {
+            version: VERSION,
+            request_id,
+            model: &run.upstream_model,
+            input,
+            completion: self.completion_webhooks.then(|| tokens.issue(request_id)),
+        });
         let Some(reply) = json::<SubmitReply>(request)
             .await
             .filter(|reply| reply.version == VERSION && reply.request_id == request_id)
@@ -451,23 +456,26 @@ impl Connector {
         }
     }
 
-    pub(super) async fn lookup(&self, request_id: &str) -> Option<String> {
-        let request = self.client
-            .get(self.endpoint(&["v1", "jobs", "by-request", request_id]))
-            .header(header::AUTHORIZATION, self.authorization.clone());
+    pub(super) async fn lookup(&self, request_id: &str, trace_id: Option<&str>) -> Option<String> {
+        let url = self.endpoint(&["v1", "jobs", "by-request", request_id]);
+        let request = attach_provider_trace(self.authorize(self.client.get(url), None), trace_id);
         let reply: LookupReply = json(request).await?;
         (reply.version == VERSION && reply.request_id == request_id && valid_handle(&reply.handle))
             .then_some(reply.handle)
     }
 
-    pub(super) async fn poll(&self, handle: &str, key: Option<&header::HeaderValue>)
+    pub(super) async fn poll(&self, task: &ClaimedQueuePoll, key: Option<&header::HeaderValue>)
         -> Observation<Option<ProviderCharge>>
     {
+        let handle = task.handle.as_str();
         if !valid_handle(handle) {
             return Observation::Retry;
         }
-        let request = self.authorize(self.client.get(self.endpoint(&["v1", "jobs", handle])), key)
-            .header("x-tokencraft-provider-charge", "1");
+        let request = attach_provider_trace(
+            self.authorize(self.client.get(self.endpoint(&["v1", "jobs", handle])), key),
+            task.trace_id.as_deref(),
+        )
+        .header("x-tokencraft-provider-charge", "1");
         let Some(reply) = json::<PollReply>(request)
             .await
             .filter(|reply| reply.version == VERSION && reply.handle == handle)
@@ -499,7 +507,7 @@ impl Connector {
                 let ratio = task.applied_aspect_ratio.as_deref().and_then(parse_ratio)?;
                 let mut images = Vec::with_capacity(usize::from(count));
                 for slot in 0..i16::try_from(count).ok()? {
-                    let bytes = self.artifact(handle, slot, ArtifactSpec::Png, key).await?;
+                    let bytes = self.artifact(task, slot, ArtifactSpec::Png, key).await?;
                     images.push(
                         tokio::task::spawn_blocking(move || png(bytes, slot, ratio))
                             .await
@@ -515,30 +523,39 @@ impl Connector {
             } => {
                 let ratio = task.applied_aspect_ratio.as_deref().and_then(parse_ratio)?;
                 let expected_size = video_size(ratio, &resolution)?;
-                let bytes = self.artifact(handle, 0, ArtifactSpec::Mp4, key).await?;
+                let bytes = self.artifact(task, 0, ArtifactSpec::Mp4, key).await?;
                 video::parse(bytes, duration_seconds, expected_size).map(FetchedMedia::Video)
             }
             Workload::Audio {
                 duration_seconds,
                 format,
             } if format == "wav" => {
-                let bytes = self.artifact(handle, 0, ArtifactSpec::Wav, key).await?;
+                let bytes = self.artifact(task, 0, ArtifactSpec::Wav, key).await?;
                 audio_format::parse(bytes, duration_seconds).map(FetchedMedia::Audio)
             }
             Workload::Mesh { format } if format == "glb" => {
-                let bytes = self.artifact(handle, 0, ArtifactSpec::Glb, key).await?;
+                let bytes = self.artifact(task, 0, ArtifactSpec::Glb, key).await?;
                 mesh_format::parse(bytes).map(FetchedMedia::Mesh)
             }
             _ => None,
         }
     }
 
-    async fn artifact(&self, handle: &str, slot: i16, spec: ArtifactSpec, key: Option<&header::HeaderValue>) -> Option<Vec<u8>> {
-        let url = self.endpoint(&["v1", "jobs", handle, "artifacts", &slot.to_string()]);
-        let response = self.authorize(self.client.get(url), key)
-            .send()
-            .await
-            .ok()?;
+    async fn artifact(
+        &self,
+        task: &ClaimedQueuePoll,
+        slot: i16,
+        spec: ArtifactSpec,
+        key: Option<&header::HeaderValue>,
+    ) -> Option<Vec<u8>> {
+        let url = self.endpoint(&["v1", "jobs", &task.handle, "artifacts", &slot.to_string()]);
+        let response = attach_provider_trace(
+            self.authorize(self.client.get(url), key),
+            task.trace_id.as_deref(),
+        )
+        .send()
+        .await
+        .ok()?;
         let (media_type, limit) = spec.contents();
         if !successful_media(&response, media_type) {
             return None;
