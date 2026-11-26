@@ -175,7 +175,7 @@ test("opt-in submission retries reuse the serialized intent and idempotency key"
       init.headers.set("Idempotency-Key", "fixture-changed");
       init.headers.delete("traceparent");
       url.pathname = "/changed";
-      return Response.json({}, { status: 503, headers: { "Retry-After": "0" } });
+      return Response.json({}, { status: 503, headers: { "Retry-After": "Sunday, 06-Nov-94 08:49:37 GMT" } });
     }
     if (sent.length === 2) return Response.json({}, { status: 429, headers: { "Retry-After": "0" } });
     return Response.json({ id: requestId }, { status: 202 });
@@ -222,6 +222,9 @@ test("submission preserves terminal gateway errors and enforces the attempt limi
     [503, "0", undefined, 1],
     [503, undefined, 3, 1],
     [503, "0, 1", 3, 1],
+    [503, "Sun, 06 Nov 1994 08:49:37 GMT, 0", 3, 1],
+    [503, "2026-01-01T00:00:00Z", 3, 1],
+    [503, "Mon, 06 Nov 1994 08:49:37 GMT", 3, 1],
     [409, "0", 3, 1],
     [503, "0", 2, 2],
   ]) {
@@ -245,10 +248,15 @@ test("submission retry delays honor the total deadline and caller cancellation",
   const reason = new Error("client canceled");
   const client = new TokenCraft({ ...options, submitMaxAttempts: 3, timeoutMs: 30, fetch: async () => {
     if (++calls === 2) setTimeout(() => controller.abort(reason), 0);
-    return Response.json({}, { status: 503, headers: { "Retry-After": "60" } });
+    return Response.json({}, { status: 503, headers: {
+      "Retry-After": new Date(Date.now() + 60_000).toUTCString(),
+      "TokenCraft-Request-Id": "invalid",
+      "X-Request-Id": requestId,
+    } });
   } });
   const quote = { id: "quo_fixture", input: image };
-  await assert.rejects(client.submit(quote, { idempotencyKey: "fixture-retry" }), TokenCraftTimeoutError);
+  await assert.rejects(client.submit(quote, { idempotencyKey: "fixture-retry" }), (error) =>
+    error instanceof TokenCraftTimeoutError && error.requestId === requestId);
   assert.equal(calls, 1);
   await assert.rejects(client.submit(quote, { idempotencyKey: "fixture-retry", signal: controller.signal }),
     (error) => error === reason);
@@ -265,7 +273,9 @@ test("wait polls in-flight requests and exposes uncertain provider acceptance to
 test("wait reuses the validator across a rollout response and an empty 304", async () => {
   const reads = [
     { validator: null, response: Response.json({ status: "queued" }, { headers: { ETag: 'W/"queued"' } }) },
-    { validator: 'W/"queued"', response: Response.json({}, { status: 503, headers: { ETag: '"wrong"', "Retry-After": "0" } }) },
+    { validator: 'W/"queued"', response: Response.json({}, { status: 503, headers: {
+      ETag: '"wrong"', "Retry-After": "Sun Nov  6 08:49:37 1994",
+    } }) },
     { validator: 'W/"queued"', response: new Response(null, { status: 304 }) },
     { validator: 'W/"queued"', response: Response.json({ status: "succeeded" }) },
   ];
@@ -287,7 +297,8 @@ test("the polling deadline still applies while respecting Retry-After", async ()
   let reads = 0;
   const client = new TokenCraft({ ...options, fetch: async () => {
     reads++;
-    return Response.json({ status: "running" }, { headers: { "Retry-After": "1" } });
+    const later = new Date(Date.now() + 60_000).toUTCString();
+    return Response.json({ status: "running" }, { headers: { "Retry-After": later } });
   } });
   await assert.rejects(client.wait(requestId, { pollIntervalMs: 1, timeoutMs: 40 }), TokenCraftTimeoutError);
   assert.equal(reads, 1);

@@ -9,6 +9,7 @@ description = "Async client for the TokenCraft native gateway"
 [dependencies]
 base64.workspace = true
 hmac = "0.12"
+httpdate = "1"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

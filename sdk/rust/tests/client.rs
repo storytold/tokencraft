@@ -435,7 +435,9 @@ async fn submission_reuses_the_same_wire_intent_after_hinted_failures() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let captured = tokio::spawn(async move {
-        let unavailable = wire_response("503 Service Unavailable", "Retry-After: 0\r\n", "{}");
+        let unavailable = wire_response(
+            "503 Service Unavailable", "Retry-After: Sun Nov  6 08:49:37 1994\r\n", "{}",
+        );
         let limited = wire_response("429 Too Many Requests", "Retry-After: 0\r\n", "{}");
         let admitted = wire_response("202 Accepted", "", &json!({
             "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
@@ -514,6 +516,7 @@ async fn submission_retries_require_opt_in_an_unambiguous_hint_and_remaining_att
         (1, "503 Service Unavailable", "Retry-After: 0\r\n", 503),
         (3, "503 Service Unavailable", "", 503),
         (3, "503 Service Unavailable", "Retry-After: 0\r\nRetry-After: 1\r\n", 503),
+        (3, "503 Service Unavailable", "Retry-After: Sun, 06 Nov 1994 08:49:37 GMT, 0\r\n", 503),
         (3, "409 Conflict", "Retry-After: 0\r\n", 409),
     ] {
         let (origin, captured) = reply(status, hint, problem).await;
@@ -531,8 +534,13 @@ async fn submission_retries_require_opt_in_an_unambiguous_hint_and_remaining_att
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
+        let first = wire_response(
+            "503 Service Unavailable",
+            &format!("Retry-After: 0\r\nTokenCraft-Request-Id: {REQUEST}\r\n"),
+            problem,
+        );
         let response = wire_response("503 Service Unavailable", "Retry-After: 0\r\n", problem);
-        capture_and_reply(&listener, &response).await;
+        capture_and_reply(&listener, &first).await;
         capture_and_reply(&listener, &response).await;
         assert!(timeout(Duration::from_millis(30), listener.accept()).await.is_err());
     });
@@ -540,21 +548,25 @@ async fn submission_retries_require_opt_in_an_unambiguous_hint_and_remaining_att
         .unwrap().with_submit_max_attempts(2).unwrap();
     let error = client.submit(&quote_fixture(), SubmitOptions::new("fixture-err"))
         .await.unwrap_err();
+    assert_eq!(error.request_id(), Some(REQUEST));
     assert!(matches!(error, Error::Gateway { code, .. } if code == "unavailable"));
     server.await.unwrap();
 }
 
 #[tokio::test]
-async fn submission_retry_sleep_spends_the_same_deadline() {
+async fn submission_retry_sleep_preserves_the_deadline_and_request_id() {
+    use std::time::SystemTime;
     use tokencraft_sdk::SubmitOptions;
 
-    let (origin, captured) = reply("503 Service Unavailable", "Retry-After: 30\r\n", "{}").await;
+    let later = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(30));
+    let headers = format!("Retry-After: {later}\r\nTokenCraft-Request-Id: {REQUEST}\r\n");
+    let (origin, captured) = reply("503 Service Unavailable", &headers, "{}").await;
     let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_millis(100))
         .unwrap().with_submit_max_attempts(3).unwrap();
     let error = timeout(Duration::from_secs(2),
         client.submit(&quote_fixture(), SubmitOptions::new("fixture-later")))
         .await.unwrap().unwrap_err();
-    assert!(matches!(error, Error::Timeout { .. }));
+    assert!(matches!(error, Error::Timeout { request_id: Some(id) } if id == REQUEST));
     captured.await.unwrap();
 }
 
@@ -576,10 +588,12 @@ async fn wait_reuses_validator_through_rollout_and_respects_poll_hint() {
         let queued = wire_response("200 OK", "ETag: W/\"queued\"\r\nRetry-After: 1\r\n", &trace("queued"));
         let (first, _) = capture_and_reply(&listener, &queued).await;
         let started = Instant::now();
-        let rollout = wire_response("503 Service Unavailable", "Retry-After: 0\r\nETag: \"invalidated\"\r\n", "{}");
+        let rollout = wire_response(
+            "503 Service Unavailable", "Retry-After: Sunday, 06-Nov-94 08:49:37 GMT\r\nETag: \"invalidated\"\r\n", "{}",
+        );
         let (second, _) = capture_and_reply(&listener, &rollout).await;
         let elapsed = started.elapsed();
-        let no_change = wire_response("304 Not Modified", "", "");
+        let no_change = wire_response("304 Not Modified", "Retry-After: Sun Nov  6 08:49:37 1994\r\n", "");
         let (third, _) = capture_and_reply(&listener, &no_change).await;
         let succeeded = wire_response("200 OK", "", &trace("succeeded"));
         let (fourth, _) = capture_and_reply(&listener, &succeeded).await;

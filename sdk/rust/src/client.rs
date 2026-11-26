@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, RETRY_AFTER};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
@@ -312,12 +312,16 @@ impl TokenCraftClient {
 
         let request = request.build().map_err(|source| Error::from_http(source, None))?;
         let mut remaining = self.submit_max_attempts;
-        tokio::time::timeout(self.timeout, async {
+        let mut request_id = None;
+        let result = tokio::time::timeout(self.timeout, async {
             loop {
                 let attempt = request.try_clone()
                     .ok_or(Error::InvalidInput("submission body cannot be replayed"))?;
                 let response = self.http.execute(attempt).await
-                    .map_err(|source| Error::from_http(source, None))?;
+                    .map_err(|source| Error::from_http(source, request_id.clone()))?;
+                if let Some(id) = response_request_id(&response) {
+                    request_id = Some(id.to_owned());
+                }
                 remaining -= 1;
                 if remaining > 0 && retryable(response.status()) {
                     if let Some(delay) = retry_after(&response) {
@@ -326,9 +330,10 @@ impl TokenCraftClient {
                         continue;
                     }
                 }
-                return Self::decode(response, None).await;
+                return Self::decode(response, request_id.as_deref()).await;
             }
-        }).await.map_err(|_| Error::Timeout { request_id: None })?
+        }).await;
+        result.map_err(|_| Error::Timeout { request_id })?
     }
 
     pub async fn get(&self, id: &str) -> Result<RequestTrace, Error> {
@@ -542,17 +547,7 @@ impl TokenCraftClient {
         response: Response,
         id_hint: Option<&str>,
     ) -> Result<(Response, Option<String>), Error> {
-        let request_id = ["tokencraft-request-id", "x-request-id"]
-            .iter()
-            .find_map(|name| {
-                response
-                    .headers()
-                    .get(*name)
-                    .and_then(|value| value.to_str().ok())
-                    .filter(|value| valid_id(value, "req_"))
-            })
-            .or(id_hint)
-            .map(str::to_owned);
+        let request_id = response_request_id(&response).or(id_hint).map(str::to_owned);
         let status = response.status();
         if status.is_success() {
             return Ok((response, request_id));
@@ -573,17 +568,29 @@ impl TokenCraftClient {
     }
 }
 
+fn response_request_id(response: &Response) -> Option<&str> {
+    ["tokencraft-request-id", "x-request-id"].into_iter().find_map(|name| {
+        response.headers().get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| valid_id(value, "req_"))
+    })
+}
+
 fn retryable(status: StatusCode) -> bool {
     matches!(status, StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE)
 }
 
 fn retry_after(response: &Response) -> Option<Duration> {
     let mut values = response.headers().get_all(RETRY_AFTER).iter();
-    let value = values.next()?.to_str().ok()?;
-    if values.next().is_some() || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    let value = values.next()?.to_str().ok()?.trim();
+    if values.next().is_some() || value.is_empty() {
         return None;
     }
-    Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)))
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+    }
+    httpdate::parse_http_date(value).ok()
+        .map(|date| date.duration_since(SystemTime::now()).unwrap_or_default())
 }
 
 fn validate_duration(value: Duration) -> Result<(), Error> {

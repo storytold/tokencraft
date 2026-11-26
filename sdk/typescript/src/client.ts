@@ -1,6 +1,6 @@
 import { readArtifact, validateArtifactRef } from "./content.js";
 import type { ContentMetadata, DownloadOptions, RetainedContent, VerifiedArtifact } from "./content.js";
-import { deadline, isRequestId, milliseconds, object, pause, TokenCraftError } from "./http.js";
+import { deadline, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError } from "./http.js";
 import { validateTraceparent } from "./trace.js";
 import type { OtlpTrace, RequestTraceSnapshot, TraceBaseline } from "./trace.js";
 import type {
@@ -272,8 +272,9 @@ export class TokenCraft {
           method, headers: new Headers(headers), body: encoded,
           signal: request.signal, credentials: "omit", redirect: "error", cache,
         });
-        const observedId = response.headers.get("tokencraft-request-id") ?? response.headers.get("x-request-id");
-        if (isRequestId(observedId)) id = observedId;
+        const observedId = ["tokencraft-request-id", "x-request-id"]
+          .map((name) => response.headers.get(name)).find(isRequestId);
+        if (observedId) id = observedId;
         request.signal.throwIfAborted();
         const delay = response.status === 429 || response.status === 503 ? retryAfter(response.headers) : undefined;
         if (response.status === 304 && typeof validator === "string") {
@@ -305,11 +306,6 @@ export class TokenCraft {
       request.close();
     }
   }
-}
-
-function retryAfter(headers: Headers): number | undefined {
-  const value = headers.get("retry-after");
-  return value && /^\d+$/.test(value) ? Number(value) * 1_000 : undefined;
 }
 
 function requestPath(id: string): string {
