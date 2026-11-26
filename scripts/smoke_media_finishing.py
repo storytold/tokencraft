@@ -1,11 +1,13 @@
 """Publish and run a trim and narration workflow against two private CPU runners."""
 
 import argparse
+from array import array
 from contextlib import ExitStack
 from hashlib import sha256
 import json
 from pathlib import Path
 from secrets import token_hex
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
@@ -68,6 +70,7 @@ def verify_media(gateway, directory, settings, session, account, project):
             dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)),
             lambda: ready(worker_port)))
         operation_pins = {}
+        operations = {}
         for binding in bindings:
             reviewed, _ = call(port, project_path + "/workflow-tools" + query + "&verify=" + binding["name"],
                                200, headers=session)
@@ -75,6 +78,7 @@ def verify_media(gateway, directory, settings, session, account, project):
             assert selected["reachable"] is True
             tool, = selected["manifest"]["tools"]
             operation_pins[tool["id"]] = selected["revision"], tool["revision"]
+            operations[tool["id"]] = tool
 
         def tool_step(id_, title, operation, inputs, parameters, sources):
             binding, revision = operation_pins[operation]
@@ -85,20 +89,24 @@ def verify_media(gateway, directory, settings, session, account, project):
                          "output": "video", "parameters": parameters},
             }
 
+        offset_constraint = operations["video.attach_audio"]["parameters"]["properties"]["offset_ms"]
         graph = {
             "schema": 1, "title": "Clip finishing", "max_usd_nanos": 0,
             "inputs": {"video": {"title": "Source video", "kind": "video"},
-                       "narration": {"title": "Narration", "kind": "audio"}},
+                       "narration": {"title": "Narration", "kind": "audio"},
+                       "delay": {"title": "Narration delay", "kind": "parameter",
+                                 "parameter": offset_constraint, "default": 0}},
             "outputs": {"trimmed": "trim", "master": "soundtrack"},
             "nodes": [
                 tool_step("trim", "Trim clip", "video.trim", {"video": "video"},
                           {"start_ms": 250, "duration_ms": 1000}, {"video": {"source": "request", "field": "video"}}),
                 tool_step("soundtrack", "Replace soundtrack", "video.attach_audio", {"video": "video", "audio": "audio"},
-                          {"offset_ms": 300, "video_mode": "copy_h264"},
+                          {"video_mode": "copy_h264"},
                           {"video": {"source": "step", "step": "trim"},
                            "audio": {"source": "request", "field": "narration"}}),
             ],
         }
+        graph["nodes"][1]["tool"]["parameter_inputs"] = {"offset_ms": "delay"}
         draft, _ = call(port, project_path + "/workflows" + query, 201, method="POST", headers=session, body=graph)
         manage = project_path + f"/workflows/{draft['id']}"
         endpoint = project_path + f"/workflow-endpoints/{draft['id']}"
@@ -115,11 +123,20 @@ def verify_media(gateway, directory, settings, session, account, project):
             "name": "Clip finishing fixture", "days": 1, "scopes": ["runs:submit", "runs:read", "outputs:read"],
         })
         auth = {"Authorization": "Bearer " + app["secret"]}
+        contract, _ = call(port, endpoint + "/openapi.json", 200, headers=auth)
+        invocation = contract["paths"][endpoint + "/runs"]["post"]["requestBody"]["content"]["application/json"]
+        fields = invocation["schema"]["properties"]["inputs"]
+        assert fields["properties"]["delay"] == offset_constraint
+        assert "delay" not in fields["required"]
         inputs = {key: upload(port, endpoint + "/uploads", auth, file, mime) for key, file, mime in files}
+        call(port, endpoint + "/runs", 400, method="POST", body={"inputs": {**inputs, "delay": -1}},
+             headers={**auth, "Idempotency-Key": token_hex(16)})
+        delayed = {"inputs": {**inputs, "delay": 300}}
         submit = {**auth, "Idempotency-Key": token_hex(16)}
-        receipt, _ = call(port, endpoint + "/runs", 202, method="POST", body={"inputs": inputs}, headers=submit)
-        replay, _ = call(port, endpoint + "/runs", 200, method="POST", body={"inputs": inputs}, headers=submit)
+        receipt, _ = call(port, endpoint + "/runs", 202, method="POST", body=delayed, headers=submit)
+        replay, _ = call(port, endpoint + "/runs", 200, method="POST", body=delayed, headers=submit)
         assert replay["id"] == receipt["id"]
+        call(port, endpoint + "/runs", 409, method="POST", body={"inputs": inputs}, headers=submit)
         result, _ = wait_for_run(port, receipt, auth)
 
         outputs = {}
@@ -139,7 +156,27 @@ def verify_media(gateway, directory, settings, session, account, project):
                                   "-of", "json", outputs["master"], cwd=directory, env=settings))
         assert 0.95 <= float(info["format"]["duration"]) <= 1.05
         assert [stream["codec_type"] for stream in info["streams"]] == ["video", "audio"]
-        print("PASS two private CPU runners published a 1-second cut with narration and copied video packets")
+
+        origin = {**auth, "Idempotency-Key": token_hex(16)}
+        zero_delay, _ = call(port, endpoint + "/runs", 202, method="POST", body={"inputs": inputs}, headers=origin)
+        immediate, _ = wait_for_run(port, zero_delay, auth)
+        media, _ = call(port, immediate["outputs"]["master"]["download_url"], 200, headers=auth)
+        starting = directory / "no-delay.mp4"
+        starting.write_bytes(media)
+        assert video_hash(starting) == video_hash(outputs["trimmed"])
+
+        def peak(path, start_ms, end_ms):
+            pcm = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-map", "0:a:0",
+                                  "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                                 cwd=directory, env=settings, capture_output=True, check=True, timeout=15)
+            samples = array("h")
+            samples.frombytes(pcm.stdout)
+            return max(abs(sample) for sample in samples[start_ms * 8:end_ms * 8])
+
+        assert peak(starting, 100, 175) > 1000
+        assert peak(outputs["master"], 100, 175) < 32
+        assert peak(outputs["master"], 350, 425) > 1000
+        print("PASS two private CPU runners published a cut and honored per-run narration timing with identical video packets")
 
 
 def main():

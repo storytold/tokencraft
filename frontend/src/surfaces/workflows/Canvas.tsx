@@ -6,7 +6,7 @@ import { BOARD_LIMIT, CARD_ROW, CARD_WIDTH, loadPositions, placeCards, type Posi
 import { ComponentLibrary, type ComponentChoice } from "./ComponentLibrary";
 import { Connections } from "./Connections";
 import { ContractEditor } from "./ContractEditor";
-import { addStep, addTool, nextId, setBinding, updateStep, usd } from "./editor";
+import { addStep, addTool, nextId, pruneUnusedToolInputs, setBinding, updateStep, usd } from "./editor";
 import { StepInspector } from "./StepInspector";
 import type { Capabilities, Graph } from "./types";
 import { canWire, COMPONENT_TRANSFER, MOVE_TRANSFER, sourceKind, sourceName, sourcePort, type WireSource, type WireTarget } from "./wiring";
@@ -153,7 +153,7 @@ export function Canvas({ graph, capabilities, workflowId, onChange }: {
         .filter(([, binding]) => binding.source !== "step" || binding.step !== step.id)),
     }));
     const outputs = Object.fromEntries(Object.entries(graph.outputs).filter(([, id]) => id !== step.id));
-    onChange({ ...graph, nodes, outputs });
+    onChange(pruneUnusedToolInputs({ ...graph, nodes, outputs }));
     setPositions((previous) => {
       const remaining = { ...previous };
       delete remaining[step.id];

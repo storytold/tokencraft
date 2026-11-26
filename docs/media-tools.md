@@ -107,6 +107,17 @@ A binding revision identifies the binding name, operator revision, origin, and r
 
 Select **Trim video**, wire in the clip, and set the start and duration in milliseconds. Connect the result to **Replace soundtrack**, revision 2, and connect a narration upload to its audio input. Set `offset_ms` to the narration's delay. For a clip from the trim tool, select `copy_h264` to reuse the compressed video stream. Expose the master in **Response outputs**. Expose the trimmed clip too if it will be used in a separate finishing run.
 
+To let callers set a trim time or delay on each run, choose **Expose as request input** beside the tool parameter. The endpoint uses the reviewed recipe's parameter range or allowed values. Set an optional default in **Request and response**. Draft tests and the published OpenAPI surface the same field. An existing published endpoint requires the same request contract across versions, so publish a separate workflow when introducing a new request field.
+
+For API-authored graphs, add a request field of kind `parameter` with the parameter descriptor from the project's reviewed tool manifest. In the tool step, map the tool parameter to that field name through `parameter_inputs`. Keep other settings in `parameters`. For example, wire `offset_ms` to `narration_delay` and set `video_mode` as a fixed value.
+
+```json
+{
+  "parameters": {"video_mode": "copy_h264"},
+  "parameter_inputs": {"offset_ms": "narration_delay"}
+}
+```
+
 Operators can run both tools on one host or give each its own [reviewed runner profile](../plugins/tools/media/README.md#serve-only-selected-operations). With local gateway binaries and PostgreSQL 17, run the two-runner smoke using the same FFmpeg build required by the pack.
 
 ```sh

@@ -20,6 +20,8 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 json!("Example value"),
             ),
             ValueType::Integer => (json!({"type":"integer","minimum":1,"maximum":32000}), json!(1)),
+            ValueType::Parameter => field.parameter.as_ref()
+                .map_or_else(|| (json!(false), Value::Null), |parameter| parameter.contract()),
             kind => {
                 upload_inputs.insert(name, kind);
                 for content_type in upload_content_types(kind) {
@@ -31,8 +33,8 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 }), json!({"upload_id":"REPLACE_WITH_UPLOAD_ID"}))
             }
         };
-        if let Some(default) = &field.default {
-            schema["default"] = json!(default);
+        if let (Some(default), Some(schema)) = (&field.default, schema.as_object_mut()) {
+            schema.insert("default".into(), json!(default));
         } else {
             required.push(name);
             example.insert(name, sample);
@@ -253,5 +255,34 @@ mod tests {
         let input = &invoke["requestBody"]["content"]["application/json"]["schema"]["properties"]["inputs"];
         assert_eq!(input["properties"]["prompt"]["default"], "A default");
         assert_eq!(input["required"], json!([]));
+    }
+
+    #[test]
+    fn tool_parameters_keep_their_reviewed_range_and_workflow_default() {
+        let graph: Graph = serde_json::from_value(json!({
+            "schema": 1, "title": "Parameterized trim", "max_usd_nanos": 0,
+            "inputs": {
+                "source": {"title":"Video","kind":"video"},
+                "start": {"title":"Start","kind":"parameter","default":0,
+                    "parameter":{"type":"integer","minimum":0,"maximum":600000}},
+                "length": {"title":"Length","kind":"parameter",
+                    "parameter":{"type":"integer","minimum":1,"maximum":600000,"multipleOf":2}}
+            },
+            "nodes": [{"id":"trim","title":"Trim","kind":"tool","model":"video.trim","max_usd_nanos":0,
+                "settings":{"video":{"source":"request","field":"source"}},
+                "tool":{"binding_revision":"a".repeat(64),"revision":1,"inputs":{"video":"video"},
+                    "output":"video","parameters":{},"parameter_inputs":{"start_ms":"start","duration_ms":"length"}}}],
+            "outputs": {"clip":"trim"}
+        })).unwrap();
+        assert!(graph.compile().is_ok());
+        let doc = document(&graph, ENDPOINT, 1);
+        let invoke = &doc["paths"][format!("{ENDPOINT}/runs")]["post"];
+        let input = &invoke["requestBody"]["content"]["application/json"]["schema"]["properties"]["inputs"];
+        assert_eq!(input["properties"]["start"], json!({
+            "type":"integer","minimum":0,"maximum":600000,"default":0
+        }));
+        assert_eq!(input["properties"]["length"]["multipleOf"], 2);
+        assert_eq!(input["required"], json!(["length","source"]));
+        assert_eq!(doc["x-workflow-example-inputs"]["length"], 2);
     }
 }

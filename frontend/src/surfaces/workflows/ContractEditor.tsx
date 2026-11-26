@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
 import { nextId } from "./editor";
+import { ToolParameterInput, toolParameterExample } from "./ToolParameters";
 import { isFileInput } from "./wiring";
 import type { Graph, UploadKind, WorkflowInput } from "./types";
 
@@ -12,7 +13,7 @@ export function ContractEditor({ graph, onChange }: { graph: Graph; onChange: (g
   function changeInput(name: string, input: WorkflowInput) {
     onChange({ ...graph, inputs: { ...graph.inputs, [name]: input } });
   }
-  function addInput(kind: WorkflowInput["kind"]) {
+  function addInput(kind: Exclude<WorkflowInput["kind"], "parameter">) {
     const name = nextId(kind === "text" ? "input" : kind === "integer" ? "number" : kind, Object.keys(graph.inputs));
     const title = kind === "text" ? "Text input" : kind === "integer" ? "Numeric input" : `${kind} file`;
     changeInput(name, { title, kind, default: null });
@@ -25,6 +26,8 @@ export function ContractEditor({ graph, onChange }: { graph: Graph; onChange: (g
   const inputs = Object.entries(graph.inputs);
   const optional = inputs.filter(([, input]) => input.default !== null);
   function field([name, input]: [string, WorkflowInput]) {
+    const parameterInUse = input.kind === "parameter" && graph.nodes.some((node) =>
+      Object.values(node.tool?.parameter_inputs ?? {}).includes(name));
     return <fieldset className="wf-binding" key={name}>
         <legend><code>{name}</code> · {input.kind}</legend>
         <label className="wf-field">Display name
@@ -34,14 +37,20 @@ export function ContractEditor({ graph, onChange }: { graph: Graph; onChange: (g
           <input type="checkbox" checked={input.default !== null} onChange={(event) => {
             const checked = event.target.checked;
             if (checked) setRevealOptional(true);
-            changeInput(name, { ...input, default: checked ? (input.kind === "integer" ? 1 : "") : null });
+            const initial = input.kind === "parameter" ? toolParameterExample(input.parameter) : input.kind === "integer" ? 1 : "";
+            changeInput(name, { ...input, default: checked ? initial : null });
           }} /> Provide a default
         </label>}
-        {input.default !== null && <input aria-label={`${name} default value`} type={input.kind === "integer" ? "number" : "text"}
-          value={input.default} onChange={(event) => changeInput(name, {
-            ...input, default: input.kind === "integer" ? Number(event.target.value) : event.target.value,
-          })} />}
-        <button className="wf-button wf-small wf-danger" type="button" onClick={() => removeInput(name)}>Remove field</button>
+        {input.default !== null && (input.kind === "parameter"
+          ? <ToolParameterInput parameter={input.parameter} value={input.default} label={`${name} default value`}
+            onChange={(value) => changeInput(name, { ...input, default: value ?? null })} />
+          : <input aria-label={`${name} default value`} type={input.kind === "integer" ? "number" : "text"}
+            value={input.default} onChange={(event) => changeInput(name, {
+              ...input, default: input.kind === "integer" ? Number(event.target.value) : event.target.value,
+            })} />)}
+        {parameterInUse
+          ? <small>Managed by the tool step.</small>
+          : <button className="wf-button wf-small wf-danger" type="button" onClick={() => removeInput(name)}>Remove field</button>}
       </fieldset>;
   }
   return <aside className="wf-inspector" aria-label="Request and response">

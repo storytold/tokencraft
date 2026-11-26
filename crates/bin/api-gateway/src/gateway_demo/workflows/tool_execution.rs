@@ -232,6 +232,7 @@ async fn admit(runtime: &Runtime, row: &db::Run, state: &State, node: &Node, bin
         return Ok(handle);
     }
     let call = node.tool.as_ref().ok_or_else(runner::unavailable)?;
+    let parameters = tool.resolve_parameters(call, &state.inputs)?;
     let inputs = stage(runtime, row, state, node, tool, binding, &id).await?;
     // A cancel or a newer lease can win while bytes are staged. Check under the same row lock
     // that cancellation uses before allowing the runner to accept this new operation.
@@ -243,7 +244,7 @@ async fn admit(runtime: &Runtime, row: &db::Run, state: &State, node: &Node, bin
         .header("idempotency-key", &id)
         .json(&serde_json::json!({
             "version": 1, "request_id": id, "model": node.model,
-            "input": {"kind": "tool", "revision": call.revision, "inputs": inputs, "parameters": call.parameters},
+            "input": {"kind": "tool", "revision": call.revision, "inputs": inputs, "parameters": parameters},
         }))
         .send().await.map_err(|_| retry())?;
     tx.commit().await?;

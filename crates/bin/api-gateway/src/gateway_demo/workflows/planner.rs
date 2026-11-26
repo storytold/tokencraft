@@ -255,6 +255,7 @@ pub(super) fn plan(input: PlanInput, models: &[Model]) -> Graph {
                 title: "Brief".into(),
                 kind: ValueType::Text,
                 default: None,
+                parameter: None,
             },
         )]),
         max_usd_nanos: nodes.iter().map(|node| node.max_usd_nanos).sum(),

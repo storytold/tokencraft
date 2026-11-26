@@ -5,6 +5,7 @@ import { errorMessage, type ProjectScope } from "@/lib/gateway";
 import { workflowApi } from "./api";
 import { usd } from "./editor";
 import { Dialog } from "./IntentDialog";
+import { ToolParameterInput } from "./ToolParameters";
 import { isFileInput } from "./wiring";
 import { statusLabel, TERMINAL, type Graph, type Run, type RunSummary, type InvocationInput, type UploadKind, type UploadReference, type WorkflowInput } from "./types";
 
@@ -38,7 +39,9 @@ export function TestDialog({ graph, onClose, onUpload, onRun }: {
   const optional = inputs.filter(([, input]) => input.default !== null);
   const field = ([name, input]: [string, WorkflowInput]) => <label className="wf-field" key={name}>
     {input.title} <code>{name}</code>
-    {input.kind === "integer"
+    {input.kind === "parameter"
+      ? <ToolParameterInput parameter={input.parameter} name={name} defaultValue={input.default} required={input.default === null} />
+      : input.kind === "integer"
       ? <input name={name} type="number" min={1} max={32000} defaultValue={input.default ?? ""} required={input.default === null} />
       : isFileInput(input.kind)
         ? <input name={name} type="file" required accept={Object.keys(extensions(input.kind)).map((ext) => "." + ext).join(",")} />
@@ -63,6 +66,8 @@ export function TestDialog({ graph, onClose, onUpload, onRun }: {
             if (!type) throw new Error(`Choose a supported file format for ${definition.title}.`);
             const { upload_id } = await onUpload(raw, type, await fileDigest(raw));
             values[name] = { upload_id };
+          } else if (definition.kind === "parameter" && typeof raw === "string" && raw !== "") {
+            values[name] = definition.parameter.type === "string" ? raw : Number(raw);
           } else if (typeof raw === "string" && raw.trim()) {
             values[name] = definition.kind === "integer" ? Number(raw) : raw.trim();
           }

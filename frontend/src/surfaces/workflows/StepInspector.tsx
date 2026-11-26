@@ -5,8 +5,9 @@ import { modelName } from "./ComponentLibrary";
 import { errorMessage, gatewayRequest } from "@/lib/gateway";
 import { catalogAdvice, type Advice } from "@/surfaces/models/model-advisor";
 import { bindingModes, defaultBinding, nextId, setBinding, updateStep } from "./editor";
+import { ToolParameters } from "./ToolParameters";
 import { acceptsKind, canWire, isFileInput, stepSettings } from "./wiring";
-import type { Binding, Capabilities, Graph, Scalar, Setting, Step, ToolStep, WorkflowModel } from "./types";
+import type { Binding, Capabilities, Graph, Setting, Step, WorkflowModel } from "./types";
 
 function ModelSearch({ models, step, framesOnly, onSelect }: {
   models: WorkflowModel[]; step: Step; framesOnly: boolean; onSelect: (id: string) => void;
@@ -179,13 +180,6 @@ export function StepInspector({ graph, step, capabilities, onChange, onRemove, f
 
   const field = (setting: Setting) => <BindingEditor key={setting.name} graph={graph} step={step}
     setting={setting} model={model} onChange={onChange} focused={focusedField === setting.name} />;
-  function changeParameter(tool: ToolStep, name: string, value?: Scalar) {
-    const parameters = { ...tool.parameters };
-    if (value === undefined) delete parameters[name];
-    else parameters[name] = value;
-    onChange(updateStep(graph, { ...step, tool: { ...tool, parameters } }));
-  }
-
   const tool = step.tool;
   return <aside className="wf-inspector" aria-label="Step inspector">
     <div className="wf-inspector-heading"><span>{tool ? "Media tool" : (primitive?.label ?? step.kind)}</span><h3>{step.title}</h3></div>
@@ -199,23 +193,7 @@ export function StepInspector({ graph, step, capabilities, onChange, onRemove, f
       onSelect={(id) => onChange(updateStep(graph, { ...step, model: id }))} />}
     {required.length > 0 && <h4>Required inputs</h4>}
     {required.map(field)}
-    {tool && operation && Object.entries(operation.parameters.properties).length > 0 && <div className="wf-stack">
-      <h4>Parameters</h4>
-      {Object.entries(operation.parameters.properties).map(([name, parameter]) => {
-        const required = operation.parameters.required.includes(name);
-        const value = tool.parameters[name] ?? "";
-        return <label key={name} className="wf-field">{name.replaceAll("_", " ")}{required ? " (required)" : ""}
-          {parameter.type === "string" ? <select value={value} required={required} onChange={(event) =>
-            changeParameter(tool, name, event.target.value || undefined)}>
-            <option value="">{parameter.default ?? "Choose a value"}</option>
-            {parameter.enum.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select> : <input type="number" min={parameter.minimum} max={parameter.maximum}
-            step={parameter.multipleOf ?? (parameter.type === "integer" ? 1 : "any")} required={required}
-            value={value} placeholder={parameter.default?.toString()} onChange={(event) =>
-              changeParameter(tool, name, event.target.value === "" ? undefined : event.target.valueAsNumber)} />}
-        </label>;
-      })}
-    </div>}
+    {tool && operation && <ToolParameters graph={graph} step={step} tool={tool} operation={operation} onChange={onChange} />}
     {!tool && <details className="wf-disclosure" ref={advanced}>
       <summary>Optional &amp; advanced {optionalConfigured > 0 && <span>{optionalConfigured} set</span>}</summary>
       <div className="wf-stack">

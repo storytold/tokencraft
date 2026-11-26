@@ -20,6 +20,7 @@ mod execution;
 mod graph;
 pub(super) mod generation_rollout;
 mod management;
+mod parameters;
 mod planner;
 pub(super) mod rollout;
 mod runner;
