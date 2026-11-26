@@ -237,7 +237,7 @@ Use the verified JSON as the release's `catalog/artcraft-v1.json`. The console b
 
 ## Apply a provider review bundle
 
-A gateway administrator can use **Dashboard → Providers** to prepare a plugin or custom connection and choose all or selected projects. The console exports a patch with the changed offers and the initial organization and project access. Apply the bundle against the reviewed catalog file.
+A gateway administrator can use **Dashboard → Providers** to prepare a plugin or custom connection and choose all or selected projects. For a custom connection, enter a **Provider ID** to group its offers, dispatch settings, requests, and usage under a stable identifier. Use 1–64 lowercase letters, digits, underscores, or hyphens, starting with a letter. Leave the field blank to use `self_hosted`. The console exports a patch with the changed offers and the initial organization and project access. Apply the bundle against the reviewed catalog file.
 
 ```sh
 api-gateway catalog apply-provider-patch \

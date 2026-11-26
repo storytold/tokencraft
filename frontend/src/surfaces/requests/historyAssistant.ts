@@ -1,18 +1,17 @@
-import { providerNames } from "@/surfaces/comparison/api";
+import { providerChoices } from "@/surfaces/comparison/api";
 import { statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
 import { dateRangeError, diagnosticNames, shiftDate, validDate, type InvestigationFilters } from "./historyDiagnostics";
 
 export type FilterReply = { filters: InvestigationFilters; engine: "ai" | "local" } | { error: string };
 
 const statuses = Object.keys(statusNames);
-const providers = Object.keys(providerNames);
 const diagnostics = Object.keys(diagnosticNames);
 const months = "jan feb mar apr may jun jul aug sep oct nov dec".split(" ");
 const monthName = "Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?";
 const absoluteDate = new RegExp(`\\b(?:\\d{4}-\\d{2}-\\d{2}|(${monthName})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?)\\b`, "gi");
 
-function interpretLocally(prompt: string, current: InvestigationFilters, today: string): FilterReply {
-  const text = prompt.toLowerCase();
+function interpretLocally(prompt: string, current: InvestigationFilters, today: string, providers: readonly string[]): FilterReply {
+  let text = prompt.toLowerCase();
   const filters = { ...current };
   let recognized = false;
 
@@ -21,6 +20,16 @@ function interpretLocally(prompt: string, current: InvestigationFilters, today: 
   }
   if (/\b(?:except|exclude|without|did not|don't|other than|not)\b/.test(text)) {
     return { error: "Try naming the statuses or diagnostics you want to include." };
+  }
+
+  for (const provider of providers) {
+    const name = provider === "self_hosted" ? "self[- _]hosted" : provider;
+    const pattern = new RegExp(`(?<![a-z0-9_-])(?:from\\s+)?${name}(?![a-z0-9_-])`);
+    if (!pattern.test(text)) continue;
+    filters.provider = provider;
+    text = text.replace(pattern, " ");
+    recognized = true;
+    break;
   }
 
   const warning = /\bwarn(?:ing)?s?\b/.test(text);
@@ -44,7 +53,7 @@ function interpretLocally(prompt: string, current: InvestigationFilters, today: 
   }
 
   const relative = text.match(/\b(?:last|past) (\d+) days?\b/);
-  const dates = [...prompt.matchAll(absoluteDate)].map(([value, month, day, year]) => month
+  const dates = [...text.matchAll(absoluteDate)].map(([value, month, day, year]) => month
     ? `${year ?? today.slice(0, 4)}-${String(months.indexOf(month.slice(0, 3).toLowerCase()) + 1).padStart(2, "0")}-${day.padStart(2, "0")}`
     : value);
   if (dates.some((date) => !validDate(date)) || dates.length > 2) {
@@ -71,15 +80,6 @@ function interpretLocally(prompt: string, current: InvestigationFilters, today: 
     return { error: "Try a date range like November 20 through November 25 or last 7 days." };
   }
 
-  const provider = providers.find((key) => {
-    const name = key === "self_hosted" ? "self[- ]hosted" : key;
-    return new RegExp(`\\b${name}\\b`, "i").test(prompt);
-  });
-  if (provider) {
-    filters.provider = provider as InvestigationFilters["provider"];
-    recognized = true;
-  }
-
   const error = dateRangeError(filters);
   if (error) return { error };
   return recognized ? { filters, engine: "local" }
@@ -103,7 +103,6 @@ const schema = {
     understood: { type: "boolean" },
     status: { enum: [...statuses, null] },
     diagnostic: { enum: [...diagnostics, null] },
-    provider: { enum: [...providers, null] },
     from: { type: ["string", "null"] },
     through: { type: ["string", "null"] },
     clear: { type: "boolean" },
@@ -111,7 +110,7 @@ const schema = {
   required: ["understood"],
 };
 
-function modelFilters(result: unknown, current: InvestigationFilters): InvestigationFilters | undefined {
+function modelFilters(result: unknown, current: InvestigationFilters, providers: readonly string[]): InvestigationFilters | undefined {
   if (!result || typeof result !== "object") return;
   const value = result as Record<string, unknown>;
   if (value.understood !== true) return;
@@ -144,7 +143,10 @@ function modelFilters(result: unknown, current: InvestigationFilters): Investiga
   return filters;
 }
 
-export async function suggestHistoryFilters(prompt: string, current: InvestigationFilters, signal: AbortSignal): Promise<FilterReply> {
+export async function suggestHistoryFilters(
+  prompt: string, current: InvestigationFilters, observedProviders: readonly string[], signal: AbortSignal,
+): Promise<FilterReply> {
+  const providers = providerChoices([...observedProviders, current.provider]);
   const today = new Date().toISOString().slice(0, 10);
   const model = (globalThis as typeof globalThis & { LanguageModel?: PromptModel }).LanguageModel;
   let session: ModelSession | undefined;
@@ -159,8 +161,11 @@ export async function suggestHistoryFilters(prompt: string, current: Investigati
         "A date range uses two inclusive UTC dates in YYYY-MM-DD and may span up to 92 days. For a single day use the same date twice.",
         `Today in UTC is ${today}. Current search: ${JSON.stringify({ status: current.status, diagnostic: current.diagnostic, provider: current.provider, from: current.from, through: current.to && shiftDate(current.to, -1) })}.`,
         `User question: ${JSON.stringify(prompt)}`,
-      ].join("\n"), { responseConstraint: schema, signal: deadline });
-      const filters = modelFilters(JSON.parse(output), current);
+      ].join("\n"), {
+        responseConstraint: { ...schema, properties: { ...schema.properties, provider: { enum: [...providers, null] } } },
+        signal: deadline,
+      });
+      const filters = modelFilters(JSON.parse(output), current, providers);
       if (filters) return { filters, engine: "ai" };
     }
   } catch {
@@ -169,5 +174,5 @@ export async function suggestHistoryFilters(prompt: string, current: Investigati
     if (!signal.aborted) session?.destroy();
   }
   signal.throwIfAborted();
-  return interpretLocally(prompt, current, today);
+  return interpretLocally(prompt, current, today, providers);
 }

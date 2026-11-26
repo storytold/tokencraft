@@ -1,5 +1,5 @@
 import { policySources, routeRankingNames, type PolicyResolution, type PolicySetting } from "@/lib/routing-policy";
-import { providerNames, usd } from "./api";
+import { providerLabel, usd } from "./api";
 
 export function toleranceLabel(setting: PolicySetting) {
   return setting.value === 0 ? "Exact" : `Up to ${setting.value / 100}%`;
@@ -25,7 +25,7 @@ export function PolicySummary({ routing }: { routing: PolicyResolution }) {
         <dd className="mt-1">{routing.min_usage_accounts.value} organizations · {policySources[routing.min_usage_accounts.source]}</dd>
       </div>}
       {preference && <div><dt className="text-muted">Route preference</dt>
-        <dd className="mt-1">{preference.value.length ? preference.value.map((provider) => providerNames[provider]).join(" → ") : ranking ? "No provider priority" : "Lowest estimated cost"} · {policySources[preference.source]}</dd>
+        <dd className="mt-1">{preference.value.length ? preference.value.map(providerLabel).join(" → ") : ranking ? "No provider priority" : "Lowest estimated cost"} · {policySources[preference.source]}</dd>
       </div>}
       {ranking && <div><dt className="text-muted">Ranking strategy</dt>
         <dd className="mt-1">{routeRankingNames[ranking.value]} · {policySources[ranking.source]}</dd>

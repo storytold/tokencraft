@@ -1,14 +1,19 @@
-import { gatewayRequest as request, gatewayResponse, isGatewayEndpointUnavailable, type ProjectScope, type Provider } from "@/lib/gateway";
+import { gatewayRequest as request, gatewayResponse, isGatewayEndpointUnavailable, isProviderId, type ProjectScope, type Provider } from "@/lib/gateway";
 import type { DataHandling, DataRequirements, PolicyResolution, PolicySetting } from "@/lib/routing-policy";
 export { demoEnabled, errorMessage } from "@/lib/gateway";
 
 export type { Provider } from "@/lib/gateway";
-export const providerNames: Record<Provider, string> = {
+const providerNames: Record<string, string> = {
   kinovi: "Kinovi", fal: "fal", openrouter: "OpenRouter", self_hosted: "Self-hosted",
 };
 
-export function providerLabel(provider: string) {
-  return Object.hasOwn(providerNames, provider) ? providerNames[provider as Provider] : provider;
+export function providerLabel(provider: Provider) {
+  return Object.hasOwn(providerNames, provider) ? providerNames[provider] : provider;
+}
+
+export function providerChoices(values: readonly (Provider | null | undefined)[] = []) {
+  const ids = new Set([...Object.keys(providerNames), ...values.filter(isProviderId)]);
+  return [...ids].sort((a, b) => providerLabel(a).localeCompare(providerLabel(b)));
 }
 
 type Pricing =

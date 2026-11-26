@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { Badge, Button, Card } from "@/components/ui";
 import { errorMessage, gatewayRequest, type Provider } from "@/lib/gateway";
-import { providerNames } from "@/surfaces/comparison/api";
+import { providerChoices, providerLabel } from "@/surfaces/comparison/api";
+import { providerOnboarding } from "@/surfaces/projects/providers/provider-onboarding";
 
 type Selection = { pause_all: boolean; paused_providers: Provider[] };
 type DispatchState = Selection & { revision: number };
-
-const providerOptions = Object.entries(providerNames) as [Provider, string][];
 
 export function DispatchControls({ accountId, onSaved }: { accountId: string; onSaved: () => void }) {
   const path = `/v1/operations/dispatch?${new URLSearchParams({ account_id: accountId })}`;
@@ -16,9 +15,15 @@ export function DispatchControls({ accountId, onSaved }: { accountId: string; on
   const [pending, setPending] = useState(true);
   const [error, setError] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [activeProviders, setActiveProviders] = useState<Provider[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
+    providerOnboarding.inventory({ account_id: accountId }, controller.signal).then(({ offers }) => {
+      if (!controller.signal.aborted) setActiveProviders(offers.map((offer) => offer.provider));
+    }).catch(() => {
+      // Saved pauses remain editable when provider inventory is unavailable.
+    });
     gatewayRequest<DispatchState>(path, { signal: controller.signal }).then((state) => {
       if (controller.signal.aborted) return;
       setSaved(state);
@@ -29,7 +34,11 @@ export function DispatchControls({ accountId, onSaved }: { accountId: string; on
       if (!controller.signal.aborted) setPending(false);
     });
     return () => controller.abort();
-  }, [path, reload]);
+  }, [accountId, path, reload]);
+
+  const providerOptions = providerChoices([
+    ...activeProviders, ...(saved?.paused_providers ?? []), ...(draft?.paused_providers ?? []),
+  ]);
 
   const dirty = saved && draft && (saved.pause_all !== draft.pause_all
     || saved.paused_providers.length !== draft.paused_providers.length
@@ -86,7 +95,7 @@ export function DispatchControls({ accountId, onSaved }: { accountId: string; on
                 Pause all providers
               </label>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {providerOptions.map(([provider, name]) => (
+                {providerOptions.map((provider) => (
                   <label key={provider} className="flex items-center gap-2 text-sm">
                     <input type="checkbox" className="size-4 accent-current" disabled={draft.pause_all}
                       checked={draft.paused_providers.includes(provider)} onChange={(event) => edit({
@@ -95,7 +104,7 @@ export function DispatchControls({ accountId, onSaved }: { accountId: string; on
                           ? [...draft.paused_providers, provider]
                           : draft.paused_providers.filter((value) => value !== provider),
                       })} />
-                    Pause {name}
+                    Pause {providerLabel(provider)}
                   </label>
                 ))}
               </div>

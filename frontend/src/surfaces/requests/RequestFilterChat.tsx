@@ -6,8 +6,9 @@ import type { InvestigationFilters } from "./historyDiagnostics";
 
 const examples = ["Failed or warnings in the last 7 days", "Unconfirmed requests today"];
 
-export function RequestFilterChat({ filters, describe, onApply }: {
+export function RequestFilterChat({ filters, providers, describe, onApply }: {
   filters: InvestigationFilters;
+  providers: readonly string[];
   describe: (value: InvestigationFilters) => string;
   onApply: (value: InvestigationFilters) => void;
 }) {
@@ -29,7 +30,7 @@ export function RequestFilterChat({ filters, describe, onApply }: {
     setApplied(false);
     setMessages((current) => [...current.slice(-2), { question }]);
     try {
-      const reply = await suggestHistoryFilters(question, proposal && !applied ? proposal : filters, controller.signal);
+      const reply = await suggestHistoryFilters(question, proposal && !applied ? proposal : filters, providers, controller.signal);
       if (!controller.signal.aborted) {
         setMessages((current) => [...current.slice(0, -1), { question, reply }]);
       }

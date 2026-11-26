@@ -1,8 +1,9 @@
 import { useId, useState } from "react";
 import { ChevronDown, Filter } from "lucide-react";
 import { Button, Input, Select } from "@/components/ui";
+import { isProviderId } from "@/lib/gateway";
 import { dateRangeError, diagnosticNames, shiftDate, type InvestigationFilters } from "@/surfaces/requests/historyDiagnostics";
-import { providerNames, type CostState, type Provider, type Trace } from "./api";
+import { providerChoices, providerLabel, type CostState, type Provider, type Trace } from "./api";
 
 export const statusNames: Record<Trace["status"], string> = {
   queued: "Queued",
@@ -20,9 +21,10 @@ export const costStateNames: Record<CostState, string> = {
   supplier_settled: "Supplier settled",
 };
 
-export function RequestHistoryFilters({ applied, boundClient, onApply, embedded = false }: {
+export function RequestHistoryFilters({ applied, boundClient, providers = [], onApply, embedded = false }: {
   applied: InvestigationFilters;
   boundClient?: string | null;
+  providers?: readonly Provider[];
   onApply: (filters: InvestigationFilters) => void;
   embedded?: boolean;
 }) {
@@ -40,9 +42,12 @@ export function RequestHistoryFilters({ applied, boundClient, onApply, embedded 
     <form className={embedded ? "tc-request-filter-form" : "grid grid-cols-1 gap-3 border-t border-border p-3 min-[420px]:grid-cols-2"}
       onSubmit={(event) => {
         event.preventDefault();
-        const error = dateRangeError(draft);
+        const provider = draft.provider?.trim() || undefined;
+        const error = provider && !isProviderId(provider)
+          ? "Enter a lowercase provider ID of up to 64 letters, digits, underscores, or hyphens."
+          : dateRangeError(draft);
         setError(error);
-        if (!error) onApply(draft);
+        if (!error) onApply({ ...draft, provider });
       }}>
       {embedded && (
         <label className="space-y-1 text-xs font-medium">Diagnostic
@@ -95,11 +100,14 @@ export function RequestHistoryFilters({ applied, boundClient, onApply, embedded 
         </label>
       </div>
       <div className="space-y-1 text-xs font-medium">
-        <label htmlFor={`${id}-provider`}>Provider</label>
-        <Select id={`${id}-provider`} value={draft.provider ?? ""} onChange={(event) => update("provider", event.target.value as Provider)}>
-          <option value="">All providers</option>
-          {Object.entries(providerNames).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
-        </Select>
+        <label htmlFor={`${id}-provider`}>Provider ID</label>
+        <Input id={`${id}-provider`} list={`${id}-providers`} value={draft.provider ?? ""} maxLength={64}
+          placeholder="All providers" autoCapitalize="none" spellCheck={false}
+          onChange={(event) => update("provider", event.target.value)} />
+        <datalist id={`${id}-providers`}>
+          {providerChoices([...providers, applied.provider]).map((provider) =>
+            <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
+        </datalist>
       </div>
       <div className="space-y-1 text-xs font-medium">
         <label htmlFor={`${id}-status`}>Request status</label>

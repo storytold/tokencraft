@@ -2,17 +2,18 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, ty
 import { ArrowUpRight, BookOpen } from "lucide-react";
 import { ChoicePicker } from "@/components/ChoicePicker";
 import { Button, Card, Input } from "@/components/ui";
-import { errorMessage, gatewayRequest, type ProjectScope } from "@/lib/gateway";
+import { errorMessage, gatewayRequest, isGatewayEndpointUnavailable, type ProjectScope } from "@/lib/gateway";
 import {
   dollarText, maxMonthlyBudget, parseActiveRequestLimit, parseDataRequirements, parseDollarCap, parseToleratedPercent, routeRankingNames,
   type ActiveRequestLimits, type ActiveRequests, type Bounds, type RoutingPolicy,
 } from "@/lib/routing-policy";
-import { comparisonApi, formatNanoUsd, providerNames, usd, type Catalog, type Provider, type Quote, type QuoteInput } from "@/surfaces/comparison/api";
+import { comparisonApi, formatNanoUsd, providerLabel, usd, type Offer, type Provider, type Quote, type QuoteInput } from "@/surfaces/comparison/api";
 import { OfferComparison } from "@/surfaces/comparison/OfferComparison";
 import { ProviderOrder, providerOrderValue } from "@/surfaces/comparison/ProviderOrder";
 
 import { PolicyInfo, ProjectDisclosure, routingDocsPath } from "./ProjectDisclosure";
 import { useProject } from "./ProjectScope";
+import { providerOnboarding } from "./providers/provider-onboarding";
 import { usePolicyAutosave } from "./usePolicyAutosave";
 
 type Layer = "organization" | "project";
@@ -21,6 +22,7 @@ const errorClass = "text-sm text-rose-600 dark:text-rose-300";
 const json = { "Content-Type": "application/json" };
 const resetDate = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
 type ProviderOptions = readonly (readonly [Provider, string])[];
+type RoutingOffer = Pick<Offer, "id" | "model" | "provider" | "pricing">;
 
 export function ProjectRouting({ scope }: { scope: ProjectScope }) {
   const [layer, setLayer] = useState<Layer>("project");
@@ -39,16 +41,26 @@ function RoutingPolicyCard({ accountId, projectId, layer, onLayerChange }: {
   layer: Layer;
   onLayerChange?: (layer: Layer) => void;
 }) {
-  const [catalog, setCatalog] = useState<Catalog>();
-  const [catalogIssue, setCatalogIssue] = useState("");
+  const scopedProject = layer === "project" ? projectId : undefined;
+  const scopeKey = JSON.stringify([accountId, layer, scopedProject]);
+  const [inventory, setInventory] = useState<{ key: string; offers?: RoutingOffer[]; error?: string }>();
+  const activeInventory = inventory?.key === scopeKey ? inventory : undefined;
 
   useEffect(() => {
     const controller = new AbortController();
-    comparisonApi.catalog(controller.signal).then(setCatalog).catch((issue) => {
-      if (!controller.signal.aborted) setCatalogIssue(errorMessage(issue));
-    });
+    const { signal } = controller;
+    providerOnboarding.inventory({ account_id: accountId, project_id: scopedProject }, signal)
+      .then(({ offers }) => offers.filter((offer) => offer.available_in_project && !offer.excluded_in_project))
+      .catch((issue) => {
+        if (!isGatewayEndpointUnavailable(issue)) throw issue;
+        return comparisonApi.catalog(signal).then(({ offers }) => offers);
+      }).then((offers) => {
+        if (!signal.aborted) setInventory({ key: scopeKey, offers });
+      }).catch((issue) => {
+        if (!signal.aborted) setInventory({ key: scopeKey, error: errorMessage(issue) });
+      });
     return () => controller.abort();
-  }, []);
+  }, [accountId, scopedProject, scopeKey]);
 
   return (
     <Card className={onLayerChange ? "space-y-4 border-0 p-0" : "space-y-4 p-4 sm:p-6"}>
@@ -74,14 +86,14 @@ function RoutingPolicyCard({ accountId, projectId, layer, onLayerChange }: {
           <p>Preferences follow request → project → organization → gateway defaults. All applicable hard limits still apply.</p>
         </div>
       </div>
-      {catalogIssue && <p role="alert" className={errorClass}>{catalogIssue}</p>}
-      <PolicyEditor key={JSON.stringify([accountId, layer, layer === "project" ? projectId : null])}
-        accountId={accountId} projectId={projectId} layer={layer} catalog={catalog} />
+      {activeInventory?.error && <p role="alert" className={errorClass}>{activeInventory.error}</p>}
+      <PolicyEditor key={scopeKey}
+        accountId={accountId} projectId={projectId} layer={layer} offers={activeInventory?.offers} />
     </Card>
   );
 }
 
-function PolicyEditor({ accountId, projectId, layer, catalog }: { accountId: string; projectId?: string; layer: Layer; catalog?: Catalog }) {
+function PolicyEditor({ accountId, projectId, layer, offers = [] }: { accountId: string; projectId?: string; layer: Layer; offers?: RoutingOffer[] }) {
   const query = new URLSearchParams({ account_id: accountId });
   if (layer === "project" && projectId) query.set("project_id", projectId);
   const autosave = usePolicyAutosave(`/v1/routing-policy?${query}`);
@@ -106,8 +118,8 @@ function PolicyEditor({ accountId, projectId, layer, catalog }: { accountId: str
     return () => window.removeEventListener("beforeunload", warnOnExit);
   }, [saveBusy]);
 
-  const imageOffers = catalog?.offers.filter((offer) => offer.pricing.kind === "image") ?? [];
-  const chatOffer = catalog?.offers.find((offer) => offer.pricing.kind === "text");
+  const imageOffers = offers.filter((offer) => offer.pricing.kind === "image");
+  const chatOffer = offers.find((offer) => offer.pricing.kind === "text");
   const sample: QuoteInput | undefined = imageOffers[0]
     ? {
       model: imageOffers[0].model, provider: null, max_total_usd_nanos: null,
@@ -117,7 +129,7 @@ function PolicyEditor({ accountId, projectId, layer, catalog }: { accountId: str
       model: chatOffer.model, provider: null, max_total_usd_nanos: null,
       workload: { kind: "text", max_input_tokens: 1000, max_output_tokens: 500 },
     };
-  const videoOffers = catalog?.offers.filter((offer) => offer.pricing.kind === "video") ?? [];
+  const videoOffers = offers.filter((offer) => offer.pricing.kind === "video");
   const videoOffer = videoOffers[0];
   const video = videoOffer?.pricing.kind === "video" ? videoOffer.pricing : undefined;
   const videoSample: QuoteInput | undefined = video && video.durations_seconds.length && video.aspect_ratios.length ? {
@@ -137,16 +149,16 @@ function PolicyEditor({ accountId, projectId, layer, catalog }: { accountId: str
         : autoSample.workload,
   };
   const offerLabels = new Map([...imageOffers, ...videoOffers].map((offer) => [
-    offer.id, `${providerNames[offer.provider]} · ${offer.id}`,
+    offer.id, `${providerLabel(offer.provider)} · ${offer.id}`,
   ]));
   const policy = autosave.loaded?.policy;
   const providerIds = new Set<Provider>([
-    ...(catalog?.offers.map((offer) => offer.provider) ?? []),
+    ...offers.map((offer) => offer.provider),
     ...(policy?.allowed_providers ?? []),
     ...(policy?.preferred_providers ?? []),
-    ...Object.keys(policy?.active_request_limits?.by_provider ?? {}) as Provider[],
+    ...Object.keys(policy?.active_request_limits?.by_provider ?? {}),
   ]);
-  const providers: ProviderOptions = [...providerIds].sort().map((id) => [id, providerNames[id] ?? id]);
+  const providers: ProviderOptions = [...providerIds].sort().map((id) => [id, providerLabel(id)]);
   for (const id of Object.keys(policy?.offer_overrides ?? {})) {
     if (!offerLabels.has(id)) offerLabels.set(id, id);
   }
@@ -462,8 +474,8 @@ function CapacityFields({ limits, usage, providers }: { limits?: ActiveRequestLi
           {providers.map(([id, name]) => (
             <label className={label} key={id}>{name} active limit
               <Input name={`active-request:${id}`} type="number" inputMode="numeric" min={0} step={1}
-                max={4_294_967_295} defaultValue={limits?.by_provider?.[id] ?? ""} placeholder="Unlimited" />
-              {usage && <span className="block text-xs font-normal text-muted">{usage.by_provider[id] ?? 0} active</span>}
+                max={4_294_967_295} defaultValue={limits?.by_provider && Object.hasOwn(limits.by_provider, id) ? limits.by_provider[id] : ""} placeholder="Unlimited" />
+              {usage && <span className="block text-xs font-normal text-muted">{Object.hasOwn(usage.by_provider, id) ? usage.by_provider[id] : 0} active</span>}
             </label>
           ))}
         </div>

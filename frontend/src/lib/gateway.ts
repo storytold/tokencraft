@@ -3,7 +3,11 @@ import { API_BASE_URL, ApiError } from "./api";
 export const demoEnabled = import.meta.env.VITE_TOKENCRAFT_DEMO === "true";
 
 export type ProjectScope = { account_id: string; project_id: string };
-export type Provider = "kinovi" | "fal" | "openrouter" | "self_hosted";
+export type Provider = string;
+
+export function isProviderId(value: unknown): value is Provider {
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
+}
 
 export function withProject(path: string, projectId?: string, accountId?: string) {
   const params = new URLSearchParams();

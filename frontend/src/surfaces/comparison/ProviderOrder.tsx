@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 import { Button, Select } from "@/components/ui";
-import { providerNames, type Provider } from "./api";
+import { providerLabel, type Provider } from "./api";
 
 export type ProviderOrderValue = {
   mode: "inherit" | "cheapest" | "ordered";
@@ -44,27 +44,27 @@ export function ProviderOrder({ value, onChange, inheritLabel, providers, label 
         {order.length > 0 && <ol className="divide-y divide-border rounded-md border border-border" aria-label="Preferred providers">
           {order.map((provider, index) => (
             <li key={provider} className="flex min-w-0 items-center justify-between gap-2 px-2 py-1 text-sm">
-              <span>{providerNames[provider] ?? provider}</span>
+              <span>{providerLabel(provider)}</span>
               <div className="flex shrink-0 gap-1">
                 <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0"
-                  aria-label={`Move ${providerNames[provider] ?? provider} earlier`} disabled={index === 0} onClick={() => move(index, index - 1)}>
+                  aria-label={`Move ${providerLabel(provider)} earlier`} disabled={index === 0} onClick={() => move(index, index - 1)}>
                   <ChevronUp className="h-4 w-4" aria-hidden />
                 </Button>
                 <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0"
-                  aria-label={`Move ${providerNames[provider] ?? provider} later`} disabled={index === order.length - 1} onClick={() => move(index, index + 1)}>
+                  aria-label={`Move ${providerLabel(provider)} later`} disabled={index === order.length - 1} onClick={() => move(index, index + 1)}>
                   <ChevronDown className="h-4 w-4" aria-hidden />
                 </Button>
                 <Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0"
-                  aria-label={`Remove ${providerNames[provider] ?? provider}`} onClick={() => changeOrder(order.filter((item) => item !== provider))}>
+                  aria-label={`Remove ${providerLabel(provider)}`} onClick={() => changeOrder(order.filter((item) => item !== provider))}>
                   <X className="h-4 w-4" aria-hidden />
                 </Button>
               </div>
             </li>
           ))}
         </ol>}
-        {available.length > 0 && <Select aria-label="Add preferred provider" value="" onChange={(event) => changeOrder([...order, event.target.value as Provider])}>
+        {available.length > 0 && <Select aria-label="Add preferred provider" value="" onChange={(event) => changeOrder([...order, event.target.value])}>
           <option value="" disabled>Add preferred provider</option>
-          {available.map((provider) => <option key={provider} value={provider}>{providerNames[provider] ?? provider}</option>)}
+          {available.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
         </Select>}
         <p className="text-xs text-muted">Eligible providers follow this order. Other eligible offers follow by estimated cost.</p>
       </>}

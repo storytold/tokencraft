@@ -3,7 +3,7 @@ import { GitCompareArrows, RefreshCw } from "lucide-react";
 import { Button, Input } from "@/components/ui";
 import type { ProjectScope } from "@/lib/gateway";
 import { parseDollarCap } from "@/lib/routing-policy";
-import { comparisonApi, errorMessage, providerNames, usd, type Quote, type RoutePreview } from "./api";
+import { comparisonApi, errorMessage, providerLabel, usd, type Quote, type RoutePreview } from "./api";
 import { OfferComparison } from "./OfferComparison";
 
 const observedTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
@@ -118,7 +118,7 @@ function Decision({ title, quote }: { title: string; quote: Quote | null }) {
     <div className="min-w-0 space-y-2 rounded-md border border-border bg-surface2/50 p-3">
       <h5 className="text-xs font-semibold">{title}</h5>
       {selected && <p className="break-words text-sm font-semibold">
-        {providerNames[selected.provider]} <code className="break-all text-xs font-normal text-muted">{selected.offer_id}</code>
+        {providerLabel(selected.provider)} <code className="break-all text-xs font-normal text-muted">{selected.offer_id}</code>
       </p>}
       {quote && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
         <dt className="text-muted">Estimate</dt><dd className="font-mono">{usd(selected?.estimated_usd_nanos ?? null)}</dd>

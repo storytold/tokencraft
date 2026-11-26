@@ -4,7 +4,7 @@ import { ArrowUpRight, Download, RefreshCw, Route } from "lucide-react";
 import { Button, Card } from "@/components/ui";
 import { withProject, type ProjectScope } from "@/lib/gateway";
 import { ProjectStatus, useProject } from "@/surfaces/projects/ProjectScope";
-import { comparisonApi, providerNames, type Catalog, type UsageGroupBy, type UsageReport } from "@/surfaces/comparison/api";
+import { comparisonApi, providerChoices, type Catalog, type UsageGroupBy, type UsageReport } from "@/surfaces/comparison/api";
 import { SupplierSettlements } from "./SupplierSettlements";
 import { usageRequestsLink } from "./usageRequestsLink";
 import { UsageBreakdown } from "./usage/UsageBreakdown";
@@ -67,7 +67,11 @@ function UsageWorkspace({ scope, projectName, boundClient, canSettle, canReadReq
   const chartError = timeline?.error ?? timeline?.seriesError;
   const current = report ?? breakdown?.report;
   const modelChoices = new Set(offers.map((offer) => offer.model));
-  const providerChoices = new Set([...Object.keys(providerNames), ...offers.map((offer) => offer.provider)]);
+  const providers = providerChoices([
+    query.provider,
+    ...offers.map((offer) => offer.provider),
+    ...(breakdown?.report?.group_by === "provider" ? breakdown.report.groups.map((row) => row.key) : []),
+  ]);
   for (const row of modelActivity?.report?.groups ?? []) if (row.key) modelChoices.add(row.key);
   if (breakdown?.report?.group_by === "model") {
     for (const row of breakdown.report.groups) if (row.key) modelChoices.add(row.key);
@@ -108,7 +112,7 @@ function UsageWorkspace({ scope, projectName, boundClient, canSettle, canReadReq
         </div>
       </header>
 
-      <UsageControls query={query} boundClient={boundClient} models={[...modelChoices].sort()} providers={[...providerChoices].sort()} onChange={changeFilters} />
+      <UsageControls query={query} boundClient={boundClient} models={[...modelChoices].sort()} providers={providers} onChange={changeFilters} />
 
       {current && <UsageSummary report={current} />}
       <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,2.6fr)_minmax(15rem,1fr)]">

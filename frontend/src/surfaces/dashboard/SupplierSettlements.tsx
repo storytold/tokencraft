@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Button, Card, Input } from "@/components/ui";
 import { errorMessage, gatewayRequest, withProject, type ProjectScope } from "@/lib/gateway";
-import { formatNanoUsd, providerNames, type Provider } from "@/surfaces/comparison/api";
+import { formatNanoUsd, providerLabel, type Provider } from "@/surfaces/comparison/api";
 
 type Posting = {
   revision: number;
@@ -99,7 +99,7 @@ export function SupplierSettlements({ scope, onRecorded }: { scope: ProjectScope
       </form>
       {history && <>
         <p className="break-words text-sm text-muted">
-          <code>{history.request_id}</code> · {providerNames[history.provider]} · {formatNanoUsd(history.estimated_usd_nanos)} estimated
+          <code>{history.request_id}</code> · {providerLabel(history.provider)} · {formatNanoUsd(history.estimated_usd_nanos)} estimated
         </p>
         {history.eligible ? <form className="flex flex-wrap items-end gap-3" onSubmit={record}>
           <label className="w-full max-w-44 space-y-1 text-sm font-medium">Supplier amount (USD)

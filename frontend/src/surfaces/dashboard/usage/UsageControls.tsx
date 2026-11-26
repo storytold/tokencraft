@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { CalendarDays, ChevronDown, SlidersHorizontal, X } from "lucide-react";
 import { ChoicePicker } from "@/components/ChoicePicker";
 import { Button, Card, Input, Select } from "@/components/ui";
-import { providerLabel, type Provider } from "@/surfaces/comparison/api";
+import { isProviderId } from "@/lib/gateway";
+import { providerLabel } from "@/surfaces/comparison/api";
 import { shiftDate } from "@/surfaces/requests/historyDiagnostics";
 import { customWindow, periods, recentWindow, usageModelName, windowLabel, type UsageSelection } from "./usageData";
 
@@ -13,6 +14,7 @@ export function UsageControls({ query, boundClient, models, providers, onChange 
   onChange: (query: UsageSelection) => void;
 }) {
   const [showDates, setShowDates] = useState(false);
+  const [filterError, setFilterError] = useState("");
   const activePeriod = periods.find((days) => {
     const { from, to } = recentWindow(days);
     return query.from === from && query.to === to;
@@ -50,7 +52,7 @@ export function UsageControls({ query, boundClient, models, providers, onChange 
           }),
         ]} onChange={(model) => onChange({ ...query, model })} />
         <label className={fieldClass}>Provider
-          <Select className="rounded-lg" value={query.provider} onChange={(event) => onChange({ ...query, provider: event.target.value as Provider | "" })}>
+          <Select className="rounded-lg" value={query.provider} onChange={(event) => onChange({ ...query, provider: event.target.value })}>
             <option value="">All providers</option>
             {providers.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
           </Select>
@@ -75,14 +77,25 @@ export function UsageControls({ query, boundClient, models, providers, onChange 
             <SlidersHorizontal className="h-4 w-4" aria-hidden /> More filters
             <ChevronDown className="h-3.5 w-3.5 group-open:rotate-180" aria-hidden />
           </summary>
-          <form key={JSON.stringify([query.model, query.client_ref, query.app_ref])} className="mt-3 grid items-end gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_auto]" onSubmit={(event) => {
+          <form key={JSON.stringify([query.model, query.provider, query.client_ref, query.app_ref])}
+            className="mt-3 grid items-end gap-3 sm:grid-cols-2 xl:grid-cols-4" onSubmit={(event) => {
             event.preventDefault();
             const fields = new FormData(event.currentTarget);
-            onChange({ ...query, model: String(fields.get("model")).trim(),
+            const provider = String(fields.get("provider")).trim();
+            if (provider && !isProviderId(provider)) {
+              setFilterError("Enter a lowercase provider ID of up to 64 letters, digits, underscores, or hyphens.");
+              return;
+            }
+            setFilterError("");
+            onChange({ ...query, provider, model: String(fields.get("model")).trim(),
               client_ref: boundClient ? "" : String(fields.get("client")).trim(), app_ref: String(fields.get("app")).trim() });
           }}>
             <label className={fieldClass}>Model ID
               <Input name="model" defaultValue={query.model} maxLength={64} placeholder="All models" />
+            </label>
+            <label className={fieldClass}>Provider ID
+              <Input name="provider" defaultValue={query.provider} maxLength={64} placeholder="All providers"
+                autoCapitalize="none" spellCheck={false} onChange={() => setFilterError("")} />
             </label>
             <label className={fieldClass}>Client reference
               <Input name="client" defaultValue={boundClient ?? query.client_ref} readOnly={Boolean(boundClient)} maxLength={64} placeholder="All clients" />
@@ -91,6 +104,7 @@ export function UsageControls({ query, boundClient, models, providers, onChange 
               <Input name="app" defaultValue={query.app_ref} maxLength={64} placeholder="All apps" />
             </label>
             <Button type="submit" variant="outline" className="justify-self-start rounded-lg">Apply filters</Button>
+            {filterError && <p role="alert" className="text-sm text-rose-500 sm:col-span-2 xl:col-span-4">{filterError}</p>}
           </form>
         </details>
       </div>

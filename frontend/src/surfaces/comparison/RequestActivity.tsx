@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Clock, Radio, RefreshCw } from "lucide-react";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import type { ProjectScope } from "@/lib/gateway";
-import { comparisonApi, errorMessage, formatNanoUsd, providerNames, usd, type ModelQuote, type PromptMode, type Trace } from "./api";
+import { comparisonApi, errorMessage, formatNanoUsd, providerLabel, usd, type ModelQuote, type PromptMode, type Trace } from "./api";
 import { costStateNames, RequestHistoryFilters, statusNames } from "./RequestHistoryFilters";
 import { ProviderTrace } from "./ProviderTrace";
 import { PolicySummary } from "./PolicySummary";
@@ -224,7 +224,8 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
           <h2 className="flex items-center gap-2 text-lg font-semibold"><Clock className="h-4 w-4 text-brand" aria-hidden /> Request history</h2>
           <Button type="button" variant="ghost" size="sm" aria-label="Refresh history" onClick={refreshHistory}><RefreshCw className="h-4 w-4" aria-hidden /></Button>
         </div>
-        <RequestHistoryFilters key={JSON.stringify(filters)} applied={filters} boundClient={boundClient} onApply={filterHistory} />
+        <RequestHistoryFilters key={JSON.stringify(filters)} applied={filters} boundClient={boundClient}
+          providers={history?.requests.map((row) => row.provider)} onApply={filterHistory} />
         {historyError && <p role="alert" className="text-sm text-rose-500">{historyError}</p>}
         {history && history.requests.length > 0 && (
           <ul className="divide-y divide-border">
@@ -234,7 +235,7 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium" title={item.model}>{item.model}</span>
                     <span className="mt-1 block break-words text-xs text-muted">
-                      {[providerNames[item.provider], item.app_ref, item.client_ref].filter(Boolean).join(" · ")}
+                      {[providerLabel(item.provider), item.app_ref, item.client_ref].filter(Boolean).join(" · ")}
                     </span>
                     <span className="mt-1 block text-xs text-muted">
                       {costStateNames[item.cost_state]}
@@ -296,7 +297,7 @@ function TraceDetail({ trace, scope, canceling, onCancel, canManageRequests, onC
         <div><dt className="text-muted">Model</dt><dd className="mt-1 font-medium">{trace.model}</dd></div>
         <div><dt className="text-muted">Client reference</dt><dd className="mt-1 break-all font-mono">{trace.client_ref ?? "—"}</dd></div>
         <div><dt className="text-muted">App reference</dt><dd className="mt-1 break-all font-mono">{trace.app_ref ?? "—"}</dd></div>
-        <div><dt className="text-muted">Provider</dt><dd className="mt-1">{providerNames[trace.provider]}</dd></div>
+        <div><dt className="text-muted">Provider</dt><dd className="mt-1">{providerLabel(trace.provider)}</dd></div>
         <div><dt className="text-muted">Quoted estimate</dt><dd className="mt-1 font-mono">{usd(trace.estimated_usd_nanos)}</dd></div>
         <div><dt className="text-muted">{trace.upstream ? "Provider-reported cost" : "Mock provider reported"}</dt>
           <dd className="mt-1 font-mono">{trace.upstream ? formatNanoUsd(trace.upstream.reported_usd_nanos) : usd(trace.mock_reported_usd_nanos)}</dd>

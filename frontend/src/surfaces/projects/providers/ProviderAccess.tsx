@@ -3,17 +3,14 @@ import { Link } from "react-router-dom";
 import { Checkbox, Badge, Button, Select } from "@/components/ui";
 import { errorMessage, gatewayRequest, isGatewayEndpointUnavailable, withProject, type ProjectScope } from "@/lib/gateway";
 import { useOrg } from "@/lib/org";
+import { providerLabel } from "@/surfaces/comparison/api";
 import { ConnectorProviderKeys, ProjectProviderKeys } from "../ProjectProviderKeys";
 import { ProjectDisclosure } from "../ProjectDisclosure";
 import type { Project } from "../api";
 import { kindLabel, providerOnboarding, type Inventory, type Offer, type ProviderScope } from "./provider-onboarding";
 
-const labels: Record<string, string> = {
-  fal: "fal", kinovi: "Kinovi", openrouter: "OpenRouter", self_hosted: "Self-hosted",
-};
-
-export function providerTitle(offer: Offer) {
-  return offer.adapter === "mock" ? "Synthetic fixture" : labels[offer.provider] ?? offer.provider;
+export function providerTitle(offer: Pick<Offer, "provider" | "adapter">) {
+  return offer.adapter === "mock" ? "Synthetic fixture" : providerLabel(offer.provider);
 }
 
 export function groupConnections(offers: Offer[]) {

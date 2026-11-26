@@ -1,6 +1,6 @@
 import { Route, Server } from "lucide-react";
 import {
-  providerNames, type ComputeTargetAttempt, type EvidenceStep, type EvidenceTone,
+  providerLabel, type ComputeTargetAttempt, type EvidenceStep, type EvidenceTone,
   type ProviderAttemptState, type ProviderPath,
 } from "./api";
 
@@ -34,7 +34,7 @@ export function ProviderPathPanel({ path, ...selection }: TraceSelection & { pat
       </div>
       <ol className="grid min-w-0 gap-2 sm:grid-cols-2">
         {path.attempts.map((attempt) => {
-          const label = attempt.provider ? providerNames[attempt.provider] : "Provider offer";
+          const label = attempt.provider ? providerLabel(attempt.provider) : "Provider offer";
           const state = states[attempt.state];
           const targets = attempt.compute_attempts ?? [];
           return (

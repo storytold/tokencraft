@@ -1,7 +1,7 @@
 import { useLayoutEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Link2, ChevronDown, ChevronLeft, ChevronRight, Clock, List, Radio, RefreshCw, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { Badge, Button, Card } from "@/components/ui";
-import { providerNames, usd, type Trace } from "@/surfaces/comparison/api";
+import { providerLabel, usd, type Trace } from "@/surfaces/comparison/api";
 import { costStateNames, RequestHistoryFilters, statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
 import { CopyRequestId } from "./CopyRequestId";
 import { diagnosticNames, shiftDate, validDate, type InvestigationFilters } from "./historyDiagnostics";
@@ -20,7 +20,7 @@ function filterChips(filters: InvestigationFilters) {
     const end = to && validDate(to) ? shiftDate(to, -1) : to;
     chips.push({ label: from === end ? `${from} UTC` : `${from ?? "…"} – ${end ?? "…"} UTC`, keys: ["from", "to"] });
   }
-  if (provider) chips.push({ label: providerNames[provider] ?? provider, keys: ["provider"] });
+  if (provider) chips.push({ label: providerLabel(provider), keys: ["provider"] });
   if (model) chips.push({ label: `${filters.exact_model ? "Exact model" : "Model"} · ${model}`, keys: ["model", "exact_model"] });
   if (client_ref || filters.client_unattributed) chips.push({ label: client_ref ? `Client · ${client_ref}` : "Unattributed clients", keys: ["client_ref", "client_unattributed"] });
   if (app_ref || filters.app_unattributed) chips.push({ label: app_ref ? `App · ${app_ref}` : "Unattributed apps", keys: ["app_ref", "app_unattributed"] });
@@ -145,7 +145,7 @@ export function RequestsWorkspace({
               </div>
             </div>
             <div id={filtersId} hidden={panel !== "filters"}>
-              <RequestHistoryFilters embedded key={JSON.stringify(filters)} applied={filters}
+              <RequestHistoryFilters embedded key={JSON.stringify(filters)} applied={filters} providers={rows.map((row) => row.provider)}
                 boundClient={boundClient} onApply={(next) => {
                   onApply(next);
                   setPanel(null);
@@ -153,7 +153,7 @@ export function RequestsWorkspace({
                 }} />
             </div>
             <div id={chatId} hidden={panel !== "chat"}>
-              <RequestFilterChat filters={filters} onApply={onApply}
+              <RequestFilterChat filters={filters} providers={rows.map((row) => row.provider)} onApply={onApply}
                 describe={(value) => filterChips(value).map(({ label }) => label).join(" · ") || "All requests"} />
             </div>
             <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick views">
@@ -198,7 +198,7 @@ export function RequestsWorkspace({
                 <tbody>
                   {rows.map((item) => {
                     const time = item.created_at ? <time dateTime={item.created_at}>{shortTime.format(new Date(item.created_at))}</time> : null;
-                    const provider = providerNames[item.provider] ?? item.provider;
+                    const provider = providerLabel(item.provider);
                     return <tr key={item.id} data-selected={item.id === requestId}>
                       <td>
                         <button type="button" data-request-id={item.id} aria-current={item.id === requestId || undefined}

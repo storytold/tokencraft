@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { Checkbox, Button, Card, Input, Select } from "@/components/ui";
-import type { Provider } from "@/lib/gateway";
+import { isProviderId } from "@/lib/gateway";
 import type { Project } from "../api";
 import { ProjectSharingFields } from "./ProviderAccess";
 import { DiscoveryPanel } from "./DiscoveryPanel";
@@ -14,11 +14,12 @@ import {
 } from "./provider-onboarding";
 
 const MAX_MODELS = 24;
-const pluginTemplates: Partial<Record<Provider, {
+type PluginTemplate = "fal" | "kinovi" | "openrouter";
+const pluginTemplates: Record<PluginTemplate, {
   name: string;
   connection: Connection;
   model: Pick<ModelDraft, "kind" | "upstream" | "alias"> & Partial<ModelDraft>;
-}>> = {
+}> = {
   fal: { name: "fal", connection: "connector", model: { kind: "image", upstream: "fal-ai/flux/dev", alias: "flux-dev" } },
   kinovi: { name: "Kinovi", connection: "connector", model: { kind: "video", upstream: "seedance-20", alias: "seedance-2" } },
   openrouter: { name: "OpenRouter", connection: "chat", model: { kind: "text", upstream: "", alias: "" } },
@@ -38,6 +39,7 @@ type Props = {
 export function ProviderEditor({ scope, projects, discoveryEnabled, existing, onPreview, clearPreview, onCancel, busy }: Props) {
   const [connection, setConnection] = useState<Connection>(existing?.adapter === "openai_compatible_chat" ? "chat" : "connector");
   const [name, setName] = useState("");
+  const [providerId, setProviderId] = useState("");
   const [bindingOverride, setBindingOverride] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [source, setSource] = useState("");
@@ -45,7 +47,7 @@ export function ProviderEditor({ scope, projects, discoveryEnabled, existing, on
   const [envOverride, setEnvOverride] = useState("");
   const [useChatKey, setUseChatKey] = useState(false);
   const [defaultKind, setDefaultKind] = useState<Kind>(existing?.pricing.kind ?? "image");
-  const [template, setTemplate] = useState<Provider>();
+  const [template, setTemplate] = useState<PluginTemplate>();
   const [sharing, setSharing] = useState<string[] | null>(null);
   const [models, setModels] = useState<ModelDraft[]>([]);
   const [error, setError] = useState("");
@@ -59,11 +61,12 @@ export function ProviderEditor({ scope, projects, discoveryEnabled, existing, on
     setEnvOverride("");
   }
 
-  function useTemplate(provider: Provider | undefined) {
+  function useTemplate(provider: PluginTemplate | undefined) {
     clearPreview();
     setError("");
     setTemplate(provider);
     setName(provider ? pluginTemplates[provider]?.name ?? "" : "");
+    setProviderId("");
     setBindingOverride("");
     setEndpoint("");
     setRevision("v1");
@@ -107,7 +110,11 @@ export function ProviderEditor({ scope, projects, discoveryEnabled, existing, on
         kind: connection, name: bindingName, endpoint: endpoint.trim(), ...(useChatKey ? { key_env: env } : {}),
       };
       if (sharing?.length === 0) throw new Error("Select at least one project.");
-      onPreview({ kind: "attach", name: name.trim(), binding, models: reviewed, provider_id: template }, evidence, sharing);
+      const identity = template ?? (providerId.trim() || undefined);
+      if (identity && !isProviderId(identity)) {
+        throw new Error("Enter a lowercase provider ID of up to 64 letters, digits, underscores, or hyphens.");
+      }
+      onPreview({ kind: "attach", name: name.trim(), binding, models: reviewed, provider_id: identity }, evidence, sharing);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Check the provider fields.");
     }
@@ -124,7 +131,7 @@ export function ProviderEditor({ scope, projects, discoveryEnabled, existing, on
           {!existing && (
             <>
               <Field label="Provider plugin">
-                <Select value={template ?? ""} onChange={(event) => useTemplate((event.target.value || undefined) as Provider | undefined)}>
+                <Select value={template ?? ""} onChange={(event) => useTemplate((event.target.value || undefined) as PluginTemplate | undefined)}>
                   <option value="">Custom connection</option>
                   <option value="fal">fal plugin</option>
                   <option value="kinovi">Kinovi plugin</option>
@@ -141,6 +148,10 @@ export function ProviderEditor({ scope, projects, discoveryEnabled, existing, on
                   <option value="chat">OpenAI-compatible chat</option>
                 </Select></Field>
               </div>
+              {!template && <Field label="Provider ID">
+                <Input maxLength={64} value={providerId} placeholder="self_hosted" autoCapitalize="none" spellCheck={false}
+                  onChange={(event) => setProviderId(event.target.value)} />
+              </Field>}
               <Field label={connection === "connector" ? "Connector origin" : "Chat completions endpoint"}>
                 <Input required maxLength={2048} value={endpoint}
                   placeholder={connection === "connector" ? "https://connector.example.com/" : "http://127.0.0.1:11434/v1/chat/completions"}

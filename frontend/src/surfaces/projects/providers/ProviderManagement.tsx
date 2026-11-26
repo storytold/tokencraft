@@ -16,7 +16,6 @@ import {
   type Change, type Inventory, type Offer, type Preview, type Pricing, type ProviderScope,
 } from "./provider-onboarding";
 
-const providerLabel = { openrouter: "OpenRouter", fal: "fal", kinovi: "Kinovi", self_hosted: "Self-hosted" };
 
 type Editor = { kind: "connect" } | { kind: "models" | "price"; offer: Offer };
 type ReviewedChange = { preview: Preview; evidence: unknown[] };
@@ -112,10 +111,10 @@ export function ProviderManagement({ scope, projects, operations, children }: { 
   const canFilter = (inventory?.offers.length ?? catalog?.offers.length ?? 0) > 6;
   const query = canFilter ? filter.trim().toLowerCase() : "";
   const publicOffers = catalog?.offers.filter((offer) => [offer.id, offer.model,
-    offer.adapter === "mock" ? "Synthetic fixture" : providerLabel[offer.provider] ?? offer.provider,
+    providerTitle(offer),
   ].some((value) => value.toLowerCase().includes(query)));
   const offers = inventory?.offers.filter((offer) => [
-    offer.id, offer.model, offer.adapter === "mock" ? "Synthetic fixture" : providerLabel[offer.provider] ?? offer.provider, offer.binding, kindLabel[offer.pricing.kind],
+    offer.id, offer.model, providerTitle(offer), offer.binding, kindLabel[offer.pricing.kind],
   ].some((value) => value?.toLowerCase().includes(query))) ?? [];
 
   const firstOfferByBinding = new Map<string, string>();
@@ -164,7 +163,7 @@ export function ProviderManagement({ scope, projects, operations, children }: { 
                   <li key={offer.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
                     <div className="min-w-0">
                       <p className="break-all font-semibold">{offer.model}</p>
-                      <p className="text-muted">{offer.adapter === "mock" ? "Synthetic fixture" : providerLabel[offer.provider] ?? offer.provider}</p>
+                      <p className="text-muted">{providerTitle(offer)}</p>
                     </div>
                     <Badge>{kindLabel[offer.pricing.kind]}</Badge>
                   </li>
@@ -192,7 +191,7 @@ export function ProviderManagement({ scope, projects, operations, children }: { 
                         <Badge>{kindLabel[offer.pricing.kind]}</Badge>
                         {!offer.allowed_by_policy && <Badge tone="amber">Blocked by organization allowlist</Badge>}
                       </div>
-                      <p className="break-words text-muted">{offer.adapter === "mock" ? "Synthetic fixture" : providerLabel[offer.provider] ?? offer.provider}{offer.binding && ` · ${offer.binding}`}</p>
+                      <p className="break-words text-muted">{providerTitle(offer)}{offer.binding && ` · ${offer.binding}`}</p>
                       <p className="break-words"><Rate price={offer.pricing} /></p>
                       {firstOfferByConnection.get(offer.connection_id) === offer.id && inventory.policy_revision !== undefined &&
                         <p className="text-xs text-muted">{offer.selected_projects
