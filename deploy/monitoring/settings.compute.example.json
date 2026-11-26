@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "interval_seconds": 15,
+  "cells": [
+    {
+      "id": "dev-cell",
+      "providers": ["self_hosted"],
+      "compute_profile": {
+        "catalog": "../../plugins/providers/compute/examples/two-target-chat/catalog.json",
+        "bindings": "../../plugins/providers/compute/examples/two-target-chat/chat-bindings.json"
+      }
+    }
+  ],
+  "targets": []
+}

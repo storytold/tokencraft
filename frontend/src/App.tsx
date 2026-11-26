@@ -42,7 +42,6 @@ const Overview = lazy(() => import("@/surfaces/dashboard/Overview"));
 const Requests = lazy(() => import("@/surfaces/dashboard/Requests"));
 const GatewayRequestsLayout = lazy(() => import("@/surfaces/dashboard/GatewayRequestsLayout"));
 const GatewayRequests = lazy(() => import("@/surfaces/dashboard/GatewayRequests"));
-const GatewaySetup = lazy(() => import("@/surfaces/dashboard/GatewaySetup"));
 const Providers = lazy(() => import("@/surfaces/dashboard/Providers"));
 const Projects = lazy(() => import("@/surfaces/projects/Projects"));
 const Workflows = lazy(() => import("@/surfaces/workflows/WorkflowsPage"));
@@ -54,6 +53,16 @@ const Organization = lazy(() => import("@/surfaces/dashboard/Organization"));
 const AuditLogPage = lazy(() => import("@/surfaces/dashboard/AuditLog"));
 const Settings = lazy(() => import("@/surfaces/dashboard/Settings"));
 const Admin = lazy(() => import("@/surfaces/admin/Admin"));
+
+function FormerOperationsRoute() {
+  const { accountId } = useParams();
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  params.delete("view");
+  const query = params.toString();
+  const path = accountId ? `/dashboard/${encodeURIComponent(accountId)}/providers` : "/dashboard/providers";
+  return <Navigate replace to={path + (query ? `?${query}` : "")} />;
+}
 
 function CompareRoute() {
   const { search } = useLocation();
@@ -183,11 +192,11 @@ export default function App() {
           {demoEnabled && <Route path="/dashboard/:accountId?/projects" element={<Projects />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/workflows" element={<Workflows />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/providers" element={<Providers />} />}
-          {demoEnabled && <Route path="/dashboard/:accountId?/providers/operations" element={<Providers operations />} />}
+          {demoEnabled && <Route path="/dashboard/:accountId?/providers/operations" element={<FormerOperationsRoute />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/projects/keys" element={<Projects view="keys" />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/projects/providers" element={<Projects view="providers" />} />}
-          {demoEnabled && <Route path="/dashboard/:accountId?/projects/providers/operations" element={<Providers operations />} />}
-          {demoEnabled && <Route path="/dashboard/:accountId?/setup" element={<GatewaySetup />} />}
+          {demoEnabled && <Route path="/dashboard/:accountId?/projects/providers/operations" element={<FormerOperationsRoute />} />}
+          {demoEnabled && <Route path="/dashboard/:accountId?/setup" element={<FormerOperationsRoute />} />}
           <Route path="/dashboard/:accountId?/billing" element={demoEnabled ? <Usage /> : <Billing />} />
           <Route path="/dashboard/:accountId?/keys" element={<Keys />} />
           <Route path="/dashboard/:accountId?/organization" element={<Organization />} />

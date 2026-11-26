@@ -28,6 +28,7 @@ from postgres_tools import postgres_bin
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / ".github/fixtures/container"
 MEDIA = ROOT / "plugins/tools/media"
+MONITOR = ROOT / "deploy/monitoring"
 HOST = "127.0.0.1"
 
 
@@ -395,8 +396,10 @@ def verify_worker_binding_scope(gateway, directory, settings, registry, port, se
 def verify_generation_rollout(gateway, directory, settings, step_cap):
     candidate = directory / "candidate-generation-catalog.json"
     config = json.loads(Path(settings["TOKENCRAFT_CORE_CATALOG"]).read_bytes())
-    offer, private = config["offers"]
-    assert offer["id"] == "runtime_image"
+    offers = config["offers"]
+    offer_by_id = {entry["id"]: entry for entry in offers}
+    offer = offer_by_id["runtime_image"]
+    private = offer_by_id["a_private_image"]
 
     def check(blocked, **overrides):
         candidate.write_text(json.dumps(config))
@@ -413,9 +416,9 @@ def verify_generation_rollout(gateway, directory, settings, step_cap):
         return report["base_revision"]
 
     check(False)
-    config["offers"] = [private]
+    config["offers"] = [entry for entry in offers if entry["id"] != offer["id"]]
     check(True)
-    config["offers"] = [offer, private]
+    config["offers"] = offers
     offer["pricing"]["aspect_ratios"] = ["1:1"]
     check(True)
     offer["pricing"]["aspect_ratios"] = ["4:3"]
@@ -1057,6 +1060,169 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     print("PASS shared workflow key attributes customers in signed webhook retries, traces, and usage under app and client budgets")
 
 
+class ComputeFixture(BaseHTTPRequestHandler):
+    def json_reply(self, status, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+    def do_GET(self):
+        if self.path != "/v1/models":
+            return self.json_reply(404, {})
+        models = [] if self.server.throttled else [{"id": self.server.model}]
+        self.json_reply(200, {"data": models})
+
+    def do_POST(self):
+        if self.path != "/v1/chat/completions":
+            return self.json_reply(404, {})
+        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if payload["model"] != self.server.model or payload["stream"]:
+            return self.json_reply(400, {"error": {"message": "unexpected fixture request"}})
+        self.server.requests += 1
+        if self.server.throttled:
+            return self.json_reply(429, {"error": {"message": "fixture capacity busy"}})
+        self.json_reply(200, {
+            "id": "completion-" + self.server.label,
+            "model": self.server.model,
+            "choices": [{"message": {"content": self.server.label}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        })
+
+
+@contextmanager
+def compute_profile(directory):
+    catalog = json.loads((FIXTURES / "runtime-catalog.json").read_bytes())
+    bindings = []
+    probes = []
+    servers = {}
+    location = {"cloud": "local", "region": "workstation"}
+    with ExitStack() as stack:
+        for supplier, group, upstream, replicas in (
+            ("self_hosted", "fixture-chat", "local-chat", ("primary", "standby")),
+            ("openrouter", "fixture-partner", "partner-chat", ("partner",)),
+        ):
+            catalog["offers"].append({
+                "id": group, "provider": supplier, "model": group, "adapter": "openai_compatible_chat",
+                "local_binding": group, "upstream_model": upstream,
+                "pricing": {"kind": "text", "usd_nanos_per_1000_input_tokens": 0,
+                            "usd_nanos_per_1000_output_tokens": 0},
+            })
+            targets = []
+            for index, label in enumerate(replicas):
+                server = stack.enter_context(HTTPServer((HOST, 0), ComputeFixture))
+                server.label = label
+                server.model = upstream
+                server.throttled = label == "primary"
+                server.requests = 0
+                thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+                thread.start()
+                stack.callback(thread.join, 2)
+                stack.callback(server.shutdown)
+                servers[label] = server
+                targets.append({
+                    "id": label, "location": location, "zone": "test", "priority": index,
+                    "endpoint": f"http://{HOST}:{server.server_port}/v1/chat/completions",
+                    "retry_on_rate_limit": server.throttled,
+                })
+                probes.append({"provider": supplier, "stack": group, "target": label, "id": "fixture-" + label})
+            bindings.append({"name": group, "allowed_locations": [location], "targets": targets})
+        catalog_path = directory / "operations-catalog.json"
+        bindings_path = directory / "operations-bindings.json"
+        catalog_path.write_text(json.dumps(catalog))
+        bindings_path.write_text(json.dumps({"version": 1, "cell": "fixture", "bindings": bindings}))
+        yield {"catalog": str(catalog_path), "bindings": str(bindings_path), "probes": probes}, servers
+
+
+def verify_operations(directory, env, psql, pg_env, api_port, worker_port, account, project, capacity_token,
+                      session, profile, servers):
+    project_path = f"/v1/projects/{project}/service-principals?account_id={account}"
+    principal, _ = call(api_port, project_path, 201, method="POST", headers=session, body={
+        "name": "Operations compute smoke", "scopes": ["requests:submit", "requests:read"],
+    })
+    bearer = {"Authorization": "Bearer " + principal["token"]}
+    for model, expected in (("fixture-chat", "standby"), ("fixture-partner", "partner")):
+        result, _ = call(api_port, "/v1/chat/completions", 200, method="POST", headers=bearer, body={
+            "model": model, "messages": [{"role": "user", "content": "Synthetic operations fixture"}],
+            "max_tokens": 8,
+        })
+        assert result["choices"][0]["message"]["content"] == expected
+    assert {name: server.requests for name, server in servers.items()} == {"primary": 1, "standby": 1, "partner": 1}
+
+    password = token_hex(32)
+    role = directory / "operations-role.sql"
+    role.write_text("\\getenv monitor_password TOKENCRAFT_OPERATIONS_FIXTURE_PASSWORD\n"
+                    "CREATE ROLE tokencraft_monitor_smoke LOGIN PASSWORD :'monitor_password';\n")
+    command(*psql, "-v", "monitor_role=tokencraft_monitor_smoke", "-f", role,
+            "-f", MONITOR / "install.sql", cwd=directory,
+            env=dict(pg_env, TOKENCRAFT_OPERATIONS_FIXTURE_PASSWORD=password))
+    service_file = directory / "monitor-libpq.conf"
+    service_file.write_text(f"[monitor_fixture]\nhost={HOST}\nport={pg_env['PGPORT']}\ndbname=postgres\n"
+                            "user=tokencraft_monitor_smoke\nsslmode=disable\n")
+    monitor_env = dict(env, PGSERVICEFILE=str(service_file), PGPASSWORD=password,
+                       TOKENCRAFT_MONITOR_PASSWORD=token_hex(32), TOKENCRAFT_CAPACITY_TOKEN=capacity_token,
+                       PATH=f"{Path(psql[0]).parent}{os.pathsep}{env['PATH']}")
+    rights = command(*psql, "-c", """
+        SELECT NOT has_table_privilege('tokencraft_monitor_smoke', 'public.gateway_requests', 'SELECT')
+           AND NOT has_any_column_privilege('tokencraft_monitor_smoke', 'public.gateway_provider_runs', 'SELECT')
+           AND has_function_privilege('tokencraft_monitor_smoke',
+               'tokencraft_monitor.sample(jsonb,jsonb,jsonb,integer,text,text)', 'EXECUTE')
+    """, cwd=directory, env=pg_env)
+    assert rights == "t"
+    config = directory / "monitor.json"
+    config.write_text(json.dumps({
+        "version": 1, "interval_seconds": 15,
+        "cells": [{"id": "fixture", "providers": ["self_hosted", "openrouter"], "pg_service": "monitor_fixture",
+                   "compute_profile": profile,
+                   "scopes": [{"id": "workflow-project", "account": account, "project": project},
+                              {"id": "other-project", "account": account, "project": "gprj_other"}]}],
+        "targets": [
+            {"id": identifier, "cell": "fixture", "kind": kind,
+             "url": f"http://{HOST}:{port}/internal/capacity", "token_env": "TOKENCRAFT_CAPACITY_TOKEN"}
+            for identifier, kind, port in (("fixture-api", "gateway", api_port), ("fixture-worker", "worker", worker_port))
+        ],
+    }))
+    port = loopback_port()
+    credentials = b64encode(("operator:" + monitor_env["TOKENCRAFT_MONITOR_PASSWORD"]).encode()).decode()
+    auth = {"Authorization": "Basic " + credentials}
+    with service("operations", [sys.executable, "-B", MONITOR / "monitor.py", "--config", config,
+                 "--state-dir", directory / "monitor-state", "--port", str(port)], directory, monitor_env,
+                 lambda: call(port, "/healthz", 200, headers=auth)[0]["collector_fresh"]):
+        call(port, "/", 401)
+        assert b"TokenCraft Operations" in call(port, "/", 200, headers=auth)[0]
+        exported, _ = call(port, "/metrics", 200, headers=auth)
+        assert b"tokencraft_monitor_workflow_outcome_succeeded" in exported
+        assert b'tokencraft_monitor_compute_rate_limited{cell="fixture",target="fixture-primary"} 1' in exported
+        overview, _ = call(port, "/api/overview", 200, headers=auth)
+        snapshot = overview["snapshot"]
+        worker = snapshot["targets"]["fixture-worker"]
+        assert worker["status"] == "up" and worker["signals"]["checks"]["migrations"] == "ready"
+        assert snapshot["targets"]["fixture-primary"]["status"] == "degraded"
+        assert snapshot["targets"]["fixture-primary"]["signals"]["missing_models"] == 1
+        assert all(snapshot["targets"]["fixture-" + name]["status"] == "up" for name in ("standby", "partner"))
+        cell = snapshot["cells"]["fixture"]
+        scopes = cell["scopes"]
+        measured = scopes["workflow-project"]["sample"]
+        assert measured["compute"]["fixture-primary"]["rate_limited"] == 1
+        assert measured["compute"]["fixture-primary"]["response_started"] == 0
+        for name in ("standby", "partner"):
+            target = measured["compute"]["fixture-" + name]
+            assert target["attempted"] == target["response_started"] == 1 and target["p95_response_headers_seconds"] >= 0
+        assert measured["provider"]["openrouter"]["succeeded"] == 1
+        assert scopes["workflow-project"]["sample"]["workflow_outcomes"]["succeeded"] > 0
+        assert scopes["other-project"]["sample"]["workflow_outcomes"]["sampled"] == 0
+        assert account not in json.dumps(snapshot) and project not in json.dumps(snapshot)
+        points, _ = call(port, "/api/history?metric=workflow_p95&id=fixture&scope=workflow-project",
+                         200, headers=auth)
+        assert any(point["value"] is not None for point in points["points"])
+    print("PASS private Operations console, scoped PostgreSQL history, model availability, and compute fallback across providers")
+
+
 def rehearse(gateway, admin, directory, *, verification=None):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
     pg = postgres_bin()
@@ -1103,11 +1269,16 @@ def rehearse(gateway, admin, directory, *, verification=None):
                 "-f", FIXTURES / "create-runtime-role.sql", "-f", ROOT / "deploy/postgres/grant-runtime.sql",
                 cwd=directory, env=dict(pg_env, TOKENCRAFT_RUNTIME_APP_PASSWORD=runtime_password))
         api_port = loopback_port()
+        capacity_token = token_hex(32)
+        profile, compute = stack.enter_context(compute_profile(directory))
         settings = dict(env, FOUNDATION_ENV="development", TOKENCRAFT_PROCESS_ROLE="api",
             DATABASE_URL=f"postgresql://tokencraft_runtime:{runtime_password}@{HOST}:{db_port}/postgres",
             APP_BASE_URL=f"http://localhost:{api_port}", API_GATEWAY_PORT=str(api_port),
             COOKIE_DOMAIN="localhost", COOKIE_SECURE="false", SESSION_SECRET=token_hex(32),
-            TOKENCRAFT_CORE_CATALOG=str(FIXTURES / "runtime-catalog.json"), TOKENCRAFT_WORKFLOW_KEY=token_hex(32))
+            TOKENCRAFT_CAPACITY_TOKEN=capacity_token,
+            TOKENCRAFT_CORE_CATALOG=profile["catalog"], TOKENCRAFT_LOCAL_CHAT_BINDINGS=profile["bindings"],
+            TOKENCRAFT_DEMO_PAYLOAD_KEY=token_hex(32),
+            TOKENCRAFT_WORKFLOW_KEY=token_hex(32))
         compatible = command(admin, "initialize-demo", cwd=directory, env=settings)
         assert compatible == "existing demo schema is compatible"
         current = schema_status(settings, "current", ready=True)
@@ -1118,8 +1289,8 @@ def rehearse(gateway, admin, directory, *, verification=None):
             session, account, project = provision(api_port)
             contract, _ = call(api_port, "/openapi.json", 200)
             for path in ("/v1/setup/status", "/v1/operations/queues", "/v1/operations/artifact-publication"):
-                expected = 200 if path in contract["paths"] else 404
-                call(api_port, f"{path}?account_id={account}", expected, headers=session)
+                assert path not in contract["paths"]
+                call(api_port, f"{path}?account_id={account}", 404, headers=session)
 
         if verification is not None:
             verification(gateway, directory, settings, session, account, project)
@@ -1127,12 +1298,13 @@ def rehearse(gateway, admin, directory, *, verification=None):
 
         settings["TOKENCRAFT_ENABLE_LEGACY_OPERATIONS"] = "true"
         scoped_catalog = directory / "scoped-catalog.json"
-        catalog = json.loads((FIXTURES / "runtime-catalog.json").read_bytes())
+        catalog = json.loads(Path(profile["catalog"]).read_bytes())
         catalog["offers"].append({
             **catalog["offers"][0], "id": "a_private_image", "model": "a_private_image", "provider": "fixture_private",
         })
         catalog["connection_access"] = {"fixture_private": {"account": account, "projects": [project]}}
         scoped_catalog.write_text(json.dumps(catalog))
+        profile["catalog"] = str(scoped_catalog)
         settings["TOKENCRAFT_CORE_CATALOG"] = str(scoped_catalog)
         media_port, token = loopback_port(), token_hex(32)
         delivery = stack.enter_context(service("delivery", [sys.executable, "-B", MEDIA / "server.py", "--pack", "delivery",
@@ -1177,7 +1349,10 @@ def rehearse(gateway, admin, directory, *, verification=None):
                         owner.stdin.close()
                         owner.wait(timeout=5)
 
+            worker_port = None
+
             def start_worker():
+                nonlocal worker_port
                 worker_port = loopback_port()
                 workers.enter_context(service(f"worker-{worker_port}", [gateway], directory,
                     dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)),
@@ -1197,6 +1372,7 @@ def rehearse(gateway, admin, directory, *, verification=None):
                 api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
                 check_rollout, submit_trial)
             verify_project_catalog(api_port, session, account, project)
+
             def check_generation(step_cap):
                 verify_generation_rollout(gateway, directory, settings, step_cap)
 
@@ -1227,6 +1403,8 @@ def rehearse(gateway, admin, directory, *, verification=None):
 
             verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver,
                                        check_generation, hold_worker_slots)
+            verify_operations(directory, env, psql, pg_env, api_port, worker_port, account, project, capacity_token,
+                              session, profile, compute)
 
 
 def main():

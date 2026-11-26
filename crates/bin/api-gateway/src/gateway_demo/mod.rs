@@ -88,11 +88,8 @@ pub(crate) use process::ProcessRole;
 #[openapi(
     paths(
         readiness::ready,
-        readiness::setup,
-        operations::queues,
         submission_limits::get,
         submission_limits::increase,
-        operations::publication,
         dispatch_control::get,
         dispatch_control::set,
         provider_recheck::schedule,
@@ -152,6 +149,7 @@ pub(crate) struct DemoConfig {
     quote_seals: Arc<quote_seals::QuoteSeals>,
     readiness: Arc<readiness::Readiness>,
     capacity_access: Option<Arc<capacity::Access>>,
+    legacy_operations: bool,
     catalog: Arc<CatalogStore>,
     webhooks: Option<Arc<webhooks::WebhookConfig>>,
     providers: Option<Arc<providers::ProviderRuntime>>,
@@ -247,6 +245,7 @@ pub(crate) fn startup_config(
         quote_seals: Arc::new(quote_seals::QuoteSeals::new(session_secret)),
         readiness,
         capacity_access: capacity::Access::load()?,
+        legacy_operations: matches!(std::env::var("TOKENCRAFT_ENABLE_LEGACY_OPERATIONS").as_deref(), Ok("true")),
         providers,
         catalog: Arc::new(CatalogStore::load(Arc::new(catalog))?),
         webhooks: webhooks::WebhookConfig::load(hosted)?.map(Arc::new),
@@ -258,7 +257,6 @@ pub(crate) fn startup_config(
 
 fn router(config: DemoConfig) -> Router<AppState> {
     let router = Router::new()
-        .route("/v1/setup/status", get(readiness::setup))
         .route(
             "/v1/projects/:project/providers",
             get(provider_onboarding::inventory)
@@ -275,12 +273,10 @@ fn router(config: DemoConfig) -> Router<AppState> {
         .route("/v1/compute-providers", get(compute_providers::inventory).put(compute_providers::update))
         .route("/v1/compute-providers/preview", post(compute_providers::preview).layer(DefaultBodyLimit::max(8 * 1024)))
         .route("/v1/routing-policy/history", get(provider_access::history))
-        .route("/v1/operations/queues", get(operations::queues))
         .route("/v1/rate-limits", get(submission_limits::get))
         .route("/v1/rate-limits/increase", post(submission_limits::increase).layer(DefaultBodyLimit::max(1024)))
         .route("/v1/provider-credentials/:binding", get(provider_credentials::list).put(provider_credentials::save))
         .route("/v1/provider-credentials/:binding/:version", delete(provider_credentials::revoke))
-        .route("/v1/operations/artifact-publication", get(operations::publication))
         .route("/v1/operations/dispatch", get(dispatch_control::get).put(dispatch_control::set))
         .route("/v1/projects/:project/requests/:request/recheck", post(provider_recheck::schedule))
         .route("/v1/catalog/offers", get(handlers::catalog))
@@ -363,6 +359,14 @@ fn router(config: DemoConfig) -> Router<AppState> {
             "/v1/projects/:project/keys/:key",
             delete(project_keys::revoke_key),
         );
+    let router = if config.legacy_operations {
+        router
+            .route("/v1/setup/status", get(readiness::setup))
+            .route("/v1/operations/queues", get(operations::queues))
+            .route("/v1/operations/artifact-publication", get(operations::publication))
+    } else {
+        router
+    };
     let router = match config.mcp {
         Some(settings) => router.merge(mcp::router(settings)),
         None => router,

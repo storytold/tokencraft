@@ -2,6 +2,8 @@
 
 Run a small self-hosted install with one combined gateway. Hosted cells can split the API and worker roles and adopt the controller independently. Each controller owns one cell, one API deployment, and one worker deployment. PostgreSQL remains authoritative for admissions, eligibility, and leases. Deployments can place those replicas across availability zones while keeping the same cell database and artifact namespace.
 
+[TokenCraft Operations](../deploy/monitoring/README.md#feed-the-replica-controller) can supply the probe, queue and connection signals to the replica controller from its existing sample. It uses the same deployment and provider headroom inputs as the standalone collector.
+
 ## Scale the saturated tier
 
 | Tier | Signal | Action |

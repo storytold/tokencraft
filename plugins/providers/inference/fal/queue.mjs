@@ -1,4 +1,4 @@
-import { serviceAuthorization } from './service-auth.mjs';
+import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { delegatedKey, keyTag, matchesKey } from './tenant-keys.mjs';
 import { legacyModel } from './models.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -67,7 +67,8 @@ export function required(name) {
 // Store the submit intent before the paid call. A crash at the acknowledgement
 // boundary leaves an unresolved intent, which suppresses another vendor POST.
 export async function queueServer({ state, token, provider, webhooks, tenantKeys = false,
-  previousToken, previousTokenExpiresAt }) {
+  previousToken, previousTokenExpiresAt, monitoringToken }) {
+  const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact', 'lookup']);
   const authorize = serviceAuthorization(token, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 24,
   });
@@ -272,20 +273,28 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
 
   const limits = { requestTimeout: 12_000, headersTimeout: 8_000, connectionsCheckingInterval: 1_000 };
   return createServer(limits, async (request, response) => {
+    if (monitor?.handle(request, response)) return;
     try {
       const callback = webhooks?.route(request);
       if (callback) return await completionCallback(request, response, callback);
       if (!authorize(request)) return send(response, 401, { error: 'unauthorized' });
-      if (request.method === 'POST' && request.url === '/v1/jobs') return await submit(request, response);
+      if (request.method === 'POST' && request.url === '/v1/jobs') {
+        monitor?.record('submit', response);
+        return await submit(request, response);
+      }
       const byRequest = /^\/v1\/jobs\/by-request\/([A-Za-z0-9_-]{1,128})$/.exec(request.url ?? '');
       if (request.method === 'GET' && byRequest) {
+        monitor?.record('lookup', response);
         const id = byRequest[1];
         const job = await load(id);
         if (job?.outcome?.status !== 'accepted') return send(response, 404, { error: 'unknown job' });
         return send(response, 200, { version: 1, request_id: id, handle: id });
       }
       const match = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,128})(?:\/artifacts\/([0-7]))?$/.exec(request.url ?? '');
-      if (request.method === 'GET' && match) return await lookup(request, response, match[1], match[2]);
+      if (request.method === 'GET' && match) {
+        monitor?.record(match[2] === undefined ? 'status' : 'artifact', response);
+        return await lookup(request, response, match[1], match[2]);
+      }
       return send(response, 404, { error: 'unknown endpoint' });
     } catch {
       if (response.headersSent) response.destroy();

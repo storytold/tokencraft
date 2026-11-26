@@ -1,4 +1,4 @@
-import { serviceAuthorization } from './service-auth.mjs';
+import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -25,17 +25,20 @@ async function readRequest(request) {
 }
 
 export function openRouterProxy({ endpoint, upstreamKey, tenantKeys = false, gatewayKey, models,
-  previousToken, previousTokenExpiresAt }) {
+  previousToken, previousTokenExpiresAt, monitoringToken }) {
+  const monitor = monitoringProbe(monitoringToken, gatewayKey, previousToken, ['chat']);
   const authorize = serviceAuthorization(gatewayKey, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 1,
   });
   return createServer(async (request, response) => {
+    if (monitor?.handle(request, response)) return;
     if (!authorize(request)) {
       return error(response, 401, 'unauthorized');
     }
     if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
       return error(response, 404, 'unknown endpoint');
     }
+    monitor?.record('chat', response);
     const delegated = request.headersDistinct[tenantKeyHeader];
     const tenantKey = delegated?.length === 1 ? delegated[0] : '';
     if (tenantKeys ? !/^sk-or-v1-[a-f0-9]{64}$/.test(tenantKey) : delegated !== undefined) {

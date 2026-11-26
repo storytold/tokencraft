@@ -2589,51 +2589,6 @@
         }
       }
     },
-    "/v1/operations/artifact-publication": {
-      "get": {
-        "tags": [
-          "meta"
-        ],
-        "operationId": "publication",
-        "parameters": [
-          {
-            "name": "account_id",
-            "in": "query",
-            "description": "Organization to inspect.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "project_id",
-            "in": "query",
-            "description": "Limit the snapshot to one project.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Timing and outcome evidence for the recent fal and Kinovi queue admissions.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PublicationReport"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      }
-    },
     "/v1/operations/dispatch": {
       "get": {
         "tags": [
@@ -2708,51 +2663,6 @@
           },
           "409": {
             "description": "The dispatch control revision changed."
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      }
-    },
-    "/v1/operations/queues": {
-      "get": {
-        "tags": [
-          "meta"
-        ],
-        "operationId": "queues",
-        "parameters": [
-          {
-            "name": "account_id",
-            "in": "query",
-            "description": "Organization to inspect.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "project_id",
-            "in": "query",
-            "description": "Limit the snapshot to one project.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Current request, workflow, webhook, and export backlogs and recent workflow outcomes for the authorized scope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OperationsReport"
-                }
-              }
-            }
           }
         },
         "security": [
@@ -5545,42 +5455,6 @@
         }
       }
     },
-    "/v1/setup/status": {
-      "get": {
-        "tags": [
-          "meta"
-        ],
-        "operationId": "setup",
-        "parameters": [
-          {
-            "name": "account_id",
-            "in": "query",
-            "description": "Organization whose administrator is requesting setup status.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Recent setup checks for this gateway instance.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SetupChecks"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      }
-    },
     "/v1/usage": {
       "get": {
         "tags": [
@@ -7021,16 +6895,6 @@
             "format": "int64"
           }
         }
-      },
-      "CheckStatus": {
-        "type": "string",
-        "enum": [
-          "checking",
-          "ready",
-          "unavailable",
-          "not_configured",
-          "external"
-        ]
       },
       "CompletionHint": {
         "type": "object",
@@ -8786,29 +8650,6 @@
           }
         }
       },
-      "OperationsReport": {
-        "type": "object",
-        "required": [
-          "observed_at",
-          "queues",
-          "workflows"
-        ],
-        "properties": {
-          "observed_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "queues": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/QueueDepth"
-            }
-          },
-          "workflows": {
-            "$ref": "#/components/schemas/WorkflowOperations"
-          }
-        }
-      },
       "Page_WebhookDelivery": {
         "type": "object",
         "required": [
@@ -9525,154 +9366,6 @@
             "format": "date-time"
           }
         }
-      },
-      "PublicationGroup": {
-        "type": "object",
-        "required": [
-          "provider",
-          "workload",
-          "timing"
-        ],
-        "properties": {
-          "provider": {
-            "type": "string"
-          },
-          "timing": {
-            "$ref": "#/components/schemas/PublicationTiming"
-          },
-          "workload": {
-            "type": "string"
-          }
-        }
-      },
-      "PublicationReport": {
-        "type": "object",
-        "required": [
-          "observed_at",
-          "sampled_admissions",
-          "sample_limit",
-          "totals",
-          "groups"
-        ],
-        "properties": {
-          "groups": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PublicationGroup"
-            }
-          },
-          "observed_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "sample_limit": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "sampled_admissions": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "totals": {
-            "$ref": "#/components/schemas/PublicationTiming"
-          }
-        }
-      },
-      "PublicationTiming": {
-        "type": "object",
-        "required": [
-          "observed",
-          "published",
-          "pending",
-          "unconfirmed",
-          "timing_samples"
-        ],
-        "properties": {
-          "observed": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "oldest_pending_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "p95_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "pending": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "published": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "timing_samples": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "unconfirmed": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "QueueDepth": {
-        "type": "object",
-        "required": [
-          "kind",
-          "count",
-          "dispatch_paused"
-        ],
-        "properties": {
-          "count": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "dispatch_paused": {
-            "type": "boolean"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/QueueKind"
-          },
-          "oldest_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workload": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "QueueKind": {
-        "type": "string",
-        "enum": [
-          "queued",
-          "running",
-          "awaiting_reconciliation",
-          "webhook_pending",
-          "webhook_dead",
-          "export_pending"
-        ]
       },
       "QuoteCandidate": {
         "type": "object",
@@ -11409,41 +11102,6 @@
           }
         }
       },
-      "SetupChecks": {
-        "type": "object",
-        "required": [
-          "ready",
-          "database",
-          "migrations",
-          "worker",
-          "provider_worker",
-          "artifact_storage",
-          "artifact_backend"
-        ],
-        "properties": {
-          "artifact_backend": {
-            "type": "string"
-          },
-          "artifact_storage": {
-            "$ref": "#/components/schemas/CheckStatus"
-          },
-          "database": {
-            "$ref": "#/components/schemas/CheckStatus"
-          },
-          "migrations": {
-            "$ref": "#/components/schemas/CheckStatus"
-          },
-          "provider_worker": {
-            "$ref": "#/components/schemas/CheckStatus"
-          },
-          "ready": {
-            "type": "boolean"
-          },
-          "worker": {
-            "$ref": "#/components/schemas/CheckStatus"
-          }
-        }
-      },
       "SignupBody": {
         "type": "object",
         "required": [
@@ -12614,112 +12272,6 @@
               "string",
               "null"
             ]
-          }
-        }
-      },
-      "WorkflowDepth": {
-        "type": "object",
-        "required": [
-          "count"
-        ],
-        "properties": {
-          "count": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "oldest_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "Admission timestamp of the oldest run in this state."
-          }
-        }
-      },
-      "WorkflowOperations": {
-        "type": "object",
-        "required": [
-          "queued",
-          "running",
-          "reconciling",
-          "due_queued",
-          "overdue",
-          "outcomes"
-        ],
-        "properties": {
-          "due_queued": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Queued runs eligible to be claimed at the observation time."
-          },
-          "outcomes": {
-            "$ref": "#/components/schemas/WorkflowOutcomes"
-          },
-          "overdue": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Active runs whose deadline has already passed."
-          },
-          "queued": {
-            "$ref": "#/components/schemas/WorkflowDepth"
-          },
-          "reconciling": {
-            "$ref": "#/components/schemas/WorkflowDepth"
-          },
-          "running": {
-            "$ref": "#/components/schemas/WorkflowDepth"
-          }
-        }
-      },
-      "WorkflowOutcomes": {
-        "type": "object",
-        "required": [
-          "sampled",
-          "sample_limit",
-          "succeeded",
-          "failed",
-          "canceled",
-          "expired",
-          "timing_samples"
-        ],
-        "properties": {
-          "canceled": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "expired": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "failed": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "p95_succeeded_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Time from admission to completion for successful runs."
-          },
-          "sample_limit": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "sampled": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Terminal runs sampled from the past 24 hours."
-          },
-          "succeeded": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "timing_samples": {
-            "type": "integer",
-            "format": "int64"
           }
         }
       }

@@ -1,0 +1,21 @@
+[Unit]
+Description=TokenCraft Operations
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tokencraft-monitor
+Group=tokencraft-monitor
+EnvironmentFile=/etc/tokencraft-monitor/monitor.env
+StateDirectory=tokencraft-monitor
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -B /opt/tokencraft/deploy/monitoring/monitor.py --config /etc/tokencraft-monitor/settings.json --state-dir /var/lib/tokencraft-monitor
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

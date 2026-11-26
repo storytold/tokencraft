@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { Download, Plus, RefreshCw } from "lucide-react";
 import { Badge, Button, Card, Input } from "@/components/ui";
 import { downloadBlob } from "@/lib/download";
@@ -20,7 +19,7 @@ import {
 type Editor = { kind: "connect" } | { kind: "models" | "price"; offer: Offer };
 type ReviewedChange = { preview: Preview; evidence: unknown[] };
 
-export function ProviderManagement({ scope, projects, operations, children }: { scope: ProviderScope; projects: Project[]; operations: string; children?: ReactNode }) {
+export function ProviderManagement({ scope, projects, children }: { scope: ProviderScope; projects: Project[]; children?: ReactNode }) {
   const { account_id } = scope;
   const [sharing, setSharing] = useState<Offer>();
   const [notice, setNotice] = useState("");
@@ -141,7 +140,6 @@ export function ProviderManagement({ scope, projects, operations, children }: { 
             <Button type="button" variant="outline" size="sm" disabled={loading || busy} onClick={reload}>
               <RefreshCw size={15} aria-hidden="true" />Refresh
             </Button>
-            <Link to={operations} className="inline-flex h-8 items-center rounded-md px-2 text-sm font-semibold text-muted hover:bg-surface2 hover:text-fg">Gateway operations</Link>
             {inventory && <Button type="button" size="sm" disabled={loading || busy} onClick={() => selectEditor({ kind: "connect" })}>
               <Plus size={16} aria-hidden="true" />Connect provider
             </Button>}

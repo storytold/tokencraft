@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "interval_seconds": 30,
+  "retention_days": 7,
+  "alerts": {
+    "consecutive_samples": 3,
+    "queue_seconds": 60,
+    "publication_seconds": 120,
+    "webhook_seconds": 300,
+    "failure_percent": 25,
+    "minimum_outcomes": 10
+  },
+  "cells": [
+    {
+      "id": "dev-cell",
+      "providers": ["fal", "kinovi", "openrouter", "self_hosted"],
+      "pg_service": "tokencraft_ops_cell_a",
+      "reserved_connections": 20
+    }
+  ],
+  "targets": [
+    {
+      "id": "gateway-a",
+      "cell": "dev-cell",
+      "kind": "gateway",
+      "url": "http://127.0.0.1:4000/internal/capacity",
+      "token_env": "TOKENCRAFT_CAPACITY_TOKEN"
+    },
+    {
+      "id": "worker-a",
+      "cell": "dev-cell",
+      "kind": "worker",
+      "url": "http://127.0.0.1:4001/internal/capacity",
+      "token_env": "TOKENCRAFT_CAPACITY_TOKEN"
+    },
+    {
+      "id": "fal-a",
+      "cell": "dev-cell",
+      "kind": "plugin",
+      "provider": "fal",
+      "url": "http://127.0.0.1:4021/internal/monitoring",
+      "token_env": "TOKENCRAFT_MONITOR_FAL"
+    },
+    {
+      "id": "chat-a",
+      "cell": "dev-cell",
+      "kind": "compute",
+      "provider": "self_hosted",
+      "stack": "local-chat",
+      "target": "primary",
+      "url": "http://127.0.0.1:4031/v1/models",
+      "expected_model": "local-chat"
+    },
+    {
+      "id": "chat-b",
+      "cell": "dev-cell",
+      "kind": "compute",
+      "provider": "self_hosted",
+      "stack": "local-chat",
+      "target": "standby",
+      "url": "http://127.0.0.1:4032/v1/models",
+      "expected_model": "local-chat"
+    }
+  ]
+}

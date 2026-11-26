@@ -1,4 +1,4 @@
-import { serviceAuthorization } from './service-auth.mjs';
+import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { delegatedKey, keyTag, matchesKey } from './tenant-keys.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
@@ -61,7 +61,8 @@ export function required(name) {
 // Store the submit intent before the paid call. A crash at the acknowledgement
 // boundary leaves an unresolved intent, which suppresses another vendor POST.
 export async function queueServer({ state, token, provider, tenantKeys = false,
-  previousToken, previousTokenExpiresAt }) {
+  previousToken, previousTokenExpiresAt, monitoringToken }) {
+  const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact']);
   const authorize = serviceAuthorization(token, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 24,
   });
@@ -195,11 +196,18 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
   }
 
   return createServer(async (request, response) => {
+    if (monitor?.handle(request, response)) return;
     try {
       if (!authorize(request)) return send(response, 401, { error: 'unauthorized' });
-      if (request.method === 'POST' && request.url === '/v1/jobs') return await submit(request, response);
+      if (request.method === 'POST' && request.url === '/v1/jobs') {
+        monitor?.record('submit', response);
+        return await submit(request, response);
+      }
       const match = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,128})(?:\/artifacts\/([0-7]))?$/.exec(request.url ?? '');
-      if (request.method === 'GET' && match) return await lookup(request, response, match[1], match[2]);
+      if (request.method === 'GET' && match) {
+        monitor?.record(match[2] === undefined ? 'status' : 'artifact', response);
+        return await lookup(request, response, match[1], match[2]);
+      }
       return send(response, 404, { error: 'unknown endpoint' });
     } catch {
       if (response.headersSent) response.destroy();

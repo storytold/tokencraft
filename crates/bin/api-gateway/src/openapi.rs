@@ -218,15 +218,15 @@ mod tests {
     assert!(documented.contains("/v1/chat/completions"));
     assert!(documented.contains("/v1/responses"));
     assert!(documented.contains("/ready"));
-    assert!(documented.contains("/v1/setup/status"));
+    assert!(!documented.contains("/v1/setup/status"));
     assert!(documented.contains("/v1/projects/{project}/requests/{request}/content"));
     for route in ["/v1/image", "/v1/video", "/v1/audio", "/v1/3d"] {
       assert!(documented.contains(route), "missing generation path {route}");
     }
-    assert!(documented.contains("/v1/operations/queues"));
+    assert!(!documented.contains("/v1/operations/queues"));
     assert!(documented.contains("/v1/operations/dispatch"));
     assert!(documented.contains("/v1/projects/{project}/requests/{request}/recheck"));
-    assert!(documented.contains("/v1/operations/artifact-publication"));
+    assert!(!documented.contains("/v1/operations/artifact-publication"));
     assert!(documented.contains("/v1/projects/{project}/client-budgets"));
     assert!(documented.contains("/v1/projects/{project}/client-budgets/{client_ref}"));
   }

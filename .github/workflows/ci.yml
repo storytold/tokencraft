@@ -20,6 +20,10 @@ jobs:
         run: |
           python3 -B -m unittest discover -s deploy/autoscaling -p test_policy.py
           python3 -B deploy/autoscaling/verify_postgres.py --pg-bin-dir "$(dirname "$(command -v initdb)")"
+      - name: Verify the separate operations collector
+        run: |
+          python3 -B -m unittest discover -s deploy/monitoring
+          node --check deploy/monitoring/web/console.js
       - name: Test the launcher, provider mappings, shared enums, and Rust SDK
         run: cargo test --locked -p tokencraft -p provider_mapping -p enums -p tokencraft_sdk
       - name: Check gateway contracts and run the bundled connector

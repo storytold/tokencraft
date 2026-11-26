@@ -11,7 +11,7 @@ use sha2::Sha256;
 use super::{
     process::ProcessRole,
     providers::{ProviderRuntime, MAX_PROVIDER_TASKS, MAX_SSE_READERS},
-    readiness::Readiness,
+    readiness::{Readiness, SetupChecks},
 };
 
 type ProbeMac = Hmac<Sha256>;
@@ -59,6 +59,7 @@ impl Access {
 pub(super) struct Signals {
     role: &'static str,
     ready: bool,
+    checks: SetupChecks,
     sse_readers: Option<usize>,
     sse_capacity: Option<usize>,
     provider_tasks: Option<usize>,
@@ -87,6 +88,7 @@ pub(super) async fn inspect(
             ProcessRole::Worker => "worker",
         },
         ready: readiness.traffic_ready(),
+        checks: readiness.snapshot(true),
         sse_readers: streams
             .map(|runtime| MAX_SSE_READERS.saturating_sub(runtime.streams.available_permits())),
         sse_capacity: streams.map(|_| MAX_SSE_READERS),

@@ -7,7 +7,7 @@ import { providerOnboarding } from "@/surfaces/projects/providers/provider-onboa
 type Selection = { pause_all: boolean; paused_providers: Provider[] };
 type DispatchState = Selection & { revision: number };
 
-export function DispatchControls({ accountId, onSaved }: { accountId: string; onSaved: () => void }) {
+export function DispatchControls({ accountId }: { accountId: string }) {
   const path = `/v1/operations/dispatch?${new URLSearchParams({ account_id: accountId })}`;
   const [saved, setSaved] = useState<DispatchState>();
   const [draft, setDraft] = useState<Selection>();
@@ -65,7 +65,6 @@ export function DispatchControls({ accountId, onSaved }: { accountId: string; on
       setSaved(state);
       setDraft(state);
       setConfirmed(true);
-      onSaved();
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {

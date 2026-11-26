@@ -170,7 +170,7 @@ impl Readiness {
         self.snapshot(require_artifact_storage).ready
     }
 
-    fn snapshot(&self, require_artifact_storage: bool) -> SetupChecks {
+    pub(super) fn snapshot(&self, require_artifact_storage: bool) -> SetupChecks {
         let database = self.database.status();
         let migrations = self.schema.status();
         let worker = self.worker_status(&self.queue);

@@ -12,6 +12,7 @@ const provider = kinovi({
 const server = await queueServer({
   token,
   tenantKeys,
+  monitoringToken: process.env.TOKENCRAFT_PLUGIN_MONITOR_TOKEN,
   previousToken: process.env.TOKENCRAFT_PREVIOUS_SERVICE_TOKEN,
   previousTokenExpiresAt: process.env.TOKENCRAFT_PREVIOUS_SERVICE_TOKEN_EXPIRES_AT,
   state: process.env.TOKENCRAFT_PLUGIN_STATE ?? '.state',

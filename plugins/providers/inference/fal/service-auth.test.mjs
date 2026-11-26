@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { serviceAuthorization } from './service-auth.mjs';
+import { EventEmitter } from 'node:events';
+import { monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 
 const current = 'new-fixture-service-token-0123456789';
 const previous = 'prior-fixture-service-token-0123456789';
@@ -42,4 +43,67 @@ test('requires a valid, distinct previous token paired with a UTC expiry', () =>
   const expired = serviceAuthorization(current, { previousToken: previous, previousTokenExpiresAt: '2000-01-01T00:00:00Z' });
   assert.equal(expired(request(header(previous))), false);
   assert.equal(expired(request(header(current))), true);
+});
+
+test('monitoring is opt-in and its credential authorizes only the process probe', () => {
+  const monitor = 'monitoring-fixture-token-012345678901';
+  const respond = (key, method = 'GET', url = '/internal/monitoring') => {
+    const request = { method, url, headersDistinct: { authorization: [header(key)] } };
+    let status = null;
+    const response = { writeHead(code) { status = code; }, end() {} };
+    const handled = monitoringProbe(monitor, current, previous).handle(request, response);
+    return { status, handled };
+  };
+  assert.equal(monitoringProbe(undefined, current, previous), undefined);
+  assert.throws(() => monitoringProbe(current, current, previous), /separate/);
+  assert.throws(() => monitoringProbe(previous, current, previous), /separate/);
+  assert.deepEqual(respond(monitor), { status: 204, handled: true });
+  assert.deepEqual(respond(current), { status: 401, handled: true });
+  assert.deepEqual(respond(monitor, 'POST'), { status: null, handled: false });
+  assert.deepEqual(respond(monitor, 'GET', '/v1/jobs/example'), { status: null, handled: false });
+  assert.equal(serviceAuthorization(current)(request(header(monitor))), false);
+});
+
+test('private JSON probe reports finished, throttled, and interrupted traffic once', (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const secret = 'monitoring-fixture-token-012345678901';
+  const monitor = monitoringProbe(secret, current, previous, ['chat']);
+  function poll(key) {
+    const request = {
+      method: 'GET', url: '/internal/monitoring', headers: { accept: 'application/json' },
+      headersDistinct: { authorization: [header(key)] },
+    };
+    let state;
+    let body;
+    monitor.handle(request, { writeHead(code) { state = code; }, end(value) { body = value; } });
+    return [state, body === undefined ? undefined : JSON.parse(body)];
+  }
+
+  const streaming = new EventEmitter();
+  streaming.statusCode = 200;
+  monitor.record('chat', streaming);
+  const [status, start] = poll(secret);
+  assert.equal(status, 200);
+  assert.equal(start.operations.chat.in_flight, 1);
+  assert.deepEqual(poll(current), [401, undefined]);
+
+  now = 73;
+  streaming.emit('finish');
+  streaming.emit('close');
+  for (const [code, event] of [[429, 'finish'], [502, 'finish'], [409, 'finish'], [200, 'close']]) {
+    const response = new EventEmitter();
+    response.statusCode = code;
+    monitor.record('chat', response);
+    response.emit(event);
+  }
+  const [, result] = poll(secret);
+  assert.equal(result.version, 1);
+  assert.equal(result.boot_id, start.boot_id);
+  assert.equal(result.operations.chat.in_flight, 0);
+  assert.deepEqual(result.operations.chat.responses, {
+    ok: 1, throttled: 1, client_error: 1, server_error: 1, interrupted: 1,
+  });
+  assert.deepEqual(result.operations.chat.latency_ms.buckets, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.equal(result.operations.chat.latency_ms.sum, 73);
 });

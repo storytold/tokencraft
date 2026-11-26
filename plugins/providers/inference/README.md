@@ -17,3 +17,5 @@ These independent Node.js services translate TokenCraft's queue or chat protocol
 5. Run [binding preflight](../../../docs/provider-connectors.md#check-catalog-bindings) and [start TokenCraft with the reviewed profile](../../../docs/setup.md#start-with-a-reviewed-catalog). For headless deployment, set `TOKENCRAFT_CORE_CATALOG` and the applicable binding files with `TOKENCRAFT_CONNECTORS` and `TOKENCRAFT_LOCAL_CHAT_BINDINGS`.
 
 Give each queued plugin instance a persistent private state directory. It needs that state to resume polling after a restart. Follow the [connector rollout procedure](../../../docs/deployment.md#check-a-connector-rollout) when replacing a live binding.
+
+To register a plugin with [TokenCraft Operations](../../../deploy/monitoring/README.md#attach-providers-and-infrastructure), set a distinct **TOKENCRAFT_PLUGIN_MONITOR_TOKEN** in its environment. This enables the authenticated **GET /internal/monitoring** probe. Request JSON to read bounded, process-level traffic counts and latency buckets. Each documented plugin supports the same protocol and keeps submission and polling credentials independent.

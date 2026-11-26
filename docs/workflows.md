@@ -51,9 +51,7 @@ Verify the signature against the raw request body and timestamp with `verify_wor
 
 ## Monitor workflow operations
 
-Organization owners and administrators can open **Providers → Operations → Queue backlog**, or call `GET /v1/operations/queues` with `account_id` and an optional `project_id`. The selected scope includes queued, running, and reconciling runs. Each populated state includes its oldest run's admission time. The report also counts queued runs ready to be claimed and active runs past their deadline.
-
-The outcomes section samples up to the latest 5,000 terminal runs in the last 24 hours. It counts successes, failures, cancellations, and expirations. Its p95 measures time from admission to completion for successful runs in the sample. Pending and dead webhook totals include both inference requests and workflow runs in the same scope.
+Open **Workflows** in the separate [TokenCraft Operations console](../deploy/monitoring/README.md). It shows active runs, eligible work, deadline overruns and recent terminal outcomes by cell or configured account and project scope. The Delivery view includes webhook backlog for both inference requests and workflow runs. Use the project workflow page or API to inspect an individual run.
 
 ## Verify a release
 

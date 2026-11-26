@@ -1,0 +1,16 @@
+groups:
+  - name: tokencraft-operations
+    rules:
+      - alert: TokenCraftOperationsCollectorUnavailable
+        expr: up{job="tokencraft-operations"} == 0 or tokencraft_monitor_up{job="tokencraft-operations"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TokenCraft Operations is unreachable or its sample is stale"
+      - alert: TokenCraftOperationsIncident
+        expr: tokencraft_monitor_incident_open{job="tokencraft-operations"} == 1
+        labels:
+          severity: warning
+        annotations:
+          summary: "TokenCraft {{ $labels.rule }} incident for {{ $labels.subject }}"

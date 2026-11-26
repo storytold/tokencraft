@@ -20,6 +20,7 @@ The console opens the docs at `/docs`, the searchable operation reference at `/d
 
 - [Install and run the gateway](setup.md)
 - [Deploy, migrate, and roll out changes](deployment.md)
+- [Monitor compute, workflows, and delivery](../deploy/monitoring/README.md)
 - [Scale a cell and manage submission limits](capacity.md)
 - [Explore the interactive backend design](../frontend/public/design/index.html)
 

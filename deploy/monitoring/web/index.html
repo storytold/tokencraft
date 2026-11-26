@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TokenCraft Operations</title>
+  <link rel="icon" href="/tokencraft-mark.png">
+  <link rel="stylesheet" href="/console.css">
+  <script src="/console.js" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to dashboard</a>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" href="#compute" aria-label="TokenCraft Operations">
+        <img src="/tokencraft-mark.png" alt="" width="36" height="36">
+        <span>TokenCraft<small>Operations</small></span>
+      </a>
+      <nav aria-label="Operations sections">
+        <a href="#compute" aria-current="page"><span class="nav-mark" aria-hidden="true"></span>Compute</a>
+        <a href="#queues"><span class="nav-mark" aria-hidden="true"></span>Queues</a>
+        <a href="#workflows"><span class="nav-mark" aria-hidden="true"></span>Workflows</a>
+        <a href="#delivery"><span class="nav-mark" aria-hidden="true"></span>Delivery</a>
+        <a href="#incidents"><span class="nav-mark" aria-hidden="true"></span>Incidents <span id="nav-incidents" class="nav-count" hidden></span></a>
+      </nav>
+    </aside>
+
+    <main id="workspace" tabindex="-1">
+      <header class="toolbar">
+        <div class="context">
+          <label>Cell <select id="cell" disabled><option>Loading</option></select></label>
+          <label>Scope <select id="scope" disabled><option value="">Whole cell</option></select></label>
+        </div>
+        <div class="toolbar-actions">
+          <button id="theme" type="button" aria-label="Switch color theme">Dark mode</button>
+          <button id="auto-refresh" type="button" aria-label="Auto-refresh" aria-pressed="true" title="Pause automatic refresh">Auto-refresh</button>
+          <button id="refresh" type="button" class="primary">Refresh</button>
+        </div>
+      </header>
+
+      <div class="workspace-inner">
+        <div class="page-header">
+          <div>
+            <p class="eyebrow" id="page-context">Operations</p>
+            <h1 id="page-title" tabindex="-1">Compute overview</h1>
+          </div>
+          <div class="sample">
+            <span id="freshness" class="collector-status" role="status" data-state="waiting">Waiting for collector</span>
+            <time id="sample-time" hidden></time>
+          </div>
+        </div>
+        <p id="notice" class="notice" role="status" hidden></p>
+
+        <section id="compute" class="view" aria-label="Compute overview">
+          <div class="summary" id="summary" aria-label="Cell summary">
+            <p class="empty">Waiting for the first observation.</p>
+          </div>
+          <div class="overview-grid">
+            <section class="panel history" id="history" aria-labelledby="history-title">
+              <div class="panel-heading chart-heading">
+                <div>
+                  <h2 id="history-title">Performance history</h2>
+                  <p id="history-summary" class="caption" aria-live="polite">Waiting for observations.</p>
+                </div>
+                <div class="history-controls">
+                  <label class="visually-hidden" for="series">History series</label>
+                  <select id="series" disabled></select>
+                  <div class="ranges" role="group" aria-label="History range">
+                    <button type="button" data-hours="1" aria-pressed="true" aria-label="1 hour">1h</button>
+                    <button type="button" data-hours="6" aria-pressed="false" aria-label="6 hours">6h</button>
+                    <button type="button" data-hours="24" aria-pressed="false" aria-label="24 hours">24h</button>
+                    <button type="button" data-hours="168" aria-pressed="false" aria-label="7 days">7d</button>
+                  </div>
+                </div>
+              </div>
+              <div class="chart-region">
+                <canvas id="chart" role="img" tabindex="0" aria-label="Selected metric over time. Use arrow keys to inspect samples." aria-describedby="history-summary"></canvas>
+                <p id="chart-empty" class="chart-empty">Time series will appear when data arrives.</p>
+              </div>
+              <output id="chart-point" class="chart-point" aria-live="off"></output>
+            </section>
+
+            <aside class="panel attention" aria-labelledby="attention-title">
+              <div class="panel-heading">
+                <div><h2 id="attention-title">Health and alerts</h2><p class="caption">Current cell probes and fleet incidents</p></div>
+              </div>
+              <div id="health-breakdown" class="health-breakdown"></div>
+              <ul class="attention-list" id="attention-list"></ul>
+              <a class="panel-link" href="#incidents">View incident log <span aria-hidden="true">↗</span></a>
+            </aside>
+          </div>
+
+          <section class="panel" aria-labelledby="targets-title">
+            <div class="panel-heading">
+              <div><h2 id="targets-title">Compute and service targets</h2><p id="target-count" class="caption">Health, capacity, and model coverage</p></div>
+              <div class="filters">
+                <label class="visually-hidden" for="target-search">Filter targets</label>
+                <input type="search" id="target-search" placeholder="Find a target" autocomplete="off">
+                <label class="visually-hidden" for="target-status">Target health</label>
+                <select id="target-status">
+                  <option value="">All health states</option><option value="up">Healthy</option>
+                  <option value="degraded">Degraded</option><option value="down">Down</option><option value="unknown">Unknown</option>
+                </select>
+              </div>
+            </div>
+            <div class="table" id="targets"></div>
+          </section>
+          <section class="panel" aria-labelledby="processing-title">
+            <div class="panel-heading"><div><h2 id="processing-title">Provider processing</h2><p class="caption">Admissions in the last 15 minutes</p></div></div>
+            <div class="table" id="providers"></div>
+          </section>
+          <section class="panel" aria-labelledby="plugin-title">
+            <div class="panel-heading"><div><h2 id="plugin-title">Plugin traffic</h2><p class="caption">Latest completed interval across the cell</p></div></div>
+            <div class="table" id="plugin-traffic"></div>
+          </section>
+          <section class="panel" aria-labelledby="attempts-title">
+            <div class="panel-heading"><div><h2 id="attempts-title">Compute attempts</h2><p class="caption">Includes fallback attempts. Timing ends at response headers.</p></div></div>
+            <div class="table" id="attempts"></div>
+          </section>
+        </section>
+
+        <section id="queues" class="view" aria-label="Request queues" hidden>
+          <section class="panel"><div class="panel-heading"><div><h2>Queue backlog</h2><p id="queue-coverage" class="caption"></p></div></div>
+            <div class="table" id="request-queues"></div>
+          </section>
+        </section>
+        <section id="workflows" class="view" aria-label="Workflows" hidden>
+          <div class="summary" id="workflow-outcomes" aria-label="Workflow outcomes in the last 24 hours"></div>
+          <section class="panel"><div class="panel-heading"><div><h2>Active runs</h2><p class="caption">Workflow outcomes cover the last 24 hours</p></div></div>
+            <div class="table" id="workflow-queues"></div>
+          </section>
+        </section>
+        <section id="delivery" class="view" aria-label="Delivery" hidden>
+          <section class="panel"><div class="panel-heading"><div><h2>Artifact publication</h2><p class="caption">Admissions in the last 15 minutes</p></div></div>
+            <div class="table" id="publication"></div>
+          </section>
+          <section class="panel"><div class="panel-heading"><h2>Webhook and export queues</h2></div>
+            <div class="table" id="delivery-queues"></div>
+          </section>
+        </section>
+        <section id="incidents" class="view" aria-label="Incidents" hidden>
+          <section class="panel"><div class="panel-heading"><div><h2>Incident log</h2><p class="caption">Most recent 200 collector alerts across all cells</p></div>
+            <label>Show <select id="incident-filter"><option value="">All incidents</option><option value="open">Open</option><option value="resolved">Resolved</option></select></label>
+          </div><div class="table" id="incident-table"></div></section>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

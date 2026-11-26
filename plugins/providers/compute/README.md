@@ -22,3 +22,5 @@ Use the files with [a reviewed dev profile](../../../docs/setup.md#start-with-a-
 The worker tries lower priority numbers first and uses a stable order per request for equal priorities. A connection failure can move the same request to the next eligible target. Enable `retry_on_rate_limit` only for a target that guarantees its HTTP 429 means the request was rejected before execution. A timeout with unknown acceptance, an upstream 5xx, or an interrupted response stream ends that attempt without trying another target for the same request. Fallback keeps request state and ownership in the home cell.
 
 Use the [request trace](../../../docs/request-diagnostics.md) to inspect the selected target and attempted compute path.
+
+Point [TokenCraft Operations](../../../deploy/monitoring/README.md#import-a-deployed-compute-profile) at the same catalog and chat-binding files to track model availability, response timing and fallback outcomes for each compute target. Attach a compatible GPU exporter to report utilization, temperature and memory.
