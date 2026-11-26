@@ -118,7 +118,7 @@ pub async fn claim_lookup(pool: &PgPool, bindings: &[String]) -> sqlx::Result<Op
 
 /// The worker resolved the handle at the original connector, using the request ID.
 pub async fn reconcile(pool: &PgPool, lookup: &Lookup, handle: &str) -> sqlx::Result<()> {
-    sqlx::query(
+    let result = sqlx::query(
         "WITH eligible AS (
              SELECT r.id, r.uncertain_at FROM gateway_requests r
              JOIN gateway_provider_runs p ON p.request_id = r.id
@@ -149,6 +149,10 @@ pub async fn reconcile(pool: &PgPool, lookup: &Lookup, handle: &str) -> sqlx::Re
     .bind(lookup.lease_until)
     .bind(handle)
     .execute(pool)
-    .await?;
-    Ok(())
+    .await;
+    match result {
+        // A different worker may have claimed the handle after the NOT EXISTS check.
+        Err(error) if super::queued_runs::is_handle_conflict(&error) => Ok(()),
+        result => result.map(|_| ()),
+    }
 }

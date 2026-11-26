@@ -503,7 +503,13 @@ async fn record_queue_submission(
     let id = run.request_id.as_str();
     let outcome = match submitted {
         Submission::Accepted(handle) => {
-            return queued_runs::acknowledge_queue(pool, id, run.lease, &handle, &run.adapter).await;
+            match queued_runs::acknowledge_queue(pool, id, run.lease, &handle, &run.adapter).await {
+                Err(error) if queued_runs::is_handle_conflict(&error) => {
+                    tracing::warn!("connector returned a handle assigned to another request");
+                    RunOutcome::Uncertain("connector_submission_unconfirmed")
+                }
+                result => return result,
+            }
         }
         Submission::Unavailable(limit) => {
             gateway_requests::queue_cooldowns::record(pool, run, limit.cooldown_ms).await?;

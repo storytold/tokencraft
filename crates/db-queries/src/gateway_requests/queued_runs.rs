@@ -76,6 +76,14 @@ pub async fn claim_queue_poll(
     Ok(poll)
 }
 
+/// The accepted-handle index also covers the generic queue connector.
+pub fn is_handle_conflict(error: &sqlx::Error) -> bool {
+    error.as_database_error().is_some_and(|error| {
+        error.is_unique_violation()
+            && error.constraint() == Some("gateway_fal_accepted_handle_idx")
+    })
+}
+
 pub async fn acknowledge_queue(
     pool: &PgPool,
     id: &str,

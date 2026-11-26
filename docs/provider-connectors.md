@@ -329,7 +329,7 @@ Echo the request ID and return one outcome.
 }
 ```
 
-- `accepted` requires a stable handle of 1–128 ASCII letters, digits, underscores or hyphens. Persist the mapping from TokenCraft request ID to handle before replying. Identical replay must return the same handle without starting another upstream job.
+- `accepted` requires a stable handle of 1–128 ASCII letters, digits, underscores or hyphens. Assign a distinct handle to each request within the binding and persist the mapping before replying. Identical replay returns the same handle. If another request already owns a returned handle, the new request enters reconciliation without polling that handle or submitting another job.
 - `rejected` means the connector definitively declined the request and no upstream work was accepted.
 - `unavailable` means the connector can prove no upstream work was accepted. It may supply `retry_after_ms` up to 2000 for one bounded retry.
 - `uncertain` means the request may have been accepted. Timeouts, malformed replies, and non-protocol HTTP errors also leave the request awaiting reconciliation without a fresh submission.
@@ -357,11 +357,17 @@ Set `completion_webhooks: true` on a new connector binding to opt in. The gatewa
 
 When the job reaches a terminal status, post `{"version":1}` to that path on your operator-configured gateway origin. Supply `Authorization: Bearer <token>` and `Content-Type: application/json`. Use HTTPS except for local fixtures. Keep the token in the connector and out of logs. The gateway returns `204` for an authenticated notification or replay. In case of an interrupted response, retry the same notification. When relaying an upstream webhook, verify it in the connector before notifying the gateway.
 
-An opted-in connector also implements `GET /v1/jobs/by-request/{request_id}` using the original binding bearer credential. Return `{"version":1,"request_id":"req_example","handle":"job_connector_123"}` for a known request. Use `404` when the mapping is unavailable. When the submission response is lost or the worker lease expires before recording it, the gateway checks the original binding even if no webhook arrived. It validates the echoed request ID and handle before resuming polls. The worker retries a missing or invalid lookup for up to 15 minutes from dispatch. These are read-only lookups of the original job.
+An opted-in connector also implements `GET /v1/jobs/by-request/{request_id}` using the original binding bearer credential. Return `{"version":1,"request_id":"req_example","handle":"job_connector_123"}` for a known request. Use `404` when the mapping is unavailable. The gateway checks the original binding if the response is lost, the handle is already assigned, or the worker lease expires before recording acceptance. This check runs even if no webhook arrived. The gateway validates the echoed request ID and claims the handle before resuming polls. The worker retries a missing or invalid lookup for up to 15 minutes from dispatch. These are read-only lookups of the original job.
 
 The notification carries an availability hint and can wake a poll before completion is recorded. The worker reads authoritative status and artifacts from the pinned connector. Once the gateway has recorded completion, it keeps the publication retry schedule. The request trace records callback receipt and verified handle recovery separately. Recovered jobs produce the usual terminal customer webhook. Enabling or disabling completion webhooks changes the binding identity. Roll to a new named binding and retain the old entry with `drain_only: true` while its requests drain.
 
 An authenticated callback received before the gateway authorizes a retry can suspend that retry and recover the original job by request ID. Preserve the same `Idempotency-Key` mapping at the connector across retries and timeouts. A callback can also arrive after the next call has already been authorized.
+
+Run the receipt recovery smoke against locally built gateway and admin binaries with PostgreSQL tools on `PATH`.
+
+```sh
+python3 -B scripts/smoke_connector_recovery.py target/debug/api-gateway target/debug/admin-cli
+```
 
 ## Operate a binding
 
