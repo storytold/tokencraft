@@ -166,16 +166,34 @@ impl Postgres {
     pub(crate) async fn wait(&mut self) -> std::io::Result<ExitStatus> {
         self.child.wait().await
     }
-}
 
-impl Drop for Postgres {
-    fn drop(&mut self) {
+    pub(crate) async fn finish(mut self) -> Result<()> {
+        self.stop_server()?;
+        let control = tool(self.tools.join("pg_controldata"))
+            .arg(&self.data)
+            .output()
+            .await
+            .context("inspect PostgreSQL shutdown state with pg_controldata")?;
+        ensure!(control.status.success(), "could not read the PostgreSQL control file");
+        let output = String::from_utf8_lossy(&control.stdout);
+        let state = output.lines()
+            .find_map(|line| line.strip_prefix("Database cluster state:"))
+            .map(str::trim);
+        ensure!(
+            state == Some("shut down"),
+            "PostgreSQL did not record a clean shutdown (last state: {})",
+            state.unwrap_or("unknown")
+        );
+        Ok(())
+    }
+
+    fn stop_server(&mut self) -> Result<()> {
         if self.child.try_wait().is_ok_and(|status| status.is_some())
             || !self.data.join("postmaster.pid").is_file()
         {
-            return;
+            return Ok(());
         }
-        let stopped = SyncCommand::new(self.tools.join("pg_ctl"))
+        let status = SyncCommand::new(self.tools.join("pg_ctl"))
             .env_clear()
             .env("LC_ALL", "C")
             .arg("stop")
@@ -184,8 +202,16 @@ impl Drop for Postgres {
             .args(["-w", "-t", "15", "-m", "fast"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
-        if !stopped.is_ok_and(|status| status.success()) {
+            .status()
+            .context("stop the dev PostgreSQL cluster")?;
+        ensure!(status.success(), "could not stop the dev PostgreSQL cluster");
+        Ok(())
+    }
+}
+
+impl Drop for Postgres {
+    fn drop(&mut self) {
+        if self.stop_server().is_err() {
             eprintln!(
                 "Could not stop the dev PostgreSQL cluster cleanly. See {}",
                 self.log.display()

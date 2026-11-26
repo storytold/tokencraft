@@ -1,7 +1,7 @@
 """Build, verify, and package TokenCraft for the current host."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import gzip
 from hashlib import file_digest
 import io
@@ -24,6 +24,7 @@ from urllib.parse import quote
 from urllib.request import ProxyHandler, Request, build_opener
 
 from postgres_tools import postgres_bin
+from smoke_native_backup import defer_workflow, prepare_workflow, verify_backup
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,52 +151,70 @@ def smoke_package(archive, name, pg_bin):
                 listener.bind(("127.0.0.1", 0))
             api_port, db_port, connector_port, web_port = [sock.getsockname()[1] for sock in listeners]
         api = f"http://localhost:{api_port}"
-        command = [package / "bin/tokencraft", "dev", "--state-dir", work / "state",
+        launcher, state = package / "bin/tokencraft", work / "state"
+        command = [launcher, "dev",
                    "--api-port", str(api_port), "--db-port", str(db_port),
                    "--connector-port", str(connector_port), "--web-port", str(web_port)]
         console = package / "console"
         if console.is_dir():
             command += ["--console-dir", console]
-        log = work / "gateway.log"
-        with log.open("wb") as output, subprocess.Popen(
-            command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-        ) as gateway:
-            try:
-                opener = build_opener(ProxyHandler({}))
-                deadline = monotonic() + 45
-                while gateway.poll() is None and monotonic() < deadline:
-                    try:
-                        with opener.open(api + "/ready", timeout=1) as ready:
-                            if json.load(ready).get("ready"):
-                                break
-                    except (URLError, TimeoutError):
-                        pass
-                    sleep(.2)
-                else:
-                    raise RuntimeError("The packaged gateway did not start.")
-                with opener.open(api + "/openapi.json", timeout=3) as running_contract:
-                    if json.load(running_contract) != json.loads((package / "contracts/openapi.json").read_bytes()):
-                        raise RuntimeError("The packaged API contract differs from the running gateway.")
-                if console.is_dir():
-                    route = Request(f"http://localhost:{web_port}/pricing", headers={"Accept": "text/html"})
-                    with opener.open(route, timeout=3) as result:
-                        marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
-                        if marker not in result.read():
-                            raise RuntimeError("The packaged console did not receive the active API port.")
-                run([tool_dir / "bash", package / "examples/connector/smoke.sh", api],
-                    cwd=package, env=env, timeout=90)
-            except (RuntimeError, subprocess.SubprocessError):
-                print(log.read_text(errors="replace"), flush=True)
-                raise
-            finally:
-                if gateway.poll() is None:
-                    gateway.terminate()
-                    try:
-                        gateway.wait(timeout=15)
-                    except subprocess.TimeoutExpired:
-                        gateway.kill()
-                        gateway.wait()
-                        raise RuntimeError("The packaged launcher did not stop cleanly.")
+        opener = build_opener(ProxyHandler({}))
+
+        def launch(state_path):
+            return packaged_gateway([*command, "--state-dir", state_path], state_path, env, opener, api)
+
+        with launch(state):
+            with opener.open(api + "/openapi.json", timeout=3) as running_contract:
+                if json.load(running_contract) != json.loads((package / "contracts/openapi.json").read_bytes()):
+                    raise RuntimeError("The packaged API contract differs from the running gateway.")
+            if console.is_dir():
+                route = Request(f"http://localhost:{web_port}/pricing", headers={"Accept": "text/html"})
+                with opener.open(route, timeout=3) as result:
+                    marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
+                    if marker not in result.read():
+                        raise RuntimeError("The packaged console did not receive the active API port.")
+            run([tool_dir / "bash", package / "examples/connector/smoke.sh", api],
+                cwd=package, env=env, timeout=90)
+            workflow = prepare_workflow(api_port, web_port)
+            parked = defer_workflow(work, state, pg_bin, db_port, env, workflow.receipt)
+        verify_backup(launcher, api_port, env, state, launch, workflow, parked)
+
+
+@contextmanager
+def packaged_gateway(command, state, env, opener, api):
+    work = state.parent
+    log = work / "gateway.log"
+    with log.open("wb") as output, subprocess.Popen(
+        command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+    ) as gateway:
+        try:
+            deadline = monotonic() + 45
+            while gateway.poll() is None and monotonic() < deadline:
+                try:
+                    with opener.open(api + "/ready", timeout=1) as ready:
+                        if json.load(ready).get("ready"):
+                            break
+                except (URLError, TimeoutError):
+                    pass
+                sleep(.2)
+            else:
+                raise RuntimeError("The packaged gateway did not start.")
+            yield
+        except Exception:
+            print(log.read_text(errors="replace"), flush=True)
+            postgres_log = state / "postgres.log"
+            if postgres_log.is_file():
+                print(postgres_log.read_text(errors="replace")[-8000:], flush=True)
+            raise
+        finally:
+            if gateway.poll() is None:
+                gateway.terminate()
+                try:
+                    gateway.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    gateway.kill()
+                    gateway.wait()
+                    raise RuntimeError("The packaged launcher did not stop cleanly.")
 
 
 def main():

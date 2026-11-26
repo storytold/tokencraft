@@ -57,6 +57,8 @@
 !scripts/
 !scripts/native_package.py
 !scripts/postgres_tools.py
+!scripts/smoke_native_backup.py
+!scripts/smoke_workflow_contract.py
 !scripts/serve-render-demo.sh
 !deploy/
 !deploy/postgres/

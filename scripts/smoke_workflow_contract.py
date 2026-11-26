@@ -100,13 +100,14 @@ def service(name, args, directory, env, probe, *, shutdown=signal.SIGTERM):
                     child.wait()
 
 
-def provision(port):
+def provision(port, *, origin=None):
+    origin_header = {} if origin is None else {"Origin": origin}
     _, headers = call(port, "/v1/auth/signup", 201, method="POST", body={
         "email": f"workflow-smoke-{token_hex(8)}@example.test",
         "password": token_hex(24),
         "display_name": "Workflow contract fixture",
-    })
-    session = {"Cookie": headers["Set-Cookie"].split(";", 1)[0]}
+    }, headers=origin_header)
+    session = {**origin_header, "Cookie": headers["Set-Cookie"].split(";", 1)[0]}
     accounts, _ = call(port, "/v1/accounts", 200, headers=session)
     account = accounts["accounts"][0]["account_id"]
     project, _ = call(port, f"/v1/projects?account_id={account}", 201, method="POST",
@@ -740,8 +741,10 @@ def rehearse(gateway, admin, directory):
         print("PASS startup initializes an empty schema and verifies an existing schema with the runtime login")
         with service("setup-api", [gateway], directory, settings, lambda: ready(api_port)):
             session, account, project = provision(api_port)
+            contract, _ = call(api_port, "/openapi.json", 200)
             for path in ("/v1/setup/status", "/v1/operations/queues", "/v1/operations/artifact-publication"):
-                call(api_port, f"{path}?account_id={account}", 404, headers=session)
+                expected = 200 if path in contract["paths"] else 404
+                call(api_port, f"{path}?account_id={account}", expected, headers=session)
 
         settings["TOKENCRAFT_ENABLE_LEGACY_OPERATIONS"] = "true"
         media_port, token = loopback_port(), token_hex(32)

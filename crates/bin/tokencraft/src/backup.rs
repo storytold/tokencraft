@@ -13,6 +13,7 @@ use std::{
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::{Connection, PgConnection};
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::{
@@ -26,7 +27,7 @@ const HELP: &str = "Usage:
   tokencraft restore BACKUP_DIRECTORY NEW_DEV_STATE [--content-removals CHECKPOINT]
 
 The backup includes a logical PostgreSQL dump and private local state.
-Stop tokencraft dev and finish queued or running requests before backing up.
+Finish queued or running requests and active workflows, then stop tokencraft dev before backing up.
 ";
 const DIRECTORIES: [&str; 3] = ["artifacts", "archives", "connector-jobs"];
 const KEY_FILES: [&str; 2] = ["dev-keys.json", "archive-key"];
@@ -103,20 +104,14 @@ async fn create(source: &Path, destination: &Path) -> Result<()> {
     let state = State::open_existing(source)?;
     let stage = Stage::new(destination)?;
     let port = local_port()?;
-    let (postgres, _) = Postgres::start(&state, port, Mode::Backup).await?;
-    let status = postgres.database_tool("psql", &state)?
-        .args(["-XAtw", "-v", "ON_ERROR_STOP=1", "-d", DATABASE, "-c",
-            "SELECT EXISTS (SELECT 1 FROM gateway_requests
-             WHERE num_nonnulls(succeeded_at, failed_at, canceled_at, uncertain_at) = 0)"])
-        .output().await.context("inspect outstanding requests")?;
-    ensure!(status.status.success(), "could not inspect outstanding requests");
-    ensure!(status.stdout == b"f\n", "finish queued or running requests before backing up");
+    let (postgres, url) = Postgres::start(&state, port, Mode::Backup).await?;
+    ensure_quiescent(&url).await?;
 
     let dump = stage.path.join(DUMP);
     // Reserve the destination with private permissions before pg_dump opens it.
     new_file(&dump)?;
     dump_database(&postgres, &state, &dump).await?;
-    drop(postgres);
+    postgres.finish().await?;
     require_stopped(&state)?;
     File::open(&dump)?.sync_all()?;
 
@@ -125,6 +120,34 @@ async fn create(source: &Path, destination: &Path) -> Result<()> {
     let manifest = Manifest { format: FORMAT.into(), sha256: checksums };
     write_private(&stage.path.join(MANIFEST), &serde_json::to_vec_pretty(&manifest)?)?;
     stage.publish(destination)
+}
+
+async fn ensure_quiescent(url: &str) -> Result<()> {
+    let mut db = PgConnection::connect(url).await.context("open the dev database for backup")?;
+    let requests_pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM public.gateway_requests
+         WHERE num_nonnulls(succeeded_at, failed_at, canceled_at, uncertain_at) = 0)",
+    )
+    .fetch_one(&mut db)
+    .await
+    .context("inspect outstanding requests")?;
+    ensure!(!requests_pending, "finish queued or running requests before backing up");
+
+    let has_workflows: bool = sqlx::query_scalar("SELECT to_regclass('public.workflow_runs') IS NOT NULL")
+        .fetch_one(&mut db)
+        .await
+        .context("inspect the workflow schema")?;
+    if has_workflows {
+        let workflows_pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM public.workflow_runs
+             WHERE status IN ('queued', 'running', 'reconciling'))",
+        )
+        .fetch_one(&mut db)
+        .await
+        .context("inspect active workflows")?;
+        ensure!(!workflows_pending, "finish queued, running, or reconciling workflows before backing up");
+    }
+    Ok(())
 }
 
 async fn recover(source: &Path, destination: &Path, checkpoint: Option<&Path>) -> Result<()> {
@@ -155,10 +178,10 @@ async fn recover(source: &Path, destination: &Path, checkpoint: Option<&Path>) -
     let dump = stage.path.join(DUMP);
     let (postgres, url) = Postgres::start(&state, local_port()?, Mode::Restore).await?;
     load_database(&postgres, &state, &dump).await?;
-    if let Some(checkpoint) = checkpoint {
+    let postgres = if let Some(checkpoint) = checkpoint {
         removals::apply(checkpoint, &state, &postgres, &url).await?;
         dump_database(&postgres, &state, &dump).await?;
-        drop(postgres);
+        postgres.finish().await?;
 
         // Build the published state from the scrubbed logical dump, without the
         // earlier cluster's heap pages, recovery logs, or superseded dump.
@@ -167,10 +190,11 @@ async fn recover(source: &Path, destination: &Path, checkpoint: Option<&Path>) -
         fs::remove_file(state.root.join("postgres.log"))?;
         let (postgres, _) = Postgres::start(&state, local_port()?, Mode::Restore).await?;
         load_database(&postgres, &state, &dump).await?;
-        drop(postgres);
+        postgres
     } else {
-        drop(postgres);
-    }
+        postgres
+    };
+    postgres.finish().await?;
     require_stopped(&state)?;
     drop(state);
     fs::remove_file(stage.path.join(DUMP))?;

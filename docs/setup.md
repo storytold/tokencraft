@@ -52,7 +52,7 @@ Use `sha256sum -c` on systems with GNU coreutils. From a second terminal in the 
 
 Archives ending in `-console.tar.gz` include a `console/` directory. Run `./bin/tokencraft dev --console-dir ./console` and open the localhost console URL printed by the launcher. The same command accepts `--profile` for a reviewed catalog. Use `--web-port` when the default port 3000 is occupied.
 
-Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. The workflow records the source commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. It builds against disposable PostgreSQL, tests the extracted package, and writes the archive and checksum to your chosen directory. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
+Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. The workflow records the source commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. It tests the extracted package against disposable PostgreSQL, including backup and restoration of a published workflow, then writes the archive and checksum to your chosen directory. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
 
 ```sh
 python3 scripts/native_package.py --output ./native-packages
@@ -124,7 +124,7 @@ In the signed-in Playground, choose **Compare routes** to compare prices for the
 
 ## Back up and restore dev state
 
-Use the native launcher to save a logical PostgreSQL dump together with the local encrypted artifacts, event archives, connector job records, and the keys needed to reopen them. Finish queued and running requests and stop the launcher first.
+Use the native launcher to save a logical PostgreSQL dump together with the local encrypted artifacts, event archives, connector job records, and the keys needed to reopen them. Finish queued and running requests and any queued, running, or reconciling workflows, then stop the launcher.
 
 ```sh
 tokencraft backup .tokencraft-dev ./tokencraft-backup
@@ -132,9 +132,9 @@ tokencraft restore ./tokencraft-backup ./restored-dev
 tokencraft dev --state-dir ./restored-dev
 ```
 
-Use `cargo run --locked -p tokencraft --` before the subcommand when running from source. The commands use `pg_dump` and `pg_restore` from the selected PostgreSQL server installation. Use matching PostgreSQL versions for the source and recovery environment.
+Use `cargo run --locked -p tokencraft --` before the subcommand when running from source. The commands use `pg_dump`, `pg_restore`, and `pg_controldata` from the selected PostgreSQL server installation. Use matching PostgreSQL versions for the source and recovery environment.
 
-Use a new destination each time. Restore verifies the file checksums before loading the database in one transaction. A successful restore makes the state available at the new path, and the next `dev` launch applies any pending migrations. Keep backups in private storage and restore from trusted copies. The backup holds the keys that protect local content as well as the database.
+Use a new destination each time. Restore verifies the file checksums before loading the database in one transaction and checks that PostgreSQL records a clean shutdown before publishing the new state. The next `dev` launch applies any pending migrations. Keep backups in private storage and restore from trusted copies. The backup holds the keys that protect local content as well as the database.
 
 Keep the reviewed profile and its service credentials with your deployment configuration. Use `dev --profile` to reopen restored state with the same bindings.
 
