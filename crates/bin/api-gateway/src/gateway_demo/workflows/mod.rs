@@ -26,6 +26,7 @@ mod runner;
 mod tool_plugins;
 mod tool_execution;
 mod uploads;
+mod worker;
 
 const MAX_ACTIVE_RUNS_PER_WORKFLOW: i64 = 10;
 const MAX_ACTIVE_RUNS_PER_APP: i64 = 2;
@@ -187,7 +188,7 @@ pub(super) fn router(security: Arc<Security>) -> Router<AppState> {
 
 pub(super) fn spawn(pool: db::PgPool, config: &DemoConfig) {
     if let Some(security) = &config.workflows {
-        runner::spawn(runner::Runtime {
+        worker::spawn(runner::Runtime {
             pool,
             security: Arc::clone(security),
             catalog: Arc::clone(&config.catalog),

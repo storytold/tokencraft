@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Utc;
 use db_queries::{gateway_requests::RequestScope, workflows as db};
@@ -88,34 +87,6 @@ pub(super) fn unavailable() -> ApiError {
     ApiError::Internal("workflow state is unavailable".into())
 }
 
-pub(super) fn spawn(runtime: Runtime) {
-    tokio::spawn(async move {
-        let tool_pins = runtime.security.tools.worker_pins();
-        let mut maintenance = tokio::time::interval(Duration::from_secs(60));
-        let mut schedule = tokio::time::interval(Duration::from_millis(300));
-        maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        schedule.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                _ = runtime.readiness.work_tick(&mut schedule) => {
-                    if let Err(error) = advance(&runtime, &tool_pins).await {
-                        let name = match error { ApiError::Internal(_) => "storage", _ => "workflow" };
-                        tracing::warn!(category = name, "workflow worker deferred a claim");
-                    }
-                }
-                _ = runtime.readiness.work_tick(&mut maintenance) => {
-                    if db::forget_expired_content(&runtime.pool).await.is_err() {
-                        tracing::warn!("workflow retention cleanup deferred");
-                    }
-                    if db::forget_expired_uploads(&runtime.pool).await.is_err() {
-                        tracing::warn!("workflow upload cleanup deferred");
-                    }
-                }
-            }
-        }
-    });
-}
-
 pub(super) fn scope(row: &db::Run) -> RequestScope<'_> {
     RequestScope {
         account: &row.account_id,
@@ -124,14 +95,7 @@ pub(super) fn scope(row: &db::Run) -> RequestScope<'_> {
     }
 }
 
-async fn advance(runtime: &Runtime, tool_pins: &serde_json::Value) -> ApiResult<()> {
-    let Some(row) = db::claim_run(&runtime.pool, tool_pins).await? else {
-        return Ok(());
-    };
-    if row.status == "expired" {
-        return Ok(());
-    }
-    let mut state = State::read(&runtime.security, &row)?.ok_or_else(unavailable)?;
+pub(super) async fn advance(runtime: &Runtime, row: db::Run) -> ApiResult<()> {    let mut state = State::read(&runtime.security, &row)?.ok_or_else(unavailable)?;
     let graph = management::decode(row.graph.clone())?;
     let plan = graph.compile().map_err(|_| unavailable())?;
     let Some(node) = plan

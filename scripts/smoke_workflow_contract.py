@@ -86,7 +86,7 @@ def service(name, args, directory, env, probe, *, shutdown=signal.SIGTERM):
                 sleep(0.1)
             else:
                 raise RuntimeError(f"{name} failed to become ready")
-            yield
+            yield child
         except Exception:
             log.seek(0)
             print(log.read()[-6000:], file=sys.stderr)
@@ -480,7 +480,50 @@ def verify_project_catalog(port, session, account, project):
     print("PASS workflow discovery, planning, testing, and publication enforce the scoped custom catalog")
 
 
-def verify_workflow(port, peer, session, account, project, stop_worker, restart_worker, receiver, check_rollout):
+def test_during_tool_pause(port, session, tool_path, tool_body, delivery, query_db):
+    image_session, account, project = provision(port)
+    query = f"?account_id={account}"
+    graph, _ = call(port, "/v1/workflows/plan" + query + f"&project_id={project}", 200, method="POST",
+                    headers=image_session, body={"intent": "Check parallel workflow claims",
+                    "primitives": [{"kind": "image", "title": "Image"}]})
+    assert graph["nodes"][0]["kind"] == "image"
+    endpoint = f"/v1/projects/{project}/workflows"
+    draft, _ = call(port, endpoint + query, 201, method="POST", headers=image_session, body=graph)
+
+    def submit(path, body, authentication):
+        receipt, _ = call(port, path, 202, method="POST", body=body,
+                          headers={**authentication, "Idempotency-Key": token_hex(16)})
+        return receipt
+
+    def wait_for_claim(run, stalled):
+        end = monotonic() + 8
+        while monotonic() < end:
+            own, other = query_db(
+                "SELECT lease > 0, (SELECT lease = 1 AND status = 'queued' FROM workflow_runs WHERE id = :'stalled') "
+                "FROM workflow_runs WHERE id = :'run'", run=run, stalled=stalled).split("|")
+            if other != "t" and run != stalled:
+                raise AssertionError("The tool worker timed out before claiming the independent run")
+            if own == "t":
+                return
+            sleep(0.03)
+        raise AssertionError("The worker did not claim the expected run")
+
+    delivery.send_signal(signal.SIGSTOP)
+    try:
+        slow = submit(tool_path, tool_body, session)
+        wait_for_claim(slow["id"], slow["id"])
+        fast = submit(f"{endpoint}/{draft['id']}/test-runs" + query,
+                      {"revision": draft["revision"], "inputs": {"brief": "Synthetic image"}}, image_session)
+        wait_for_claim(fast["id"], slow["id"])
+    finally:
+        delivery.send_signal(signal.SIGCONT)
+    wait_for_run(port, fast, image_session)
+    print("PASS one workflow advances while the same worker is waiting for a media tool")
+    return slow
+
+
+def verify_workflow(port, peer, session, account, project, stop_worker, restart_worker, receiver, check_rollout,
+                    submit_trial):
     project_path = f"/v1/projects/{project}"
     query = f"?account_id={account}"
     tools, _ = call(port, project_path + "/workflow-tools" + query + "&verify=fixture-delivery", 200, headers=session)
@@ -507,8 +550,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
                        body=png, headers={**session, **file_headers})
     trial = {"revision": draft["revision"], "inputs": {"image": {"upload_id": uploaded["upload_id"]}}}
     test_path = manage + "/test-runs" + query
-    checked, _ = call(port, test_path, 202, method="POST",
-                      headers={**session, "Idempotency-Key": token_hex(16)}, body=trial)
+    checked = submit_trial(test_path, trial)
     verify_output(port, checked, session, digest, len(png))
     released, _ = call(port, manage + "/versions" + query, 200, method="POST", headers=session,
                        body={"revision": draft["revision"], "active_version": None})
@@ -922,7 +964,7 @@ def rehearse(gateway, admin, directory):
         scoped_catalog.write_text(json.dumps(catalog))
         settings["TOKENCRAFT_CORE_CATALOG"] = str(scoped_catalog)
         media_port, token = loopback_port(), token_hex(32)
-        stack.enter_context(service("delivery", [sys.executable, "-B", MEDIA / "server.py", "--pack", "delivery",
+        delivery = stack.enter_context(service("delivery", [sys.executable, "-B", MEDIA / "server.py", "--pack", "delivery",
             "--host", HOST, "--port", str(media_port), "--state", directory / "delivery"], directory,
             dict(env, TOKENCRAFT_MEDIA_SERVICE_TOKEN=token), lambda: ready(media_port)))
         registry = directory / "bindings.json"
@@ -977,8 +1019,11 @@ def rehearse(gateway, admin, directory):
                 verify_worker_binding_scope(gateway, directory, settings, registry, api_port, session, account,
                                             project, sibling_project, query_db)
 
+            def submit_trial(path, body):
+                return test_during_tool_pause(api_port, session, path, body, delivery, query_db)
+
             verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
-                            check_rollout)
+                            check_rollout, submit_trial)
             verify_project_catalog(api_port, session, account, project)
             def check_generation(step_cap):
                 verify_generation_rollout(gateway, directory, settings, step_cap)

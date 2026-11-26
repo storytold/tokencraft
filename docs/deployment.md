@@ -25,6 +25,8 @@ cargo run --locked -p api_gateway --bin api-gateway
 
 The default process runs the API and workers together. Set `TOKENCRAFT_PROCESS_ROLE=api` or `TOKENCRAFT_PROCESS_ROLE=worker` to run them separately. Both roles need the same database, persistent payload key, catalog, and bindings. Use shared artifact storage when those roles run on separate machines. Check `/ready` and the catalog model list after deploying. Configure [event archives](event-archives.md) for verified filesystem or S3-compatible retention.
 
+Each worker process advances up to two workflow runs at a time and schedules retention cleanup independently. PostgreSQL leases and admission limits continue to apply across all replicas.
+
 ## Roll out compatible database changes
 
 Deploy a gateway that supports migration overlap on the current schema before applying a newer migration. Each process checks the version, success flag, and checksum of every migration embedded in its binary. A newer binary becomes ready once its migrations are applied. An older binary can stay ready only if every later applied migration declares compatibility with its schema version.
