@@ -634,7 +634,11 @@ pub(super) async fn status(
     {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, tag)]).into_response());
     }
-    let progress = runner::State::read(&security, &row)?;
+    let expired = row.status == "expired";
+    let progress = match runner::State::read(&security, &row) {
+        Err(_) if expired => None,
+        result => result?,
+    };
     let graph = management::decode(row.graph.clone())?;
     let execution = if include_execution {
         Some(execution::read(&state.pool, &row, &graph, progress.as_ref()).await?)
@@ -674,6 +678,9 @@ pub(super) async fn status(
             (node, status)
         }).collect();
         view.error = progress.error;
+    }
+    if expired {
+        view.error = Some("run_deadline_exceeded".into());
     }
     if reader.actor.is_none() {
         if let (Some(account), Some(outputs)) = (console_account, &mut view.outputs) {

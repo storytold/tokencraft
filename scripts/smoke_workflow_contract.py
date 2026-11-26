@@ -455,7 +455,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     print("PASS published workflow contract, upload, digest, replay, conditional polling, cancellation, and app isolation")
 
 
-def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db):
+def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, hold_budget, receiver):
     session, account, project = provision(port)
     query = f"?account_id={account}"
     base = f"/v1/projects/{project}"
@@ -554,6 +554,66 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db):
     assert_on_hold(estimate * 2, estimate)
     print("PASS newly admitted child keeps the original UTC month and releases unused hold after completion")
 
+    subscription, _ = call(port, base + "/webhooks" + query, 201, method="POST", headers=session, body={
+        "name": "Expired workflow fixture", "destination_id": "fixture", "workflow_app_id": app["app_id"],
+    })
+    listing = base + "/webhook-deliveries"
+
+    def wait_for_db(statement, message, **values):
+        until = monotonic() + 10
+        while monotonic() < until:
+            if query_db(statement, **values) == "t":
+                return
+            sleep(0.1)
+        raise RuntimeError(message)
+
+    def enqueue():
+        admitted, _ = call(port, runs, 202, method="POST", body=empty,
+                           headers={**auth, "Idempotency-Key": token_hex(16)})
+        return admitted
+
+    def expect_expired(admitted):
+        run = admitted["id"]
+        wait_for_db("SELECT status = 'expired' FROM workflow_runs WHERE id = :'run'",
+                    "The worker did not expire the due run", run=run)
+        status, headers = call(peer, admitted["status_url"], 200, headers=auth)
+        assert status["status"] == "expired" and status["error"] == "run_deadline_exceeded"
+        assert status.get("outputs") is None
+        call(port, admitted["status_url"], 304, headers={**auth, "If-None-Match": headers["ETag"]})
+        no_child = query_db("SELECT NOT EXISTS (SELECT 1 FROM gateway_requests WHERE actor_id = :'run')", run=run)
+        assert no_child == "t"
+        assert_on_hold(estimate * 2, estimate)
+        delivery = verify_signed_delivery(port, listing, query, session, receiver, subscription, "workflow.run.expired", {
+            "run_id": run, "workflow_id": draft["id"], "project_id": project, "workflow_version": 1,
+            "status": "expired", "fetch_url": admitted["status_url"],
+        })
+        assert delivery["workflow_run_id"] == run
+
+    stop_worker()
+    unreadable = enqueue()
+    query_db("UPDATE workflow_runs SET content = decode('00','hex'), deadline = now() - interval '1 second', "
+             "next_at = now() - interval '1 second' WHERE id = :'run'", run=unreadable["id"])
+    assert_on_hold(estimate * 2 + run_cap, estimate + run_cap)
+    start_worker()
+    expect_expired(unreadable)
+    preserved = query_db("SELECT encode(content, 'hex') FROM workflow_runs WHERE id = :'run'", run=unreadable["id"])
+    assert preserved == "00"
+    print("PASS unreadable checkpoint still expires, releases budget, and produces one signed terminal event")
+
+    stop_worker()
+    delayed = enqueue()
+    with hold_budget(account):
+        query_db("UPDATE workflow_runs SET deadline = clock_timestamp() + interval '5 seconds' WHERE id = :'run'",
+                 run=delayed["id"])
+        start_worker()
+        wait_for_db("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event = 'advisory' "
+                    "AND query LIKE '%gateway_monthly_budget:%')",
+                    "Child admission did not reach the held budget lock")
+        wait_for_db("SELECT next_at = deadline AND clock_timestamp() >= deadline FROM workflow_runs WHERE id = :'run'",
+                    "The lease did not end at the run deadline", run=delayed["id"])
+    expect_expired(delayed)
+    print("PASS a child blocked on budget cannot commit after its lease reaches the run deadline")
+
 
 def rehearse(gateway, admin, directory):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
@@ -629,6 +689,21 @@ def rehearse(gateway, admin, directory):
                 script.write_text(statement + ";\n")
                 return command(*psql, *args, "-f", script, cwd=directory, env=pg_env)
 
+            @contextmanager
+            def hold_budget(account):
+                with subprocess.Popen([*psql, "-q", "-v", f"account={account}"], cwd=directory, env=pg_env,
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as owner:
+                    try:
+                        owner.stdin.write("SET statement_timeout = '5s';\nBEGIN;\n"
+                                          "SELECT 'held' FROM pg_advisory_xact_lock("
+                                          "hashtextextended('gateway_monthly_budget:' || :'account', 0));\n")
+                        owner.stdin.flush()
+                        assert owner.stdout.readline().strip() == "held"
+                        yield
+                    finally:
+                        owner.stdin.close()
+                        owner.wait(timeout=5)
+
             def start_worker():
                 worker_port = loopback_port()
                 workers.enter_context(service(f"worker-{worker_port}", [gateway], directory,
@@ -637,7 +712,7 @@ def rehearse(gateway, admin, directory):
 
             start_worker()
             verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver)
-            verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db)
+            verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver)
 
 
 def main():

@@ -405,10 +405,12 @@ async fn submit_inner(
         .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
         .await?;
     gateway_routing_policies::lock_for_admission(&mut *tx, key.scope.account).await?;
-    let workflow_budget = if let Some((run, lease, _)) = &workflow {
-        let locked = db_queries::workflows::lock_active_run(&mut *tx, run, *lease).await?
-            .ok_or_else(|| ApiError::Conflict("workflow execution is no longer active".into()))?;
-        locked.budget_month_start.map(|month| (*run, month))
+    let workflow_lease = workflow.as_ref().map(|(run, lease, _)| (*run, *lease));
+    let lease_ended = || ApiError::Conflict("workflow execution is no longer active".into());
+    let workflow_budget = if let Some((run, lease)) = workflow_lease {
+        let locked = db_queries::workflows::lock_active_run(&mut *tx, run, lease).await?
+            .ok_or_else(lease_ended)?;
+        locked.budget_month_start.map(|month| (run, month))
     } else {
         None
     };
@@ -714,6 +716,11 @@ async fn submit_inner(
         }
         if retry_after > 0 {
             return Err(ApiError::SubmissionRateLimit(retry_after));
+        }
+        // Quote, capacity, and budget checks can take a lease past its deadline.
+        if let Some((run, lease)) = workflow_lease {
+            db_queries::workflows::lock_active_run(&mut *tx, run, lease).await?
+                .ok_or_else(lease_ended)?;
         }
     }
     tx.commit().await?;

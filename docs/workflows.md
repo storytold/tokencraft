@@ -31,6 +31,8 @@ Workflow versions pin the graph. The backend checkpoints runs under database lea
 
 Admission reserves the sum of the generation step caps in the current UTC month. That reservation counts toward organization and project estimate budgets and toward the published app’s client budget, if configured. A run that exceeds a budget returns `409 monthly_budget_exceeded` before any step is admitted. As each child is admitted, its estimated spend moves from the run reservation into that request’s budget record in the same transaction. A run ending releases its unused reservation. Child requests keep their existing accounting and use the parent’s UTC month even across a month boundary. Runs already admitted before schema 76 continue using individual child admission for budget accounting.
 
+Runs have a 30-minute deadline. When the worker processes a due run past that deadline, PostgreSQL records `expired` and releases its unused reservation even if the saved checkpoint is unreadable. The status endpoint reports `run_deadline_exceeded`. Workers need a current lease to start a child or save a checkpoint. Previously admitted children retain their own execution and accounting.
+
 Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).
 
 ## Receive terminal events

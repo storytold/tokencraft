@@ -128,11 +128,10 @@ async fn advance(runtime: &Runtime) -> ApiResult<()> {
     let Some(row) = db::claim_run(&runtime.pool).await? else {
         return Ok(());
     };
-    let mut state = State::read(&runtime.security, &row)?.ok_or_else(unavailable)?;
-    if row.deadline <= Utc::now() {
-        state.error = Some("run_deadline_exceeded".into());
-        return checkpoint(runtime, &row, state, "expired", 0).await;
+    if row.status == "expired" {
+        return Ok(());
     }
+    let mut state = State::read(&runtime.security, &row)?.ok_or_else(unavailable)?;
     let graph = management::decode(row.graph.clone())?;
     let plan = graph.compile().map_err(|_| unavailable())?;
     let Some(node) = plan
@@ -153,10 +152,12 @@ async fn advance(runtime: &Runtime) -> ApiResult<()> {
                     return Ok(());
                 }
                 db::insert_tool_artifact(&mut *tx, &row.id, &node.id, &artifact).await?;
-                db::checkpoint_run(&mut *tx, db::Checkpoint {
+                let saved = db::checkpoint_run(&mut *tx, db::Checkpoint {
                     id: &row.id, lease: row.lease, status: "running", content: &content, delay_seconds: 0,
                 }).await?;
-                tx.commit().await?;
+                if saved {
+                    tx.commit().await?;
+                }
                 Ok(())
             }
             Ok(None) => checkpoint(runtime, &row, state, "running", 1).await,
