@@ -105,12 +105,16 @@ pub async fn restore(
     archive: &GatewayArchiveId,
     retrieve_cold: bool,
 ) -> sqlx::Result<()> {
+    // Cold retrieval can replace a verification-only restore. Clearing its lease
+    // prevents that worker from publishing a stale outcome.
     sqlx::query!(
         "UPDATE gateway_archives SET state = 'restore_queued', tries = 0, restored_until = NULL, error_code = NULL,
-                  retrieve_cold = $5, retrieval_attempted_at = NULL, restore_check_at = NULL,
+                  lease_until = NULL, retrieve_cold = $5, retrieval_attempted_at = NULL, restore_check_at = NULL,
                   retrieval_confirmed = false, retrieval_submissions = 0
          WHERE account_id = $1 AND project_id = $2 AND ($3::text IS NULL OR client_ref = $3) AND id = $4
-           AND (state IN ('stored','restore_failed') OR (state = 'available' AND restored_until <= clock_timestamp()))",
+           AND (state IN ('stored','restore_failed')
+                OR (state = 'available' AND restored_until <= clock_timestamp())
+                OR ($5 AND NOT retrieve_cold AND state IN ('restore_queued','restoring')))",
         scope.account.as_str(), scope.project.as_str(), scope.client_ref, archive.as_str(), retrieve_cold,
     ).execute(pool).await?;
     Ok(())
