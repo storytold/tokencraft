@@ -357,6 +357,41 @@ def verify_tool_rollout(gateway, directory, settings, registry, sibling_project,
     print("PASS rollout checks queued tool pins, accepts drain-only retention, and preserves project authorization")
 
 
+def verify_worker_binding_scope(gateway, directory, settings, registry, port, session, account, project, sibling,
+                                query_db):
+    candidate = directory / "other-worker-bindings.json"
+    config = json.loads(registry.read_bytes())
+    config["bindings"][0]["projects"] = [sibling]
+    candidate.write_text(json.dumps(config))
+
+    scope = f"?account_id={account}&project_id={project}"
+    graph, _ = call(port, "/v1/workflows/plan" + scope, 200, method="POST", headers=session,
+                    body={"intent": "Check worker binding selection", "primitives": [{"kind": "image", "title": "Image"}]})
+    assert graph["nodes"][0]["kind"] == "image"
+    query = f"?account_id={account}"
+    endpoint = f"/v1/projects/{project}/workflows"
+    draft, _ = call(port, endpoint + query, 201, method="POST", headers=session, body=graph)
+
+    for bindings in (None, candidate):
+        worker_port = loopback_port()
+        env = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
+        del env["TOKENCRAFT_DEMO_WEBHOOK_CONFIG"]
+        if bindings is None:
+            del env["TOKENCRAFT_WORKFLOW_TOOL_BINDINGS"]
+        else:
+            env["TOKENCRAFT_WORKFLOW_TOOL_BINDINGS"] = str(bindings)
+        with service(f"other-worker-{worker_port}", [gateway], directory, env, lambda: ready(worker_port)):
+            receipt, _ = call(port, f"{endpoint}/{draft['id']}/test-runs" + query, 202, method="POST",
+                              headers={**session, "Idempotency-Key": token_hex(16)},
+                              body={"revision": draft["revision"], "inputs": {"brief": "Synthetic image"}})
+            wait_for_run(port, receipt, session)
+            rows = query_db(
+                "SELECT count(*) FROM workflow_runs WHERE project_id = :'project' AND lease = 0 "
+                "AND status = 'queued' AND graph->'nodes'->0->>'kind' = 'tool'", project=project)
+            assert rows == "2", f"Expected both pinned runs to stay unclaimed, found {rows}"
+    print("PASS workers without the matching project binding leave tool runs for an eligible worker")
+
+
 def verify_generation_rollout(gateway, directory, settings, step_cap):
     candidate = directory / "candidate-generation-catalog.json"
     config = json.loads(Path(settings["TOKENCRAFT_CORE_CATALOG"]).read_bytes())
@@ -939,6 +974,8 @@ def rehearse(gateway, admin, directory):
 
             def check_rollout(sibling_project, digest):
                 verify_tool_rollout(gateway, directory, settings, registry, sibling_project, digest)
+                verify_worker_binding_scope(gateway, directory, settings, registry, api_port, session, account,
+                                            project, sibling_project, query_db)
 
             verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
                             check_rollout)

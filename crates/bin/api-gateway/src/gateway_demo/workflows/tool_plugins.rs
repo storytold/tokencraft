@@ -165,6 +165,17 @@ impl Bindings {
 }
 
 impl Bindings {
+    pub(super) fn worker_pins(&self) -> Value {
+        let mut scoped = BTreeMap::<&str, BTreeMap<&str, Vec<&str>>>::new();
+        for binding in self.0.values() {
+            let projects = scoped.entry(binding.account.as_str()).or_default();
+            for project in &binding.projects {
+                projects.entry(project.as_str()).or_default().push(&binding.digest);
+            }
+        }
+        serde_json::json!(scoped)
+    }
+
     pub(super) fn rollout_blocker(
         &self,
         dependency: &db_queries::workflows::ToolDependency,

@@ -387,7 +387,7 @@ The JSON report gives the candidate base revision and counts by offer, request p
 
 When replacing a queue connector, provision a new binding name. Keep the old origin, revision, and completion settings available until the old work drains. A drain-only worker polls and recovers existing jobs on that binding. Workers with the active binding continue to claim submissions during cutover. Continue to coordinate admissions during cutover and review provider access and pricing for the candidate. [Connector protocol](provider-connectors.md#queued-media-protocol-version-1)
 
-For a workflow tool, a `drain_only` binding remains eligible for admitted runs. Publish the revised workflow against the replacement binding before resuming new runs. [Workflow tool bindings](media-tools.md)
+For a workflow tool, a `drain_only` binding remains eligible for admitted runs. Upgrade all workflow workers before rolling out different tool registries across the worker pool. Workers claim live runs only when their local configuration authorizes every pinned tool binding for that run's project. Any workflow worker can expire a due run at its deadline. Publish the revised workflow against the replacement binding before resuming new runs. [Workflow tool bindings](media-tools.md)
 
 ## Move from a deployment with built-in provider adapters
 

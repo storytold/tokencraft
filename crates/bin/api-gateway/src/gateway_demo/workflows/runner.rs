@@ -90,6 +90,7 @@ pub(super) fn unavailable() -> ApiError {
 
 pub(super) fn spawn(runtime: Runtime) {
     tokio::spawn(async move {
+        let tool_pins = runtime.security.tools.worker_pins();
         let mut maintenance = tokio::time::interval(Duration::from_secs(60));
         let mut schedule = tokio::time::interval(Duration::from_millis(300));
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -97,7 +98,7 @@ pub(super) fn spawn(runtime: Runtime) {
         loop {
             tokio::select! {
                 _ = runtime.readiness.work_tick(&mut schedule) => {
-                    if let Err(error) = advance(&runtime).await {
+                    if let Err(error) = advance(&runtime, &tool_pins).await {
                         let name = match error { ApiError::Internal(_) => "storage", _ => "workflow" };
                         tracing::warn!(category = name, "workflow worker deferred a claim");
                     }
@@ -123,8 +124,8 @@ pub(super) fn scope(row: &db::Run) -> RequestScope<'_> {
     }
 }
 
-async fn advance(runtime: &Runtime) -> ApiResult<()> {
-    let Some(row) = db::claim_run(&runtime.pool).await? else {
+async fn advance(runtime: &Runtime, tool_pins: &serde_json::Value) -> ApiResult<()> {
+    let Some(row) = db::claim_run(&runtime.pool, tool_pins).await? else {
         return Ok(());
     };
     if row.status == "expired" {
