@@ -1,5 +1,5 @@
 import { gatewayRequest, withProject, type ProjectScope } from "@/lib/gateway";
-import type { AppKey, Capabilities, Graph, InvocationInput, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, ToolBinding, UploadReference, Workflow, WorkflowSummary } from "./types";
+import type { AppKey, Capabilities, Graph, InvocationInput, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, ToolBinding, UploadReference, Workflow, WorkflowRequestParent, WorkflowSummary } from "./types";
 
 const scopeSuffix = (scope: ProjectScope) => `?account_id=${encodeURIComponent(scope.account_id)}`;
 const projectRoot = (scope: ProjectScope) => `/v1/projects/${encodeURIComponent(scope.project_id)}`;
@@ -47,6 +47,9 @@ export const workflowApi = {
   test: (scope: ProjectScope, workflow: Workflow, inputs: Record<string, InvocationInput>, idempotencyKey: string) =>
     gatewayRequest<Receipt>(`${consoleRoot(scope, workflow.id)}/test-runs${scopeSuffix(scope)}`,
       write({ revision: workflow.revision, inputs }, "POST", { "Idempotency-Key": idempotencyKey })),
+  requestParent: (scope: ProjectScope, request: string, signal?: AbortSignal) =>
+    gatewayRequest<WorkflowRequestParent | null>(
+      `${projectRoot(scope)}/workflow-activity/parents/${encodeURIComponent(request)}${scopeSuffix(scope)}`, { signal }),
   runs: (scope: ProjectScope, id: string, signal?: AbortSignal) =>
     gatewayRequest<RunSummary[]>(`${consoleRoot(scope, id)}/runs${scopeSuffix(scope)}`, { signal }),
   run: (scope: ProjectScope, workflow: string, run: string, signal?: AbortSignal) =>

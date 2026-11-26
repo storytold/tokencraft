@@ -22,6 +22,8 @@ The gateway console uses the saved run graph for the timeline. A project develop
 
 The timeline includes the original step names and any retained child request IDs, statuses, providers, and timestamps. The step status describes the workflow. The request status describes the child inference request. When run content expires, the timeline continues to link to retained requests. Tool details and output content follow their existing retention settings.
 
+From a child request trace, open its workflow run to return to the saved timeline. Scoped console links include the project, workflow, and run IDs so they can be reopened directly. With a project session, `GET /v1/projects/{project}/workflow-activity/parents/{request}?account_id={account}` returns the parent metadata or `null` for a standalone request.
+
 ## Review and export a contract change
 
 Start the [local gateway](setup.md#backend) from the same source you plan to release. Generate the two documents from it.

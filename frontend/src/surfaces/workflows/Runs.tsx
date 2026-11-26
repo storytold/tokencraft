@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { Play, RefreshCw } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL, ApiError } from "@/lib/api";
 import { errorMessage, type ProjectScope } from "@/lib/gateway";
 import { workflowApi } from "./api";
 import { usd } from "./editor";
@@ -92,11 +92,13 @@ export function Status({ status }: { status: RunSummary["status"] }) {
   return <span className={`wf-status wf-status-${status}`}>{statusLabel[status]}</span>;
 }
 
-function RunDetails({ scope, run, graph, onCancel }: { scope: ProjectScope; run: Run; graph: Graph; onCancel: () => Promise<void> }) {
+function RunDetails({ scope, run, graph, heading, onCancel }: {
+  scope: ProjectScope; run: Run; graph: Graph; heading: Ref<HTMLHeadingElement>; onCancel: () => Promise<void>;
+}) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   return <div className="wf-panel wf-stack">
-    <div className="wf-panel-heading"><h3>Run timeline</h3><Status status={run.status} /></div>
+    <div className="wf-panel-heading"><h3 ref={heading} tabIndex={-1}>Run timeline</h3><Status status={run.status} /></div>
     <div className="wf-muted">{run.execution?.title && `${run.execution.title} · `}
       {run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
     <RunTimeline scope={scope} run={run} graph={graph} />
@@ -126,8 +128,15 @@ export function Runs({ scope, id, graph, selected, onSelect }: {
 }) {
   const [list, setList] = useState<RunSummary[]>();
   const [run, setRun] = useState<Run>();
+  const [runError, setRunError] = useState<{ id: string; message: string }>();
+  const timelineHeading = useRef<HTMLHeadingElement>(null);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const openRun = Boolean(run && run.id === selected);
+
+  useEffect(() => {
+    if (openRun) timelineHeading.current?.focus();
+  }, [openRun, selected]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -141,15 +150,24 @@ export function Runs({ scope, id, graph, selected, onSelect }: {
     if (!selected) return;
     const controller = new AbortController();
     let handle: number | undefined;
+    const requested = selected;
+    setRunError(undefined);
     async function observe() {
       try {
-        const current = await workflowApi.run(scope, id, selected!, controller.signal);
+        const current = await workflowApi.run(scope, id, requested, controller.signal);
         if (controller.signal.aborted) return;
         setRun(current);
+        setRunError(undefined);
         setList((previous) => previous?.map((item) => item.id === current.id ? { ...item, status: current.status } : item));
         if (!TERMINAL.has(current.status)) handle = window.setTimeout(() => void observe(), 2000);
-      } catch {
-        if (!controller.signal.aborted) handle = window.setTimeout(() => void observe(), 5000);
+      } catch (failure) {
+        if (controller.signal.aborted) return;
+        setRunError({ id: requested, message: errorMessage(failure) });
+        if (!(failure instanceof ApiError) || failure.status === 0 || failure.status === 429 || failure.status >= 500) {
+          handle = window.setTimeout(() => void observe(), 5000);
+        } else {
+          setRun((current) => current?.id === requested ? undefined : current);
+        }
       }
     }
     void observe();
@@ -168,7 +186,8 @@ export function Runs({ scope, id, graph, selected, onSelect }: {
       </button>)}
       {list?.length === 0 && <p className="wf-muted">Run a draft or call a published endpoint to see results here.</p>}
     </section>
-    {run && run.id === selected && <RunDetails key={run.id} scope={scope} run={run} graph={graph} onCancel={async () => {
+    {!openRun && runError?.id === selected && runError && <div className="wf-panel"><p className="wf-error" role="alert">{runError.message}</p></div>}
+    {run && openRun && <RunDetails key={run.id} scope={scope} run={run} graph={graph} heading={timelineHeading} onCancel={async () => {
       await workflowApi.cancel(scope, id, run.id); setRefresh((value) => value + 1);
     }} />}
   </div>;

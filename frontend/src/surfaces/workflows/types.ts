@@ -66,6 +66,7 @@ export type Workflow = WorkflowSummary & { draft: Graph };
 export type Release = { version: number; draft_revision: number; published_at: string };
 export type RunStatus = "queued" | "running" | "reconciling" | "succeeded" | "failed" | "canceled" | "expired";
 export type RunSummary = { id: string; status: RunStatus; version: number | null; draft_revision: number; created_at: string };
+export type WorkflowRequestParent = { workflow_id: string; run_id: string; title: string };
 export type Receipt = { id: string; workflow_version: number | null; status_url: string; replayed: boolean };
 type RunOutput =
   | { type: "text"; text: string }

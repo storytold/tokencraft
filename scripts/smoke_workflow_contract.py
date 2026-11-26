@@ -888,8 +888,9 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     set_credits(1)
     quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=direct,
                     body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
-    call(port, "/v1/requests", 202, method="POST", body={"quote_id": quote["id"], "input": quote["input"]},
-         headers={**direct, "Idempotency-Key": token_hex(16)})
+    direct_receipt, _ = call(port, "/v1/requests", 202, method="POST",
+                             body={"quote_id": quote["id"], "input": quote["input"]},
+                             headers={**direct, "Idempotency-Key": token_hex(16)})
     draft_denied, draft_headers = call(peer, manage + "/test-runs" + query, 429, method="POST",
                                       body={**empty, "revision": draft["revision"]},
                                       headers={**session, "Idempotency-Key": token_hex(16)})
@@ -953,6 +954,17 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     assert step["request_status"] == "succeeded" and step["provider"] == "self_hosted"
     assert step["admitted_at"] and step["finished_at"]
     print("PASS the session-only execution timeline retains its scoped request trace after run content expires")
+
+    parents = base + "/workflow-activity/parents/"
+    parent, _ = call(port, parents + child + query, 200, headers=session)
+    assert parent == {"workflow_id": draft["id"], "run_id": receipt["id"], "title": "Paid workflow fixture"}
+    direct_parent, _ = call(port, parents + direct_receipt["id"] + query, 200, headers=session)
+    assert direct_parent is None
+    sibling_parents = f"/v1/projects/{sibling['id']}/workflow-activity/parents/"
+    sibling_parent, _ = call(port, sibling_parents + child + query, 200, headers=session)
+    assert sibling_parent is None
+    call(port, parents + child + query, 401, headers=auth)
+    print("PASS a retained request finds its parent only through the matching project session")
 
 
 def rehearse(gateway, admin, directory):
