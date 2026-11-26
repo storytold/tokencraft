@@ -86,11 +86,14 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 "parameters":[{"in":"header","name":"Idempotency-Key","required":true,"schema":{"type":"string","minLength":8,"maxLength":128}}],
                 "requestBody":{"required":true,"content":{"application/json":{
                     "schema":{"type":"object","required":["inputs"],"additionalProperties":false,
-                        "properties":{"inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required}}},
+                        "properties":{
+                            "inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required},
+                            "reuse_run_id":{"type":"string","description":"Reuse unchanged steps from a successful run by this application and workflow version. Requires runs:read and outputs:read."}
+                        }},
                     "example":{"inputs":example}
                 }}},
                 "responses":{"202":accepted,"200":replay,
-                    "409":json_response("The workflow is paused, the invocation conflicts with an earlier submission, or the spending reservation exceeds a monthly limit.", "GatewayError"),
+                    "409":json_response("The workflow is paused, the invocation conflicts with an earlier submission, the reuse source is unavailable or has no matching steps, or the spending reservation exceeds a monthly limit.", "GatewayError"),
                     "429":throttled,"default":gateway_error}
             }},
             (&run):{
@@ -183,6 +186,9 @@ fn schemas() -> Value {
                 "tools":{"type":"object","additionalProperties":{"type":"object","required":["request_id","status","admitted_at","finished_at"],
                     "properties":{"request_id":{"type":"string"},"status":{"type":"string"},
                         "admitted_at":{"type":"string","format":"date-time"},"finished_at":{"type":["string","null"],"format":"date-time"}}}},
+                "reuse":{"type":"object","required":["source_run_id","steps"],"properties":{
+                    "source_run_id":{"type":"string"},"steps":{"type":"array","items":{"type":"string"}}
+                }},
                 "outputs":{"type":"object","additionalProperties":{"$ref":"#/components/schemas/WorkflowOutput"}}
             }
         },

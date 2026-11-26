@@ -4,6 +4,7 @@ use axum::{http::header, response::{IntoResponse, Response}};
 use chrono::{DateTime, Utc};
 use db_queries::workflows as db;
 use reqwest::{Method, StatusCode};
+use ids::WorkflowRunId;
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 
@@ -127,21 +128,43 @@ async fn lookup(binding: &Binding, id: &str) -> ApiResult<Option<String>> {
     Ok(Some(receipt.handle))
 }
 
-fn artifact_binding(run: &db::Run, node: &str, mime: &str, sha256: &str) -> String {
-    format!("tool-artifact/{}/{}/{}/{node}/{mime}/{sha256}", run.account_id, run.project_id, run.id)
+fn artifact_binding(row: &db::Run, run: &WorkflowRunId, node: &str, mime: &str, sha256: &str) -> String {
+    format!("tool-artifact/{}/{}/{run}/{node}/{mime}/{sha256}", row.account_id, row.project_id)
 }
 
 pub(super) async fn read_artifact(
     pool: &sqlx::PgPool, security: &Security, row: &db::Run, node: &str,
 ) -> ApiResult<(Vec<u8>, String, String)> {
-    let artifact = db::read_tool_artifact(pool, &row.id, node).await?
+    verified_artifact(pool, security, row, &row.id, node).await
+}
+
+async fn verified_artifact(
+    pool: &sqlx::PgPool, security: &Security, row: &db::Run, run: &WorkflowRunId, node: &str,
+) -> ApiResult<(Vec<u8>, String, String)> {
+    let artifact = db::read_tool_artifact(pool, run, node).await?
         .ok_or_else(|| ApiError::NotFound("workflow tool artifact is unavailable".into()))?;
-    let tag = artifact_binding(row, node, &artifact.content_type, &artifact.sha256);
+    let tag = artifact_binding(row, run, node, &artifact.content_type, &artifact.sha256);
     let bytes = security.payloads.open(&tag, &artifact.ciphertext).ok_or_else(runner::unavailable)?;
     if sha(&bytes) != artifact.sha256 {
         return Err(runner::unavailable());
     }
     Ok((bytes, artifact.content_type, artifact.sha256))
+}
+
+fn seal_artifact(
+    security: &Security, row: &db::Run, node: &str, bytes: Vec<u8>, content_type: String, sha256: String,
+) -> ApiResult<db::ToolArtifact> {
+    let tag = artifact_binding(row, &row.id, node, &content_type, &sha256);
+    let ciphertext = security.payloads.seal(&tag, bytes).ok_or_else(runner::unavailable)?;
+    Ok(db::ToolArtifact { content_type, sha256, ciphertext })
+}
+
+pub(super) async fn copy_artifact(
+    runtime: &Runtime, row: &db::Run, source: &WorkflowRunId, node: &str,
+) -> ApiResult<db::ToolArtifact> {
+    let (bytes, content_type, sha256) =
+        verified_artifact(&runtime.pool, &runtime.security, row, source, node).await?;
+    seal_artifact(&runtime.security, row, node, bytes, content_type, sha256)
 }
 
 pub(super) async fn download(
@@ -324,10 +347,9 @@ pub(super) async fn advance(runtime: &Runtime, row: &db::Run, node: &Node, state
         _ => return Err(retry()),
     }
     let (bytes, content_type, sha256) = fetch(binding, tool, &progress.handle).await?;
-    let tag = artifact_binding(row, &node.id, &content_type, &sha256);
-    let ciphertext = runtime.security.payloads.seal(&tag, bytes).ok_or_else(runner::unavailable)?;
+    let artifact = seal_artifact(&runtime.security, row, &node.id, bytes, content_type, sha256)?;
     progress.status = "succeeded".into();
     progress.finished_at = Some(Utc::now());
     state.outputs.insert(node.id.clone(), Output::Tool { node: node.id.clone(), kind: node.output() });
-    Ok(Some(db::ToolArtifact { content_type, sha256, ciphertext }))
+    Ok(Some(artifact))
 }

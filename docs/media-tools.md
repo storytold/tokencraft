@@ -118,6 +118,10 @@ For API-authored graphs, add a request field of kind `parameter` with the parame
 }
 ```
 
+After a successful draft test, choose **Test with reused steps** in its run timeline. Keep the prior uploads and change the narration delay. The new run copies the verified trim and issues a soundtrack job. Source generation and other upstream steps are reused when their request inputs and dependencies match.
+
+An application can do the same with `reuse_run_id` in a new invocation. Supply the original input values or upload IDs alongside your changes and use a fresh idempotency key. The source must be a successful run on the same workflow version by the same application. The credential needs `runs:submit`, `runs:read`, and `outputs:read`. The run status reports the source ID and reused steps. If the source or its required outputs have expired, reuse fails before dispatching fresh work. A tool result copied to the new run follows that run's retention. Reused generation outputs retain their original artifact lifetime. Upgrade all gateway workers before accepting reruns.
+
 Operators can run both tools on one host or give each its own [reviewed runner profile](../plugins/tools/media/README.md#serve-only-selected-operations). With local gateway binaries and PostgreSQL 17, run the two-runner smoke using the same FFmpeg build required by the pack.
 
 ```sh

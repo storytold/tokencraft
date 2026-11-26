@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, Request, State};
@@ -21,7 +21,7 @@ use super::super::{
 use super::graph::{Graph, InputValues, Output, ValueType};
 use super::management::{self, ConsoleQuery, Project};
 use super::{
-    budget, execution, planner, runner, uploads, Security, MAX_ACTIVE_RUNS_PER_APP,
+    budget, execution, planner, reuse, runner, uploads, Security, MAX_ACTIVE_RUNS_PER_APP,
     MAX_ACTIVE_RUNS_PER_WORKFLOW,
 };
 use crate::{
@@ -197,6 +197,7 @@ impl Reader {
 #[serde(deny_unknown_fields)]
 pub(super) struct Invocation {
     inputs: InputValues,
+    reuse_run_id: Option<WorkflowRunId>,
 }
 
 #[derive(Deserialize)]
@@ -204,6 +205,7 @@ pub(super) struct Invocation {
 pub(super) struct Trial {
     revision: i64,
     inputs: InputValues,
+    reuse_run_id: Option<WorkflowRunId>,
 }
 
 enum Origin<'a> {
@@ -291,13 +293,15 @@ fn receipt(
         .into_response())
 }
 
-async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
+async fn admit(args: Admit<'_>, inputs: InputValues, reuse_run_id: Option<WorkflowRunId>) -> ApiResult<Response> {
     if !requests::valid_idempotency_key(args.idempotency_key) {
         return Err(ApiError::BadRequest("invalid Idempotency-Key".into()));
     }
     let key_digest = args.security.digest(args.idempotency_key.as_bytes());
-    let intent = serde_json::to_vec(&(args.origin.revision(), &inputs))
-        .map_err(|_| runner::unavailable())?;
+    let intent = match &reuse_run_id {
+        Some(run) => serde_json::to_vec(&(args.origin.revision(), &inputs, run)),
+        None => serde_json::to_vec(&(args.origin.revision(), &inputs)),
+    }.map_err(|_| runner::unavailable())?;
     let intent_digest = args.security.digest(&intent);
     let actor = args.origin.actor();
     let mut tx = args.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
@@ -306,10 +310,15 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
         .await?
         .ok_or_else(management::missing)?;
     let application = if let Origin::App(app) = &args.origin {
-        db::find_credential(&mut *tx, &app.digest)
+        let credential = db::find_credential(&mut *tx, &app.digest)
             .await?
             .filter(|key| key.app_id == app.principal)
             .ok_or_else(|| ApiError::Unauthorized("invalid workflow credential".into()))?;
+        if reuse_run_id.is_some() && [Permission::Read, Permission::Outputs].iter().any(|permission| {
+            !credential.scopes.iter().any(|scope| scope == permission.value())
+        }) {
+            return Err(ApiError::Forbidden("reuse requires runs:read and outputs:read".into()));
+        }
         Some(&app.principal)
     } else {
         None
@@ -332,7 +341,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
         return receipt(&args, replay.id, replay.version, true);
     }
 
-    let (version, revision, definition) = match args.origin.revision() {
+    let (version, revision, mut definition) = match args.origin.revision() {
         Some(revision) if revision == row.revision => (None, revision, row.draft),
         Some(_) => {
             return Err(ApiError::Conflict(
@@ -356,7 +365,32 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     let inputs = graph.resolve_inputs(inputs).map_err(ApiError::BadRequest)?;
     let plan = graph.compile().map_err(ApiError::BadRequest)?;
     args.security.tools.validate(&graph, args.scope.account, args.scope.project)?;
-    uploads::validate(&mut tx, args.scope, actor, &graph, &inputs).await?;
+    let mut progress = runner::State::new(inputs, args.security)?;
+    let mut budget_reserved = plan.budget_reserved_usd_nanos;
+    let required_uploads = if let Some(source) = reuse_run_id {
+        let row = db::find_run(&mut *tx, args.scope, &source).await?
+            .filter(|prior| prior.actor_id == actor)
+            .ok_or_else(management::missing)?;
+        if row.status != "succeeded" || row.version != version || row.draft_revision != revision {
+            return Err(reuse::unavailable());
+        }
+        let previous = runner::State::read(args.security, &row)?.ok_or_else(reuse::unavailable)?;
+        let reuse = reuse::prepare(source, previous, &progress, &plan)?;
+        budget_reserved = 0;
+        let mut required = BTreeSet::new();
+        for node in &plan.nodes {
+            if !reuse.pending.contains_key(&node.id) {
+                budget_reserved += node.max_usd_nanos;
+                required.extend(node.request_inputs());
+            }
+        }
+        progress.reuse = Some(reuse);
+        definition["schema"] = serde_json::json!(reuse::STORED_GRAPH_SCHEMA);
+        Some(required)
+    } else {
+        None
+    };
+    uploads::validate(&mut tx, args.scope, actor, &graph, &progress.inputs, required_uploads.as_ref()).await?;
     let request_scope = RequestScope {
         account: args.scope.account,
         project: args.scope.project,
@@ -374,7 +408,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
         ).into_response());
     }
     let id = WorkflowRunId::generate();
-    let content = runner::State::new(inputs).seal(args.security, &id)?;
+    let content = progress.seal(args.security, &id)?;
     let webhook_subscription_id = match application {
         Some(app) => gateway_webhooks::active_workflow_subscription(&mut *tx, args.scope, app).await?,
         None => None,
@@ -387,7 +421,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
             actor,
             version,
             webhook_subscription_id: webhook_subscription_id.as_deref(),
-            budget_reserved_usd_nanos: plan.budget_reserved_usd_nanos,
+            budget_reserved_usd_nanos: budget_reserved,
             draft_revision: revision,
             idempotency_digest: &key_digest,
             intent_digest: &intent_digest,
@@ -396,7 +430,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
         },
     )
     .await?;
-    if plan.budget_reserved_usd_nanos > 0 {
+    if budget_reserved > 0 {
         budget::verify_reservation(&mut tx, request_scope, &policies).await?;
     }
     let retry_after = submission_limits::consume(&mut tx, args.scope.account).await?;
@@ -487,6 +521,7 @@ pub(super) async fn invoke(
             providers: providers.as_deref(),
         },
         input.inputs,
+        input.reuse_run_id,
     )
     .await
 }
@@ -523,6 +558,7 @@ pub(super) async fn test(
             idempotency_key: handlers::idempotency_key(&headers)?,
         },
         input.inputs,
+        input.reuse_run_id,
     )
     .await
 }
@@ -570,11 +606,19 @@ struct RunView {
     steps: Vec<runner::Step>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     tools: BTreeMap<String, super::tool_execution::StepStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reuse: Option<RunReuse>,
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     outputs: Option<BTreeMap<String, PublicOutput>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<execution::Execution>,
+}
+
+#[derive(Serialize)]
+struct RunReuse {
+    source_run_id: WorkflowRunId,
+    steps: BTreeSet<String>,
 }
 
 fn published_results(
@@ -677,6 +721,7 @@ pub(super) async fn status(
         created_at: row.created_at,
         steps: Vec::new(),
         tools: BTreeMap::new(),
+        reuse: None,
         error: None,
         outputs,
         execution,
@@ -687,6 +732,10 @@ pub(super) async fn status(
             let status = step.into_status(&view.id, &node);
             (node, status)
         }).collect();
+        view.reuse = progress.reuse.map(|reuse| RunReuse {
+            source_run_id: reuse.source_run_id,
+            steps: reuse.completed,
+        });
         view.error = progress.error;
     }
     if expired {

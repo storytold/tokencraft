@@ -22,6 +22,7 @@ pub(super) mod generation_rollout;
 mod management;
 mod parameters;
 mod planner;
+mod reuse;
 pub(super) mod rollout;
 mod runner;
 mod tool_plugins;

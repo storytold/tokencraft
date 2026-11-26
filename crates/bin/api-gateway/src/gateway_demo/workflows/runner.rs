@@ -18,7 +18,7 @@ use super::super::requests::{
 };
 use super::super::routing_policy::Policies;
 use super::graph::{Binding, InputValues, Kind, Node, Output, Value, ValueType};
-use super::{management, planner, tool_execution, uploads};
+use super::{management, planner, reuse, tool_execution, uploads};
 use super::Security;
 use crate::error::{ApiError, ApiResult};
 
@@ -40,6 +40,8 @@ pub(super) struct Step {
 #[derive(Serialize, Deserialize)]
 pub(super) struct State {
     pub inputs: InputValues,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_fingerprints: Option<BTreeMap<String, String>>,
     pub outputs: BTreeMap<String, Output>,
     pub steps: Vec<Step>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -47,18 +49,22 @@ pub(super) struct State {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse: Option<reuse::Reuse>,
 }
 
 impl State {
-    pub fn new(inputs: InputValues) -> Self {
-        Self {
+    pub fn new(inputs: InputValues, security: &Security) -> ApiResult<Self> {
+        Ok(Self {
+            input_fingerprints: Some(reuse::fingerprints(security, &inputs)?),
             inputs,
             outputs: BTreeMap::new(),
             steps: Vec::new(),
             tools: BTreeMap::new(),
             error: None,
             failed_node: None,
-        }
+            reuse: None,
+        })
     }
 
     pub fn seal(&self, security: &Security, run: &ids::WorkflowRunId) -> ApiResult<Vec<u8>> {
@@ -95,8 +101,33 @@ pub(super) fn scope(row: &db::Run) -> RequestScope<'_> {
     }
 }
 
-pub(super) async fn advance(runtime: &Runtime, row: db::Run) -> ApiResult<()> {    let mut state = State::read(&runtime.security, &row)?.ok_or_else(unavailable)?;
-    let graph = management::decode(row.graph.clone())?;
+pub(super) async fn advance(runtime: &Runtime, row: db::Run) -> ApiResult<()> {
+    let mut state = State::read(&runtime.security, &row)?.ok_or_else(unavailable)?;
+    if let Some(reuse) = &mut state.reuse {
+        if let Some((node, output)) = reuse.pending.pop_first() {
+            // Finish all reuse checks before starting any new tool or paid request.
+            let artifact = match reuse::materialize(runtime, &row, &reuse.source_run_id, &node, &output).await {
+                Ok(artifact) => artifact,
+                Err(ApiError::NotFound(_)) => {
+                    return fail(runtime, &row, state, &node, "reused_output_unavailable").await;
+                }
+                Err(error) => return Err(error),
+            };
+            reuse.completed.insert(node.clone());
+            state.outputs.insert(node.clone(), output);
+            return match artifact {
+                Some(artifact) => checkpoint_artifact(runtime, &row, state, &node, artifact).await,
+                None => checkpoint(runtime, &row, state, "running", 0).await,
+            };
+        }
+    }
+    let mut graph = management::decode(row.graph.clone())?;
+    if graph.schema == reuse::STORED_GRAPH_SCHEMA {
+        if state.reuse.is_none() {
+            return Err(unavailable());
+        }
+        graph.schema = 1;
+    }
     let plan = graph.compile().map_err(|_| unavailable())?;
     let Some(node) = plan
         .nodes
@@ -110,19 +141,7 @@ pub(super) async fn advance(runtime: &Runtime, row: db::Run) -> ApiResult<()> { 
     if node.kind == Kind::Tool {
         return match tool_execution::advance(runtime, &row, node, &mut state).await {
             Ok(Some(artifact)) => {
-                let content = state.seal(&runtime.security, &row.id)?;
-                let mut tx = runtime.pool.begin().await?;
-                if db::lock_active_run(&mut *tx, &row.id, row.lease).await?.is_none() {
-                    return Ok(());
-                }
-                db::insert_tool_artifact(&mut *tx, &row.id, &node.id, &artifact).await?;
-                let saved = db::checkpoint_run(&mut *tx, db::Checkpoint {
-                    id: &row.id, lease: row.lease, status: "running", content: &content, delay_seconds: 0,
-                }).await?;
-                if saved {
-                    tx.commit().await?;
-                }
-                Ok(())
+                checkpoint_artifact(runtime, &row, state, &node.id, artifact).await
             }
             Ok(None) => checkpoint(runtime, &row, state, "running", 1).await,
             Err(ApiError::ServiceUnavailable(_)) => {
@@ -237,6 +256,23 @@ async fn checkpoint(
         },
     )
     .await?;
+    Ok(())
+}
+
+async fn checkpoint_artifact(
+    runtime: &Runtime, row: &db::Run, state: State, node: &str, artifact: db::ToolArtifact,
+) -> ApiResult<()> {
+    let content = state.seal(&runtime.security, &row.id)?;
+    let mut tx = runtime.pool.begin().await?;
+    if db::lock_active_run(&mut *tx, &row.id, row.lease).await?.is_none() {
+        return Ok(());
+    }
+    db::insert_tool_artifact(&mut *tx, &row.id, node, &artifact).await?;
+    if db::checkpoint_run(&mut *tx, db::Checkpoint {
+        id: &row.id, lease: row.lease, status: "running", content: &content, delay_seconds: 0,
+    }).await? {
+        tx.commit().await?;
+    }
     Ok(())
 }
 

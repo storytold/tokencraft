@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::{body::{to_bytes, Body}, http::HeaderMap};
 use chrono::{DateTime, Utc};
 use db_queries::workflows as db;
@@ -89,9 +91,13 @@ impl Pending {
 
 pub(super) async fn validate(
     tx: &mut sqlx::PgConnection, scope: db::Scope<'_>, actor: &str, graph: &Graph, inputs: &InputValues,
+    required: Option<&BTreeSet<&str>>,
 ) -> ApiResult<()> {
     for (name, value) in inputs {
         let Value::Upload(reference) = value else { continue; };
+        if required.is_some_and(|fields| !fields.contains(name.as_str())) {
+            continue;
+        }
         let kind = graph.inputs[name].kind;
         let key = db::UploadKey { scope, actor, id: &reference.upload_id };
         let valid = db::eligible_upload(&mut *tx, key).await?

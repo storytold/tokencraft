@@ -68,9 +68,12 @@ pub(super) async fn read(
             let request = requests.get(digest);
             let step = steps.iter().find(|step| step.node == node.id);
             let tool = progress.and_then(|state| state.tools.get(&node.id));
+            let reused = progress.and_then(|state| state.reuse.as_ref())
+                .is_some_and(|reuse| reuse.completed.contains(&node.id));
             let failed = progress.and_then(|state| state.failed_node.as_deref())
                 == Some(node.id.as_str());
             let status = match (failed, step.map(|step| step.status.as_str()).or_else(|| tool.map(|step| step.status.as_str()))) {
+                (_, _) if reused => "reused",
                 (true, _) | (_, Some("failed")) => "failed",
                 (_, Some("succeeded")) => "succeeded",
                 (_, Some("reconciling")) if active => "reconciling",

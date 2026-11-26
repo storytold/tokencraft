@@ -9,7 +9,7 @@ import { EMPTY } from "./editor";
 import { Endpoint } from "./Endpoint";
 import { Dialog, IntentDialog } from "./IntentDialog";
 import { Runs, TestDialog } from "./Runs";
-import type { Capabilities, Graph, Workflow, WorkflowSummary } from "./types";
+import type { Capabilities, Graph, InvocationInput, Workflow, WorkflowSummary } from "./types";
 import "./workflows.css";
 
 const tabs = [["build", "Build", WorkflowIcon], ["runs", "Runs", ListChecks], ["endpoint", "Endpoint", Braces]] as const;
@@ -24,9 +24,11 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
-  const [modal, setModal] = useState<"test" | "publish">();
+  const [modal, setModal] = useState<"test" | "reuse" | "publish">();
   const [run, setRun] = useState<string>();
+  const [lastTest, setLastTest] = useState<{ id: string; revision: number; inputs: Record<string, InvocationInput> }>();
   const dirty = graph !== workflow.draft;
+  const reuseSource = !dirty && lastTest?.id === run && lastTest?.revision === workflow.revision ? lastTest : undefined;
 
   async function save() {
     if (!dirty) return workflow;
@@ -79,13 +81,18 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
     {error && <p className="wf-banner wf-error" role="alert">{error}</p>}
     {saved && <p className="wf-banner wf-muted" role="status">{saved}</p>}
     {view === "build" && <Canvas workflowId={workflow.id} graph={graph} capabilities={capabilities} onChange={(next) => { setGraph(next); setSaved(""); }} />}
-    {view === "runs" && <Runs scope={scope} id={workflow.id} graph={workflow.draft} selected={run} onSelect={setRun} />}
+    {view === "runs" && <Runs scope={scope} id={workflow.id} graph={workflow.draft} selected={run} onSelect={setRun}
+      onReuse={reuseSource ? () => setModal("reuse") : undefined} />}
     {view === "endpoint" && <Endpoint scope={scope} workflow={workflow} admin={admin} onUpdate={(next) => {
       setWorkflow(next);
       if (!dirty) setGraph(next.draft);
     }} />}
-    {modal === "test" && <TestDialog graph={workflow.draft} onUpload={(file, type, digest) => workflowApi.upload(scope, workflow.id, file, type, digest)} onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
-      const launched = await workflowApi.test(scope, workflow, inputs, key);
+    {(modal === "test" || modal === "reuse" && reuseSource) && <TestDialog graph={workflow.draft}
+      priorInputs={modal === "reuse" ? reuseSource?.inputs : undefined}
+      onUpload={(file, type, digest) => workflowApi.upload(scope, workflow.id, file, type, digest)}
+      onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
+      const launched = await workflowApi.test(scope, workflow, inputs, key, modal === "reuse" ? reuseSource?.id : undefined);
+      setLastTest({ id: launched.id, revision: workflow.revision, inputs });
       setRun(launched.id); setView("runs"); setModal(undefined);
     }} />}
     {modal === "publish" && <Dialog title="Publish workflow" onClose={() => setModal(undefined)}>

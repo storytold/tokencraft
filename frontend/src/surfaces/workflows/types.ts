@@ -83,6 +83,7 @@ export type Run = {
   created_at: string;
   steps: { node: string; request: string; status: string }[];
   tools?: Record<string, { request_id: string; status: string; admitted_at: string; finished_at: string | null }>;
+  reuse?: { source_run_id: string; steps: string[] };
   error: string | null;
   outputs?: Record<string, RunOutput>;
 };

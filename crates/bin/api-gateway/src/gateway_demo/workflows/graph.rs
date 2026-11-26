@@ -569,6 +569,30 @@ impl Node {
         sources.into_iter().map(str::to_owned).collect()
     }
 
+    pub(super) fn request_inputs(&self) -> BTreeSet<&str> {
+        let mut fields = BTreeSet::new();
+        for binding in self.settings.values() {
+            match binding {
+                Binding::Request { field } => {
+                    fields.insert(field.as_str());
+                }
+                Binding::Template { text } => {
+                    let _ = template(text, |reference| {
+                        if let Reference::Input(field) = reference {
+                            fields.insert(field);
+                        }
+                        Ok(String::new())
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let Some(tool) = &self.tool {
+            fields.extend(tool.parameter_inputs.values().map(String::as_str));
+        }
+        fields
+    }
+
     pub fn resolve(
         &self,
         field: &str,

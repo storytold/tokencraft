@@ -26,8 +26,9 @@ async function fileDigest(file: File) {
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function TestDialog({ graph, onClose, onUpload, onRun }: {
+export function TestDialog({ graph, priorInputs, onClose, onUpload, onRun }: {
   graph: Graph;
+  priorInputs?: Record<string, InvocationInput>;
   onClose: () => void;
   onUpload: (file: File, type: string, digest: string) => Promise<UploadReference>;
   onRun: (inputs: Record<string, InvocationInput>, key: string) => Promise<void>;
@@ -37,17 +38,24 @@ export function TestDialog({ graph, onClose, onUpload, onRun }: {
   const intent = useRef<{ serialized: string; key: string } | undefined>(undefined);
   const inputs = Object.entries(graph.inputs);
   const optional = inputs.filter(([, input]) => input.default !== null);
-  const field = ([name, input]: [string, WorkflowInput]) => <label className="wf-field" key={name}>
-    {input.title} <code>{name}</code>
-    {input.kind === "parameter"
-      ? <ToolParameterInput parameter={input.parameter} name={name} defaultValue={input.default} required={input.default === null} />
-      : input.kind === "integer"
-      ? <input name={name} type="number" min={1} max={32000} defaultValue={input.default ?? ""} required={input.default === null} />
-      : isFileInput(input.kind)
-        ? <input name={name} type="file" required accept={Object.keys(extensions(input.kind)).map((ext) => "." + ext).join(",")} />
-        : <textarea name={name} rows={2} maxLength={4000} defaultValue={input.default ?? ""} required={input.default === null} />}
-  </label>;
-  return <Dialog title="Test draft" onClose={onClose}>
+  const field = ([name, input]: [string, WorkflowInput]) => {
+    const previous = priorInputs?.[name];
+    const hasUpload = typeof previous === "object";
+    const value = hasUpload ? input.default : previous ?? input.default;
+    return <label className="wf-field" key={name}>
+      {input.title} <code>{name}</code>
+      {input.kind === "parameter"
+        ? <ToolParameterInput parameter={input.parameter} name={name} defaultValue={value} required={input.default === null} />
+        : input.kind === "integer"
+        ? <input name={name} type="number" min={1} max={32000} defaultValue={value ?? ""} required={input.default === null} />
+        : isFileInput(input.kind)
+          ? <><input name={name} type="file" required={!hasUpload}
+            accept={Object.keys(extensions(input.kind)).map((ext) => "." + ext).join(",")} />
+            {hasUpload && <small>Using the previous upload. Choose a file to replace it.</small>}</>
+          : <textarea name={name} rows={2} maxLength={4000} defaultValue={value ?? ""} required={input.default === null} />}
+    </label>;
+  };
+  return <Dialog title={priorInputs ? "Test with reused steps" : "Test draft"} onClose={onClose}>
     <form className="wf-stack" onSubmit={async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
@@ -57,6 +65,11 @@ export function TestDialog({ graph, onClose, onUpload, onRun }: {
         for (const [name, definition] of inputs) {
           const raw = form.get(name);
           if (isFileInput(definition.kind)) {
+            const previous = priorInputs?.[name];
+            if (typeof previous === "object" && (!(raw instanceof File) || raw.name === "")) {
+              values[name] = previous;
+              continue;
+            }
             if (!(raw instanceof File) || !raw.size || raw.size > 32 * 1024 * 1024) {
               throw new Error(`Choose a file up to 32 MiB for ${definition.title}.`);
             }
@@ -80,7 +93,9 @@ export function TestDialog({ graph, onClose, onUpload, onRun }: {
         setBusy(false);
       }
     }}>
-      <p className="wf-muted">Runs the saved draft with the selected steps. The maximum spend is {usd(graph.max_usd_nanos)}.</p>
+      <p className="wf-muted">{priorInputs
+        ? "Completed steps with matching inputs are reused. Steps affected by your edits run again."
+        : "Runs the saved draft with the selected steps."} The maximum spend is {usd(graph.max_usd_nanos)}.</p>
       {inputs.filter(([, input]) => input.default === null).map(field)}
       {optional.length > 0 && <details className="wf-disclosure">
         <summary>Optional inputs <span>{optional.length}</span></summary>
@@ -96,10 +111,13 @@ export function Status({ status }: { status: RunSummary["status"] }) {
   return <span className={`wf-status wf-status-${status}`}>{statusLabel[status]}</span>;
 }
 
-function RunDetails({ run, graph, onCancel }: { run: Run; graph: Graph; onCancel: () => Promise<void> }) {
+function RunDetails({ run, graph, onCancel, onReuse }: {
+  run: Run; graph: Graph; onCancel: () => Promise<void>; onReuse?: () => void;
+}) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const steps = [
+    ...(run.reuse?.steps ?? []).map((node) => ({ node, status: "reused", detail: run.reuse?.source_run_id })),
     ...run.steps.map((step) => ({ node: step.node, status: step.status, detail: step.request })),
     ...Object.entries(run.tools ?? {}).map(([node, step]) => ({
       node, status: step.status, detail: step.request_id,
@@ -108,6 +126,9 @@ function RunDetails({ run, graph, onCancel }: { run: Run; graph: Graph; onCancel
   return <div className="wf-panel wf-stack">
     <div className="wf-panel-heading"><h3>Run timeline</h3><Status status={run.status} /></div>
     <div className="wf-muted">{run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
+    {run.status === "succeeded" && onReuse && <div><button type="button" className="wf-button" onClick={onReuse}>
+      Test with reused steps
+    </button></div>}
     {steps.length > 0 && <ol className="wf-timeline">{steps.map((step) =>
       <li key={step.node}><span>{graph.nodes.find((item) => item.id === step.node)?.title ?? step.node}<small>{step.detail}</small></span>
         <span>{step.status.replaceAll("_", " ")}</span></li>)}</ol>}
@@ -132,8 +153,9 @@ function RunDetails({ run, graph, onCancel }: { run: Run; graph: Graph; onCancel
   </div>;
 }
 
-export function Runs({ scope, id, graph, selected, onSelect }: {
+export function Runs({ scope, id, graph, selected, onSelect, onReuse }: {
   scope: ProjectScope; id: string; graph: Graph; selected: string | undefined; onSelect: (id: string) => void;
+  onReuse?: () => void;
 }) {
   const [list, setList] = useState<RunSummary[]>();
   const [run, setRun] = useState<Run>();
@@ -179,7 +201,7 @@ export function Runs({ scope, id, graph, selected, onSelect }: {
       </button>)}
       {list?.length === 0 && <p className="wf-muted">Run a draft or call a published endpoint to see results here.</p>}
     </section>
-    {run && run.id === selected && <RunDetails key={run.id} run={run} graph={graph} onCancel={async () => {
+    {run && run.id === selected && <RunDetails key={run.id} run={run} graph={graph} onReuse={onReuse} onCancel={async () => {
       await workflowApi.cancel(scope, id, run.id); setRefresh((value) => value + 1);
     }} />}
   </div>;

@@ -44,9 +44,9 @@ export const workflowApi = {
       `${workflowEndpoint(scope, workflow)}/uploads${scopeSuffix(scope)}`,
       { method: "POST", headers: { "Content-Type": type, "X-TokenCraft-Content-Sha256": sha256 }, body: file },
     ),
-  test: (scope: ProjectScope, workflow: Workflow, inputs: Record<string, InvocationInput>, idempotencyKey: string) =>
+  test: (scope: ProjectScope, workflow: Workflow, inputs: Record<string, InvocationInput>, idempotencyKey: string, reuseRunId?: string) =>
     gatewayRequest<Receipt>(`${consoleRoot(scope, workflow.id)}/test-runs${scopeSuffix(scope)}`,
-      write({ revision: workflow.revision, inputs }, "POST", { "Idempotency-Key": idempotencyKey })),
+      write({ revision: workflow.revision, inputs, reuse_run_id: reuseRunId }, "POST", { "Idempotency-Key": idempotencyKey })),
   runs: (scope: ProjectScope, id: string, signal?: AbortSignal) =>
     gatewayRequest<RunSummary[]>(`${consoleRoot(scope, id)}/runs${scopeSuffix(scope)}`, { signal }),
   run: (scope: ProjectScope, workflow: string, run: string, signal?: AbortSignal) =>
