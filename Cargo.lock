@@ -68,6 +68,7 @@ dependencies = [
  "flate2",
  "hex",
  "hmac",
+ "httpdate",
  "id_core",
  "ids",
  "image",

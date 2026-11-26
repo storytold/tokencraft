@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use db_queries::gateway_webhooks::{self, Claim, DeliveryResult};
 use tracing::Instrument;
@@ -9,6 +9,7 @@ use crate::{gateway_demo::readiness::Readiness, middleware::trace_context::work_
 use super::config::WebhookConfig;
 
 const MAX_IN_FLIGHT: usize = 4;
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 pub(in crate::gateway_demo) fn spawn(pool: db::PgPool, config: Arc<WebhookConfig>, readiness: Arc<Readiness>) {
     tokio::spawn(async move {
@@ -96,8 +97,7 @@ async fn send(config: &WebhookConfig, claim: &Claim) -> DeliveryResult {
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|header| header.to_str().ok())
-            .and_then(|seconds| seconds.parse::<u64>().ok())
-            .map_or(0, |seconds| seconds.min(60) as i32 * 1_000);
+            .map_or(0, |value| retry_after_ms(value, SystemTime::now()));
         backoff.max(requested)
     });
     DeliveryResult::HttpError {
@@ -106,6 +106,34 @@ async fn send(config: &WebhookConfig, claim: &Claim) -> DeliveryResult {
     }
 }
 
+fn retry_after_ms(value: &str, now: SystemTime) -> i32 {
+    let value = value.trim();
+    let delay = match value.parse::<u64>() {
+        Ok(seconds) => Duration::from_secs(seconds),
+        Err(_) => httpdate::parse_http_date(value)
+            .ok()
+            .and_then(|date| date.duration_since(now).ok())
+            .unwrap_or_default(),
+    };
+    delay.min(MAX_RETRY_AFTER).as_nanos().div_ceil(1_000_000) as i32
+}
+
 fn log_database_error(error: &sqlx::Error) {
     tracing::warn!(sqlstate = ?error.as_database_error().and_then(|error| error.code()), "webhook worker database operation failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_both_retry_after_formats_and_bounds_the_delay() {
+        let now = httpdate::parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
+        assert_eq!(retry_after_ms(" 4 ", now), 4_000);
+        assert_eq!(retry_after_ms("Sun, 06 Nov 1994 08:49:42 GMT", now), 5_000);
+        assert_eq!(retry_after_ms("Sun, 06 Nov 1994 08:49:36 GMT", now), 0);
+        assert_eq!(retry_after_ms("Sun, 06 Nov 1994 09:00:00 GMT", now), 60_000);
+        assert_eq!(retry_after_ms("18446744073709551615", now), 60_000);
+        assert_eq!(retry_after_ms("invalid", now), 0);
+    }
 }

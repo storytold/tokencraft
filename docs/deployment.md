@@ -290,6 +290,8 @@ To deliver signed customer webhooks, set `TOKENCRAFT_DEMO_WEBHOOK_CONFIG` to an 
 
 Each worker runs up to four delivery attempts at a time. A worker taking over an expired lease records that attempt and retries with the same event ID and body. Receivers should deduplicate by `webhook-id` because a successful delivery can be retried after a lost response or worker restart. Revocation prevents new attempts and redrives. An attempt already leased when revocation commits may finish.
 
+For retryable responses, the worker honors `Retry-After` in seconds or as an HTTP date, up to 60 seconds. It waits at least the normal backoff and retains the scheduled retry in PostgreSQL. [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
+
 ### Separate migration and runtime roles
 
 Use a dedicated PostgreSQL database whose owner applies migrations and owns the TokenCraft objects in the `public` schema. Give the API and worker a separate login with an independent credential. The runtime login needs no database ownership, elevated role membership, or permission to create objects in `public`. In clusters upgraded from an older PostgreSQL release, check whether `PUBLIC` still has `CREATE` on that schema and revoke it in the dedicated database if needed.
