@@ -29,6 +29,8 @@ An application can have two active runs across all its keys and API replicas. A 
 
 Workflow versions pin the graph. The backend checkpoints runs under database leases and replays child admission using a stable step key. Each generation step passes the current project allocation and provider policy checks. Each tool step pins a reviewed project binding and an operation revision. Media results are accessed under the workflow's existing project and app scope.
 
+Admission reserves the sum of the generation step caps in the current UTC month. That reservation counts toward organization and project estimate budgets and toward the published app’s client budget, if configured. A run that exceeds a budget returns `409 monthly_budget_exceeded` before any step is admitted. As each child is admitted, its estimated spend moves from the run reservation into that request’s budget record in the same transaction. A run ending releases its unused reservation. Child requests keep their existing accounting and use the parent’s UTC month even across a month boundary. Runs already admitted before schema 76 continue using individual child admission for budget accounting.
+
 Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).
 
 ## Receive terminal events

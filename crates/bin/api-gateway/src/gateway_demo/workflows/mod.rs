@@ -13,6 +13,7 @@ use super::sealed::SealedBytes;
 use super::DemoConfig;
 
 mod activity;
+mod budget;
 mod contract;
 mod endpoints;
 mod execution;

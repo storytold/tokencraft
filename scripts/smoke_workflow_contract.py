@@ -114,7 +114,7 @@ def provision(port):
     return session, account, project["id"]
 
 
-def verify_output(port, receipt, headers, digest, size):
+def wait_for_run(port, receipt, headers):
     deadline = monotonic() + 20
     while monotonic() < deadline:
         state, result_headers = call(port, receipt["status_url"], 200, headers=headers)
@@ -125,6 +125,11 @@ def verify_output(port, receipt, headers, digest, size):
         sleep(0.2)
     else:
         raise RuntimeError("Workflow did not complete before the deadline")
+    return state, result_headers
+
+
+def verify_output(port, receipt, headers, digest, size):
+    state, result_headers = wait_for_run(port, receipt, headers)
     output = state["outputs"]["fingerprint"]
     path, separator, query = receipt["status_url"].partition("?")
     assert output == {
@@ -450,6 +455,106 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     print("PASS published workflow contract, upload, digest, replay, conditional polling, cancellation, and app isolation")
 
 
+def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db):
+    session, account, project = provision(port)
+    query = f"?account_id={account}"
+    base = f"/v1/projects/{project}"
+    estimate, run_cap = 1_250_000, 3_000_000
+    empty = {"inputs": {}}
+    draft, _ = call(port, base + "/workflows" + query, 201, method="POST", headers=session, body={
+        "schema": 1, "title": "Paid workflow fixture", "max_usd_nanos": 8_000_000, "inputs": {},
+        "nodes": [{"id": "generate", "title": "Generate", "kind": "image", "model": "runtime_image",
+                   "max_usd_nanos": run_cap, "settings": {
+                       "prompt": {"source": "fixed", "value": "A synthetic paid image"},
+                       "aspect_ratio": {"source": "fixed", "value": "4:3"},
+                   }}],
+        "outputs": {"image": "generate"},
+    })
+    manage = base + f"/workflows/{draft['id']}"
+    runs = base + f"/workflow-endpoints/{draft['id']}/runs"
+    trial, _ = call(port, manage + "/test-runs" + query, 202, method="POST", body={**empty, "revision": draft["revision"]},
+                    headers={**session, "Idempotency-Key": token_hex(16)})
+    wait_for_run(port, trial, session)
+    call(port, manage + "/versions" + query, 200, method="POST", headers=session,
+         body={"revision": draft["revision"], "active_version": None})
+    app, _ = call(port, manage + "/apps" + query, 201, method="POST", headers=session,
+                  body={"name": "Paid workflow app", "days": 1, "scopes": ["runs:submit", "runs:read", "runs:cancel"]})
+    auth = {"Authorization": "Bearer " + app["secret"]}
+    project_policy = "/v1/routing-policy" + query + f"&project_id={project}"
+    organization_policy = "/v1/routing-policy" + query
+    client_budget = base + f"/client-budgets/{app['app_id']}" + query
+
+    def set_caps(revision, total_limit, app_limit):
+        policy = {"expected_revision": revision, "policy": {"monthly_estimated_budget_usd_nanos": total_limit}}
+        for path in (organization_policy, project_policy):
+            call(port, path, 200, method="PUT", headers=session, body=policy)
+        call(port, client_budget, 200, method="PUT", headers=session,
+             body={"expected_revision": revision, "limit_usd_nanos": app_limit})
+
+    def assert_on_hold(total, application):
+        for path in (organization_policy, project_policy):
+            report, _ = call(peer, path, 200, headers=session)
+            assert report["monthly_budget"]["reserved_usd_nanos"] == str(total)
+        report, _ = call(peer, client_budget, 200, headers=session)
+        assert report["reserved_usd_nanos"] == str(application)
+
+    set_caps(0, estimate + run_cap, run_cap)
+    assert_on_hold(estimate, 0)
+    spec, _ = call(port, runs.removesuffix("/runs") + "/openapi.json", 200, headers=auth)
+    stop_worker()
+    attempts = [{**auth, "Idempotency-Key": token_hex(16)} for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        pending = [threads.submit(call, target, runs, (202, 409), method="POST", body=empty, headers=headers)
+                   for target, headers in zip((port, peer), attempts)]
+        outcomes = [future.result() for future in pending]
+    (denied,) = [index for index, (payload, _) in enumerate(outcomes) if "error" in payload]
+    error, response = outcomes[denied]
+    verify_json_response(spec, spec["paths"][runs]["post"], 409, error, response)
+    assert error["error"]["code"] == "monthly_budget_exceeded"
+    receipt, _ = outcomes[1 - denied]
+    assert_on_hold(estimate + run_cap, run_cap)
+    replay, _ = call(peer, runs, 200, method="POST", body=empty, headers=attempts[1 - denied])
+    assert replay == {**receipt, "replayed": True}
+
+    standalone, _ = call(port, base + "/service-principals" + query, 201, method="POST", headers=session,
+                         body={"name": "Shared budget check", "scopes": ["requests:submit"]})
+    direct = {"Authorization": "Bearer " + standalone["token"]}
+    quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=direct,
+                    body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
+    blocked, _ = call(peer, "/v1/requests", 409, method="POST", body={"quote_id": quote["id"], "input": quote["input"]},
+                      headers={**direct, "Idempotency-Key": token_hex(16)})
+    assert blocked["error"]["code"] == "monthly_budget_exceeded"
+    call(peer, receipt["status_url"] + "/cancel", 204, method="POST", headers=auth)
+    assert_on_hold(estimate, 0)
+
+    accepted, _ = call(peer, runs, 202, method="POST", body=empty, headers=attempts[denied])
+    start_worker()
+    finished, _ = wait_for_run(peer, accepted, auth)
+    assert len(finished["steps"]) == 1
+    assert_on_hold(estimate * 2, estimate)
+    print("PASS shared workflow budget across replicas and native requests, receipt replay, cancellation, and child transfer")
+
+    set_caps(1, 7_000_000, 7_000_000)
+    stop_worker()
+    crossing, _ = call(port, runs, 202, method="POST", body=empty, headers={**auth, "Idempotency-Key": token_hex(16)})
+    assert_on_hold(estimate * 2 + run_cap, estimate + run_cap)
+    run_id = crossing["id"]
+    query_db("UPDATE workflow_runs SET budget_month_start = budget_month_start - interval '1 month' WHERE id = :'run'",
+             run=run_id)
+    assert_on_hold(estimate * 2, estimate)
+    start_worker()
+    crossover, _ = wait_for_run(port, crossing, auth)
+    (step,) = crossover["steps"]
+    pinned = query_db(
+        "SELECT (r.workflow_budget_month_start = w.budget_month_start)::text || '|' || w.budget_remaining_usd_nanos "
+        "FROM gateway_requests r CROSS JOIN workflow_runs w WHERE w.id = :'run' AND r.id = :'child'",
+        run=run_id, child=step["request"],
+    )
+    assert pinned == f"true|{run_cap - estimate}"
+    assert_on_hold(estimate * 2, estimate)
+    print("PASS newly admitted child keeps the original UTC month and releases unused hold after completion")
+
+
 def rehearse(gateway, admin, directory):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
     pg = postgres_bin()
@@ -517,6 +622,13 @@ def rehearse(gateway, admin, directory):
             dict(settings, API_GATEWAY_PORT=str(peer_port), APP_BASE_URL=f"http://localhost:{peer_port}"),
             lambda: ready(peer_port)))
         with ExitStack() as workers:
+            def query_db(statement, **values):
+                args = [argument for key, value in values.items() for argument in ("-v", f"{key}={value}")]
+                # psql substitutes variables in a script, rather than in a single -c argument.
+                script = directory / "assert-budget.sql"
+                script.write_text(statement + ";\n")
+                return command(*psql, *args, "-f", script, cwd=directory, env=pg_env)
+
             def start_worker():
                 worker_port = loopback_port()
                 workers.enter_context(service(f"worker-{worker_port}", [gateway], directory,
@@ -525,6 +637,7 @@ def rehearse(gateway, admin, directory):
 
             start_worker()
             verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver)
+            verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db)
 
 
 def main():

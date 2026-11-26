@@ -212,6 +212,7 @@ impl Kind {
 
 pub(super) struct Plan<'a> {
     pub nodes: Vec<&'a Node>,
+    pub budget_reserved_usd_nanos: i64,
 }
 
 impl Graph {
@@ -337,7 +338,7 @@ impl Graph {
                 node.title
             ));
         }
-        Ok(Plan { nodes: plan })
+        Ok(Plan { nodes: plan, budget_reserved_usd_nanos: cost })
     }
 
     fn validate_binding<'a>(

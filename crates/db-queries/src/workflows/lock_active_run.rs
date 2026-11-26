@@ -1,13 +1,19 @@
+use chrono::{DateTime, Utc};
 use ids::WorkflowRunId;
+
+pub struct LockedRun {
+    pub budget_month_start: Option<DateTime<Utc>>,
+}
 
 pub async fn lock_active_run<'e, E: sqlx::PgExecutor<'e>>(
     exec: E,
     run: &WorkflowRunId,
     lease: i64,
-) -> sqlx::Result<Option<WorkflowRunId>> {
-    sqlx::query_scalar!(
-        r#"SELECT id AS "id: WorkflowRunId" FROM workflow_runs WHERE id = $1 AND lease = $2
-        AND status IN ('queued','running','reconciling') AND deadline > now() FOR UPDATE"#,
+) -> sqlx::Result<Option<LockedRun>> {
+    sqlx::query_as!(
+        LockedRun,
+        "SELECT budget_month_start FROM workflow_runs WHERE id = $1 AND lease = $2
+        AND status IN ('queued','running','reconciling') AND deadline > now() FOR UPDATE",
         run.as_str(),
         lease
     )

@@ -6,7 +6,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use db_queries::{gateway_webhooks, workflows as db};
+use db_queries::{gateway_requests::RequestScope, gateway_routing_policies, gateway_webhooks, workflows as db};
 use ids::{AccountId, GatewayProjectId, WorkflowAppId, WorkflowId, WorkflowKeyId, WorkflowRunId};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use super::super::{
 use super::graph::{Graph, InputValues, Output, ValueType};
 use super::management::{self, ConsoleQuery, Project};
 use super::{
-    execution, planner, runner, uploads, Security, MAX_ACTIVE_RUNS_PER_APP,
+    budget, execution, planner, runner, uploads, Security, MAX_ACTIVE_RUNS_PER_APP,
     MAX_ACTIVE_RUNS_PER_WORKFLOW,
 };
 use crate::{
@@ -296,7 +296,8 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
         .map_err(|_| runner::unavailable())?;
     let intent_digest = args.security.digest(&intent);
     let actor = args.origin.actor();
-    let mut tx = args.pool.begin().await?;
+    let mut tx = args.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
+    gateway_routing_policies::lock_for_admission(&mut *tx, args.scope.account).await?;
     let row = db::lock_workflow(&mut *tx, args.scope)
         .await?
         .ok_or_else(management::missing)?;
@@ -349,7 +350,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     };
     let graph = management::decode(definition.clone())?;
     let inputs = graph.resolve_inputs(inputs).map_err(ApiError::BadRequest)?;
-    graph.compile().map_err(ApiError::BadRequest)?;
+    let plan = graph.compile().map_err(ApiError::BadRequest)?;
     args.security.tools.validate(&graph, args.scope.account, args.scope.project)?;
     uploads::validate(&mut tx, args.scope, actor, &graph, &inputs).await?;
     planner::validate_models(&graph, &args.catalog.current(), args.providers)
@@ -376,6 +377,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
             actor,
             version,
             webhook_subscription_id: webhook_subscription_id.as_deref(),
+            budget_reserved_usd_nanos: plan.budget_reserved_usd_nanos,
             draft_revision: revision,
             idempotency_digest: &key_digest,
             intent_digest: &intent_digest,
@@ -384,6 +386,13 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
         },
     )
     .await?;
+    if plan.budget_reserved_usd_nanos > 0 {
+        budget::verify_reservation(&mut tx, RequestScope {
+            account: args.scope.account,
+            project: args.scope.project,
+            client_ref: application.map(WorkflowAppId::as_str),
+        }).await?;
+    }
     tx.commit().await?;
     receipt(&args, id, version, false)
 }

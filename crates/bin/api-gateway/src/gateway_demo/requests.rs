@@ -405,10 +405,13 @@ async fn submit_inner(
         .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
         .await?;
     gateway_routing_policies::lock_for_admission(&mut *tx, key.scope.account).await?;
-    if let Some((run, lease, _)) = &workflow {
-        db_queries::workflows::lock_active_run(&mut *tx, run, *lease).await?
+    let workflow_budget = if let Some((run, lease, _)) = &workflow {
+        let locked = db_queries::workflows::lock_active_run(&mut *tx, run, *lease).await?
             .ok_or_else(|| ApiError::Conflict("workflow execution is no longer active".into()))?;
-    }
+        locked.budget_month_start.map(|month| (*run, month))
+    } else {
+        None
+    };
     if let Some(accepted) = replay(&mut *tx, key, &intent).await? {
         return Ok((accepted, true));
     }
@@ -640,6 +643,7 @@ async fn submit_inner(
         mock_latency_ms: offer.mock_latency_ms,
         estimated_usd_nanos: estimate,
         budget_reserved_usd_nanos: estimate,
+        workflow_budget_month_start: workflow_budget.map(|(_, month)| month),
         client_budget,
         credential: availability.credential(&offer.id),
         correlation: RequestCorrelation {
@@ -664,12 +668,18 @@ async fn submit_inner(
     let inserted = gateway_requests::insert_request(&mut *tx, new_request).await?;
     if inserted {
         super::request_capacity::enforce(&mut tx, key.scope, &policies, &offer.provider).await?;
+        if let Some((run, _)) = workflow_budget.filter(|_| estimate > 0) {
+            if !db_queries::workflows::consume_budget(&mut *tx, run, estimate).await? {
+                return Err(ApiError::BudgetExceeded);
+            }
+        }
         if !gateway_requests::monthly_budget::within_limits(
             &mut tx,
             evidence_scope,
             policies.organization.policy.monthly_estimated_budget_usd_nanos,
             policies.project.policy.monthly_estimated_budget_usd_nanos,
             client_budget.map(|(_, limit)| limit),
+            workflow_budget.map(|(_, month)| month),
         )
         .await?
         {

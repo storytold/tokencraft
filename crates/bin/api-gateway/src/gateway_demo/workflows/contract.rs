@@ -86,7 +86,9 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                         "properties":{"inputs":{"type":"object","additionalProperties":false,"properties":fields,"required":required}}},
                     "example":{"inputs":example}
                 }}},
-                "responses":{"202":accepted,"200":replay,"429":at_capacity,"default":gateway_error}
+                "responses":{"202":accepted,"200":replay,
+                    "409":json_response("The workflow is paused, the invocation conflicts with an earlier submission, or the spending reservation exceeds a monthly limit.", "GatewayError"),
+                    "429":at_capacity,"default":gateway_error}
             }},
             (&run):{
                 "parameters":[run_id],

@@ -128,6 +128,9 @@ pub use count_active_runs::*;
 mod create_run;
 pub use create_run::*;
 
+mod consume_budget;
+pub use consume_budget::*;
+
 mod list_runs;
 pub use list_runs::*;
 
