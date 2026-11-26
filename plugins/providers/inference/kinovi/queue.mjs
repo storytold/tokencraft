@@ -67,6 +67,19 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
   });
   await mkdir(state, { mode: 0o700, recursive: true });
   const recordPath = (id) => join(state, `${id}.json`);
+  const activeWrites = new Map();
+
+  async function serialize(id, action) {
+    const previous = activeWrites.get(id);
+    const next = (previous ?? Promise.resolve()).catch(() => {}).then(action);
+    activeWrites.set(id, next);
+    try {
+      return await next;
+    } finally {
+      if (activeWrites.get(id) === next) activeWrites.delete(id);
+    }
+  }
+
   async function load(id) {
     try {
       return JSON.parse(await readFile(recordPath(id), 'utf8'));
@@ -76,10 +89,20 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
     }
   }
 
+  async function syncDirectory() {
+    const directory = await open(state, 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  }
+
   async function save(id, record) {
     const pending = join(state, `.${randomUUID()}.json`);
     await writeFile(pending, JSON.stringify(record), { mode: 0o600, flush: true, flag: 'wx' });
     await rename(pending, recordPath(id));
+    await syncDirectory();
   }
 
   async function submit(request, response) {
@@ -96,25 +119,44 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
     const payload = provider.input(job);
     if (!payload) return reply({ status: 'rejected' });
     const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-    let intent;
-    try {
-      intent = await open(recordPath(id), 'wx', 0o600);
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const existing = await load(id).catch(() => undefined);
-      const saved = existing?.fingerprint === fingerprint && matchesKey(existing.credentialTag, credentialTag) && existing.outcome;
-      return reply(saved?.status === 'accepted' ? { status: 'accepted', handle: id }
-        : saved || { status: 'uncertain' });
-    }
-    try {
-      await intent.writeFile(JSON.stringify({ fingerprint, credentialTag }));
-      await intent.sync();
-    } finally {
-      await intent.close();
-    }
+    const reserved = await serialize(id, async () => {
+      const intent = { fingerprint, credentialTag };
+      let file;
+      try {
+        file = await open(recordPath(id), 'wx', 0o600);
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const recorded = await load(id).catch(() => undefined);
+        if (recorded?.fingerprint !== fingerprint || !matchesKey(recorded.credentialTag, credentialTag)) {
+          return {};
+        }
+        const { outcome, retryAt } = recorded;
+        if (outcome?.status !== 'unavailable') return { outcome };
+        if (!Number.isFinite(retryAt)) return { outcome: { status: 'unavailable' } };
+        if (Date.now() < retryAt) return { outcome };
+        // Save the unresolved retry intent before the upstream call.
+        const retry = { ...intent, retried: true };
+        await save(id, retry);
+        return { intent: retry };
+      }
+      try {
+        await file.writeFile(JSON.stringify(intent));
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await syncDirectory();
+      return { intent };
+    });
+    const publicOutcome = (outcome) => outcome?.status === 'accepted'
+      ? { status: 'accepted', handle: id } : outcome ?? { status: 'uncertain' };
+    if (!reserved.intent) return reply(publicOutcome(reserved.outcome));
     const outcome = await provider.submit(payload, delegated).catch(() => ({ status: 'uncertain' }));
-    await save(id, { fingerprint, credentialTag, outcome });
-    return reply(outcome.status === 'accepted' ? { status: 'accepted', handle: id } : outcome);
+    const canRetry = !reserved.intent.retried && outcome.status === 'unavailable' && outcome.retry_after_ms;
+    const retryAt = canRetry ? Date.now() + outcome.retry_after_ms : undefined;
+    const result = outcome.status === 'unavailable' && !canRetry ? { status: 'unavailable' } : outcome;
+    await serialize(id, () => save(id, { ...reserved.intent, outcome: result, retryAt }));
+    return reply(publicOutcome(result));
   }
 
   async function lookup(request, response, id, slot) {

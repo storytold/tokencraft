@@ -102,6 +102,10 @@ The command uses the gateway's catalog and binding loaders. It checks that every
 
 Use `GET /v1/catalog/models/scoped` to populate an application's model picker, then `POST /v1/quotes/scoped` to validate a specific workload, check connector availability, and compare current rates. Public model reviews are available for models in the public catalog.
 
+Use a shared local model ID for equivalent offers when you want TokenCraft to compare providers. For example, a local five-second video model can have separate fal and Kinovi offers. Each offer keeps its own upstream model, binding, capabilities, and price. The scoped quote includes the estimates and the selected offer. By default it selects the lowest priced eligible offer. Request and account preferences can change the order within the project's limits. [Routing policy](deployment.md#routing-policy-precedence)
+
+If one project key serves several customers, include the same opaque `client_ref` when quoting and submitting. Filter subsequent request and usage reads by that reference. Issue a client-pinned key when a caller should only be able to read or submit for one client. [Request diagnostics](request-diagnostics.md)
+
 ### Adopt a new preset revision
 
 Use the existing local offer ID, its recorded `artcraft_reference.sha256`, and the new snapshot's revision and SHA-256 in the selection file.
@@ -327,6 +331,8 @@ Echo the request ID and return one outcome.
 - `rejected` means the connector definitively declined the request and no upstream work was accepted.
 - `unavailable` means the connector can prove no upstream work was accepted. It may supply `retry_after_ms` up to 2000 for one bounded retry.
 - `uncertain` means the request may have been accepted. Timeouts, malformed replies, and non-protocol HTTP errors also leave the request awaiting reconciliation without a fresh submission.
+
+The fal and Kinovi plugins persist the cooldown after a supplier throttle. A matching replay after that delay can make the one permitted supplier retry. A retry without a conclusive outcome remains in reconciliation. A fresh quote during a recorded cooldown can select another eligible offer.
 
 ### Observe and fetch
 

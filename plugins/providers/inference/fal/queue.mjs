@@ -149,24 +149,34 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
     const publicOutcome = (outcome) => outcome?.status === 'accepted'
       ? { status: 'accepted', handle: id } : outcome ?? { status: 'uncertain' };
 
-    const existing = await serialize(id, async () => {
-      const recorded = await load(id);
-      if (recorded) return recorded;
-      try {
-        await save(id, intent, { create: true });
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        return load(id);
+    const reserved = await serialize(id, async () => {
+      let recorded = await load(id);
+      if (!recorded) {
+        try {
+          await save(id, intent, { create: true });
+          return { intent };
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          recorded = await load(id);
+        }
       }
-      return undefined;
+      const same = recorded && (recorded.model ?? legacyModel) === job.model
+        && recorded.fingerprint === fingerprint && recorded.completionToken === completion?.token
+        && matchesKey(recorded.credentialTag, credentialTag);
+      if (!same) return {};
+      const { outcome, retryAt } = recorded;
+      if (outcome?.status !== 'unavailable') return { outcome };
+      if (!Number.isFinite(retryAt)) return { outcome: { status: 'unavailable' } };
+      if (Date.now() < retryAt) return { outcome };
+      // Persist an unresolved intent before retrying. A restart during this
+      // attempt must reconcile the original job instead of submitting again.
+      const retry = { ...recorded, outcome: undefined, retryAt: undefined, retried: true };
+      await save(id, retry);
+      return { intent: retry };
     });
-    if (existing) {
-      const same = (existing.model ?? legacyModel) === job.model
-        && existing.fingerprint === fingerprint && existing.completionToken === completion?.token
-        && matchesKey(existing.credentialTag, credentialTag);
-      return reply(publicOutcome(same ? existing.outcome : undefined));
-    }
-    const url = proof && webhooks.callbackUrl(id, proof);
+    if (!reserved.intent) return reply(publicOutcome(reserved.outcome));
+    const callbackProof = reserved.intent.proof;
+    const url = callbackProof && webhooks.callbackUrl(id, callbackProof);
     const outcome = await provider.submit(job.model, payload, url, delegated).catch(() => ({ status: 'uncertain' }));
     const saved = await serialize(id, async () => {
       const record = await load(id);
@@ -175,8 +185,11 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
         return outcome.status === 'accepted' && outcome.handle !== record.outcome.handle
           ? { status: 'uncertain' } : record.outcome;
       }
-      await save(id, { ...record, outcome });
-      return outcome;
+      const canRetry = !record.retried && outcome.status === 'unavailable' && outcome.retry_after_ms;
+      const retryAt = canRetry ? Date.now() + outcome.retry_after_ms : undefined;
+      const result = outcome.status === 'unavailable' && !canRetry ? { status: 'unavailable' } : outcome;
+      await save(id, { ...record, outcome: result, retryAt });
+      return result;
     });
     return reply(publicOutcome(saved));
   }

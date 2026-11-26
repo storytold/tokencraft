@@ -38,6 +38,57 @@ async function close(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+test('retries a confirmed throttle once across a restart', async () => {
+  const state = await mkdtemp(join(tmpdir(), 'tokencraft-plugin-retry-'));
+  const calls = new Map();
+  let plugin;
+  const vendor = createServer(async (request, response) => {
+    assert.equal(request.url, submitPath);
+    assert.equal(request.headers.authorization, authorization);
+    const body = await readJson(request);
+    const prompt = body.prompt;
+    const attempt = (calls.get(prompt) ?? 0) + 1;
+    calls.set(prompt, attempt);
+    if (prompt === 'ambiguous') return send(response, 502, {});
+    if (prompt === 'always throttled' || attempt === 1) return send(response, 429, {});
+    return send(response, 200, acknowledgement);
+  });
+  try {
+    const origin = await listen(vendor);
+    const provider = fal({ origin, key: 'test-vendor-key', artifactOrigins: [origin] });
+    const start = async () => {
+      plugin = await queueServer({ state, token: 'test-gateway-key', provider });
+      return listen(plugin);
+    };
+    let base = await start();
+    const submit = async (id, prompt) => (await (await fetch(`${base}/v1/jobs`, {
+      method: 'POST', headers: { authorization: 'Bearer test-gateway-key', 'idempotency-key': id },
+      body: JSON.stringify({ version: 1, request_id: id, model, input: { ...jobInput, prompt } }),
+    })).json()).outcome;
+    const unavailable = { status: 'unavailable', retry_after_ms: 2_000 };
+    assert.deepEqual(await submit('recover', 'recover'), unavailable);
+    assert.deepEqual(await submit('recover', 'recover'), unavailable);
+    assert.equal(calls.get('recover'), 1);
+    assert.deepEqual(await submit('limited', 'always throttled'), unavailable);
+    assert.deepEqual(await submit('unknown', 'ambiguous'), { status: 'uncertain' });
+
+    await close(plugin);
+    base = await start();
+    await new Promise((resolve) => setTimeout(resolve, 2_050));
+    const concurrent = await Promise.all(Array.from({ length: 4 }, () => submit('recover', 'recover')));
+    assert.ok(concurrent.some((outcome) => outcome.status === 'accepted'));
+    assert.deepEqual(await submit('recover', 'recover'), { status: 'accepted', handle: 'recover' });
+    assert.deepEqual(await submit('limited', 'always throttled'), { status: 'unavailable' });
+    assert.deepEqual(await submit('limited', 'always throttled'), { status: 'unavailable' });
+    assert.deepEqual(await submit('unknown', 'ambiguous'), { status: 'uncertain' });
+    assert.deepEqual(Object.fromEntries(calls), { recover: 2, 'always throttled': 2, ambiguous: 1 });
+  } finally {
+    await close(plugin);
+    await close(vendor);
+    await rm(state, { recursive: true });
+  }
+});
+
 test('maps queued work, persists the handle on restart, and fetches artifact bytes', async () => {
   const state = await mkdtemp(join(tmpdir(), 'tokencraft-plugin-'));
   let plugin;
