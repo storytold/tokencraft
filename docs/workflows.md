@@ -25,6 +25,8 @@ curl --request POST "$TOKENCRAFT_URL/v1/projects/$PROJECT_ID/workflow-endpoints/
 
 Fetch the workflow's OpenAPI document at `GET /v1/projects/{project_id}/workflow-endpoints/{workflow_id}/openapi.json` with an application key that has `runs:submit`. The document includes the active version's input fields, accepted upload media types, and named outputs. Each operation lists its required permission in `x-workflow-required-scope`. Set your deployed gateway URL as the base URL when importing the contract. Use `Retry-After` from the run receipt and `ETag` from the status response to poll efficiently.
 
+The SDKs provide a scoped `workflow(project, workflow)` client for the contract, uploads, invocation, conditional polling, cancellation, and verified output downloads. They also preserve the same serialized submission during opt-in retries. [Rust workflow example](../sdk/rust/README.md#run-a-published-workflow) · [TypeScript workflow example](../sdk/typescript/README.md#run-a-published-workflow)
+
 Only published application keys with `runs:submit` can invoke that endpoint. Use `runs:read` to read the application's runs, `outputs:read` to retrieve its output artifacts, and `runs:cancel` to stop new child admission. Rotating a key preserves the application identity. A pending connector job retains its own lifecycle after a run stops.
 
 An application can have two active runs across all its keys and API replicas. A workflow can have ten active runs across all applications and draft tests. Queued, running, and reconciling runs count toward capacity. On `429` with `active_request_limit`, wait for the `Retry-After` delay and retry with the same body and idempotency key. An identical replay of an already admitted run still returns its receipt.

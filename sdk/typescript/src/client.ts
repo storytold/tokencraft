@@ -1,8 +1,13 @@
-import { readArtifact, validateArtifactRef } from "./content.js";
+import { readArtifact, readVerifiedContent, sha256, validContentType, validateArtifactRef } from "./content.js";
 import type { ContentMetadata, DownloadOptions, RetainedContent, VerifiedArtifact } from "./content.js";
-import { deadline, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError } from "./http.js";
+import { deadline, hasIdPrefix, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError } from "./http.js";
 import { validateTraceparent } from "./trace.js";
 import type { OtlpTrace, RequestTraceSnapshot, TraceBaseline } from "./trace.js";
+import {
+  invalidWorkflowResponse, maxWorkflowFileBytes, validVersion, workflowInputs, workflowOutputPath, workflowPath,
+  workflowRunDone, workflowRunPath,
+} from "./workflows.js";
+import type { WorkflowEndpoint, WorkflowReceipt, WorkflowRun, WorkflowUpload } from "./workflows.js";
 import type {
   ArtifactRef, AudioProviderResult, CallOptions, Catalog, ClientOptions, ImageProviderResult, ListOptions, MeshProviderResult, ModelCatalog, ModelListOptions, ProviderPath, ProviderResult, Quote, QuoteInput, QuoteOptions,
   Receipt, RequestEvents, RequestPage, RequestTrace, RoutePreview, RoutePreviewOptions, SubmitOptions,
@@ -16,6 +21,7 @@ type GatewayRead<T> = { value: T; headers: Headers };
 interface WireOptions extends CallOptions {
   auth?: boolean;
   body?: object;
+  binary?: { bytes: ArrayBuffer; contentType: string; checksum: string };
   key?: string;
   requestId?: string;
   cache?: RequestCache;
@@ -76,9 +82,7 @@ export class TokenCraft {
   }
 
   submit(quote: Pick<Quote, "id" | "input" | "pinned_offer_id">, options: SubmitOptions): Promise<Receipt> {
-    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(options.idempotencyKey)) {
-      throw new TypeError("Idempotency keys must have 8–128 ASCII letters, numbers, or . _ : -.");
-    }
+    validateIdempotencyKey(options.idempotencyKey);
     return this.#call("POST", "v1/requests", {
       auth: true, key: options.idempotencyKey, signal: options.signal,
       retrySubmission: true,
@@ -204,22 +208,85 @@ export class TokenCraft {
     }), { auth: true, signal: options.signal });
   }
 
+  /** Use an application key issued by this published workflow. */
+  workflow(projectId: string, workflowId: string): WorkflowEndpoint {
+    const path = workflowPath(projectId, workflowId);
+    const runPath = (runId: string) => workflowRunPath(path, runId);
+    const privateCall = { auth: true, cache: "no-store" } as const;
+    return {
+      contract: (options = {}) => this.#call("GET", `${path}/openapi.json`, { ...options, ...privateCall }),
+      upload: async (contentType, bytes, options = {}) => {
+        if (typeof contentType !== "string" || !validContentType(contentType)
+            || !(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > maxWorkflowFileBytes) {
+          throw new TypeError("Supply a media type and 1 byte to 32 MiB of file content.");
+        }
+        options.signal?.throwIfAborted();
+        const copy = Uint8Array.from(bytes);
+        const checksum = await sha256(copy);
+        const upload = await this.#call<WorkflowUpload>("POST", `${path}/uploads`, {
+          ...options, ...privateCall, binary: { bytes: copy.buffer, contentType, checksum },
+        });
+        if (!hasIdPrefix(upload.upload_id, "wfu_") || typeof upload.expires_at !== "string") {
+          throw invalidWorkflowResponse(201);
+        }
+        return upload;
+      },
+      invoke: async (inputs, options) => {
+        validateIdempotencyKey(options.idempotencyKey);
+        if (options.reuseRunId !== undefined) runPath(options.reuseRunId);
+        const receipt = await this.#call<WorkflowReceipt>("POST", `${path}/runs`, {
+          ...privateCall, signal: options.signal, key: options.idempotencyKey, retrySubmission: true,
+          body: { inputs: workflowInputs(inputs), client_ref: options.clientRef, reuse_run_id: options.reuseRunId },
+        });
+        if (!hasIdPrefix(receipt.id, "wfr_") || receipt.status_url !== `/${runPath(receipt.id)}`
+            || !validVersion(receipt.workflow_version) || typeof receipt.replayed !== "boolean") {
+          throw invalidWorkflowResponse(receipt.replayed === true ? 200 : 202);
+        }
+        return receipt;
+      },
+      get: async (runId, options = {}) => {
+        const run = await this.#call<WorkflowRun>("GET", runPath(runId), { ...options, ...privateCall, requestId: runId });
+        workflowRunDone(run, runId);
+        return run;
+      },
+      wait: (runId, options = {}) => this.#poll<WorkflowRun>(
+        runPath(runId), runId, options, (run) => workflowRunDone(run, runId),
+      ),
+      cancel: async (runId, options = {}) => {
+        await this.#exchange("POST", `${runPath(runId)}/cancel`, { ...options, ...privateCall, requestId: runId },
+          async (response) => {
+            if (response.status !== 204) throw invalidWorkflowResponse(response.status, runId);
+          });
+      },
+      downloadOutput: async (runId, name, options = {}) => {
+        const { value } = await this.#exchange("GET", workflowOutputPath(runPath(runId), name), {
+          ...options, ...privateCall, requestId: runId, accept: "application/octet-stream",
+        }, (response) => readVerifiedContent(response, maxWorkflowFileBytes, runId));
+        return value;
+      },
+    };
+  }
+
   async wait(requestId: string, options: WaitOptions = {}): Promise<RequestTrace> {
+    return this.#poll<RequestTrace>(requestPath(requestId), requestId, options, (trace) => {
+      if (inspectable.has(trace.status)) return true;
+      if (trace.status === "queued" || trace.status === "running") return false;
+      throw new TokenCraftError(200, "invalid_response", "The gateway returned an unknown request status.", requestId);
+    });
+  }
+
+  async #poll<T>(path: string, requestId: string, options: WaitOptions, done: (value: T) => boolean): Promise<T> {
     const interval = milliseconds(options.pollIntervalMs ?? 750, "pollIntervalMs");
     const timeout = milliseconds(options.timeoutMs ?? 60_000, "timeoutMs");
     const poll = deadline(options.signal, timeout, () => requestId);
     try {
-      const path = requestPath(requestId);
       let validator: string | null = null;
       for (;;) {
-        const { value: trace, headers }: GatewayRead<RequestTrace | null> = await this.#read<RequestTrace>(
-          "GET", path, { signal: poll.signal, auth: true, requestId }, validator,
+        const { value, headers }: GatewayRead<T | null> = await this.#read<T>(
+          "GET", path, { signal: poll.signal, auth: true, requestId, cache: "no-store" }, validator,
         );
-        if (trace) {
-          if (inspectable.has(trace.status)) return trace;
-          if (trace.status !== "queued" && trace.status !== "running") {
-            throw new TokenCraftError(200, "invalid_response", "The gateway returned an unknown request status.", requestId);
-          }
+        if (value) {
+          if (done(value)) return value;
           validator = headers.get("etag");
         }
         const suggestedDelay = retryAfter(headers) ?? 0;
@@ -250,17 +317,22 @@ export class TokenCraft {
     consume: (response: Response, id?: string) => Promise<T>, validator: string | null | undefined): Promise<GatewayRead<T | null>>;
   async #exchange<T>(method: string, path: string, options: WireOptions,
     consume: (response: Response, id?: string) => Promise<T>, validator?: string | null): Promise<GatewayRead<T | null>> {
-    const { auth, body, key, requestId, signal, cache, accept, retrySubmission, traceparent } = options;
+    const { auth, body, binary, key, requestId, signal, cache, accept, retrySubmission, traceparent } = options;
     const headers = new Headers({ Accept: accept ?? "application/json" });
     if (auth) {
       if (!this.#apiKey) throw new TokenCraftError(0, "missing_key", "This operation requires a TokenCraft API key.", requestId);
       headers.set("Authorization", `Bearer ${this.#apiKey}`);
     }
-    if (body) headers.set("Content-Type", "application/json");
+    if (binary) {
+      headers.set("Content-Type", binary.contentType);
+      headers.set("X-TokenCraft-Content-Sha256", binary.checksum);
+    } else if (body) {
+      headers.set("Content-Type", "application/json");
+    }
     if (key) headers.set("Idempotency-Key", key);
     if (traceparent !== undefined) headers.set("traceparent", traceparent);
     if (typeof validator === "string") headers.set("If-None-Match", validator);
-    const encoded = body === undefined ? undefined : JSON.stringify(body);
+    const encoded = binary?.bytes ?? (body === undefined ? undefined : JSON.stringify(body));
     const maxAttempts = retrySubmission ? this.#submitMaxAttempts : 1;
     const polling = validator !== undefined;
     let id = requestId;
@@ -305,6 +377,12 @@ export class TokenCraft {
     } finally {
       request.close();
     }
+  }
+}
+
+function validateIdempotencyKey(key: string): void {
+  if (typeof key !== "string" || key.length < 8 || key.length > 128 || /[^A-Za-z0-9._:-]/.test(key)) {
+    throw new TypeError("Idempotency keys must have 8–128 ASCII letters, numbers, or . _ : -.");
   }
 }
 

@@ -670,3 +670,88 @@ test("downloads only bounded artifacts matching their saved references", async (
   }
   await assert.rejects(client.downloadArtifact(requestId, reference, location), { code: "archive_retrieval_required", requestId });
 });
+
+test("published workflows replay the same intent and poll through reconciliation", async () => {
+  const project = requestId.replace("req_", "proj_");
+  const workflow = requestId.replace("req_", "wf_");
+  const run = requestId.replace("req_", "wfr_");
+  const prior = run.replace(/0$/, "1");
+  const path = `/v1/projects/${project}/workflow-endpoints/${workflow}/runs`;
+  const statusUrl = `${path}/${run}`;
+  const status = (state) => ({ id: run, status: state, workflow_version: 3, steps: [],
+    draft_revision: 8, created_at: "2026-11-26T00:00:00Z", client_ref: "studio.23", error: null });
+  const responses = [
+    Response.json({}, { status: 429, headers: { "Retry-After": "0" } }),
+    Response.json({ id: run, status_url: statusUrl, workflow_version: 3, replayed: false }, { status: 202 }),
+    Response.json(status("reconciling"), { headers: { ETag: '"first"' } }),
+    new Response(null, { status: 304 }),
+    Response.json(status("expired")),
+    new Response(null, { status: 204 }),
+  ];
+  const received = [];
+  const client = new TokenCraft({ ...options, submitMaxAttempts: 2, fetch: async (url, init) => {
+    assert.equal(url.origin, "https://gateway.example");
+    assert.equal(init.redirect, "error");
+    assert.equal(init.headers.get("Authorization"), "Bearer fixture_key");
+    received.push([url.pathname, init.method, init.headers.get("Idempotency-Key"), init.headers.get("If-None-Match"), init.body]);
+    return responses.shift();
+  } });
+  const endpoint = client.workflow(project, workflow);
+  const receipt = await endpoint.invoke({ brief: "Test shot" }, {
+    idempotencyKey: "workflow-key-a", clientRef: "studio.23", reuseRunId: prior,
+  });
+  assert.deepEqual(received[0], received[1]);
+  assert.equal(received[0][0], `/edge${path}`);
+  assert.equal(received[0][2], "workflow-key-a");
+  assert.deepEqual(JSON.parse(received[0][4]), { inputs: { brief: "Test shot" }, client_ref: "studio.23", reuse_run_id: prior });
+  assert.deepEqual(await endpoint.wait(receipt.id, { pollIntervalMs: 1, timeoutMs: 500 }), status("expired"));
+  assert.deepEqual(received.slice(2, 5).map((entry) => entry[3]), [null, '"first"', '"first"']);
+  await endpoint.cancel(run);
+  assert.deepEqual(received[5], [`/edge${statusUrl}/cancel`, "POST", null, null, undefined]);
+});
+
+test("published workflow uploads scope binary bodies and named output downloads check size and digest", async () => {
+  const project = requestId.replace("req_", "proj_");
+  const workflow = requestId.replace("req_", "wf_");
+  const run = requestId.replace("req_", "wfr_");
+  const path = `/v1/projects/${project}/workflow-endpoints/${workflow}`;
+  const uploadId = requestId.replace("req_", "wfu_");
+  const sha = createHash("sha256").update("abc").digest("hex");
+  let calls = 0;
+  const client = new TokenCraft({ ...options, fetch: async (url, init) => {
+    assert.equal(url.origin, "https://gateway.example");
+    assert.equal(init.cache, "no-store");
+    assert.equal(init.headers.get("Authorization"), "Bearer fixture_key");
+    calls += 1;
+    if (calls === 1) {
+      assert.equal(url.pathname, `/edge${path}/uploads`);
+      assert.equal(init.headers.get("Content-Type"), "text/plain");
+      assert.equal(init.headers.get("X-TokenCraft-Content-Sha256"), sha);
+      assert.equal(Buffer.from(init.body).toString(), "abc");
+      return Response.json({ upload_id: uploadId, expires_at: "2026-11-26T00:00:00Z" }, { status: 201 });
+    }
+    if (calls === 2) {
+      assert.deepEqual(JSON.parse(init.body), { inputs: { document: { upload_id: uploadId } } });
+      return Response.json({ id: run, status_url: "https://outside.example/run", workflow_version: 1, replayed: false }, { status: 202 });
+    }
+    assert.equal(url.pathname, `/edge${path}/runs/${run}/outputs/captions`);
+    assert.equal(init.headers.get("Accept"), "application/octet-stream");
+    const headers = { "Content-Type": "text/vtt", "X-TokenCraft-Content-Sha256": sha };
+    if (calls === 5) headers["Content-Length"] = String(32 * 1024 * 1024 + 1);
+    return new Response(calls === 4 ? "bad" : "abc", { headers });
+  } });
+  const endpoint = client.workflow(project, workflow);
+  assert.throws(() => client.workflow(`${project}/..`, workflow), TypeError);
+  await assert.rejects(endpoint.downloadOutput(run, "../secret"), TypeError);
+  const bytes = new TextEncoder().encode("abc");
+  const uploading = endpoint.upload("text/plain", bytes);
+  bytes.fill(0);
+  const document = await uploading;
+  await assert.rejects(endpoint.invoke({ document }, { idempotencyKey: "workflow-fixture" }), { code: "invalid_response" });
+  const valid = await endpoint.downloadOutput(run, "captions");
+  assert.equal(valid.contentType, "text/vtt");
+  assert.equal(Buffer.from(valid.bytes).toString(), "abc");
+  await assert.rejects(endpoint.downloadOutput(run, "captions"), { code: "invalid_artifact" });
+  await assert.rejects(endpoint.downloadOutput(run, "captions"), { code: "invalid_artifact" });
+  assert.equal(calls, 5);
+});

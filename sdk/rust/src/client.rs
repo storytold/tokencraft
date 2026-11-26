@@ -268,15 +268,7 @@ impl TokenCraftClient {
         prompts: MediaPrompts<'_>,
     ) -> Result<Receipt, Error> {
         let key = options.idempotency_key;
-        if !(8..=128).contains(&key.len())
-            || !key.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
-            })
-        {
-            return Err(Error::InvalidInput(
-                "use 8 to 128 ASCII letters, numbers or . _ : - in Idempotency-Key",
-            ));
-        }
+        validate_idempotency_key(key)?;
         let body = SubmitBody {
             quote_id: &quote.id,
             pinned_offer_id: quote.pinned_offer_id.as_deref(),
@@ -306,6 +298,13 @@ impl TokenCraftClient {
         if let Some(traceparent) = &self.submit_traceparent {
             request = request.header("traceparent", traceparent.clone());
         }
+        self.send_idempotent(request).await
+    }
+
+    pub(super) async fn send_idempotent<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+    ) -> Result<T, Error> {
         if self.submit_max_attempts == 1 {
             return self.send(request, None).await;
         }
@@ -456,12 +455,28 @@ impl TokenCraftClient {
     }
 
     pub async fn wait(&self, id: &str, options: WaitOptions) -> Result<RequestTrace, Error> {
+        let request = self.request_for(Method::GET, id, "")?;
+        self.poll(request, id, options, |trace: &RequestTrace| {
+            Ok(trace.status.is_terminal() || trace.status == RequestStatus::AwaitingReconciliation)
+        })
+        .await
+    }
+
+    pub(super) async fn poll<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+        id: &str,
+        options: WaitOptions,
+        done: impl Fn(&T) -> Result<bool, Error>,
+    ) -> Result<T, Error> {
         validate_duration(options.timeout)?;
         validate_duration(options.poll_interval)?;
         tokio::time::timeout(options.timeout, async {
             let mut validator: Option<HeaderValue> = None;
             loop {
-                let mut request = self.request_for(Method::GET, id, "")?;
+                let mut request = request
+                    .try_clone()
+                    .ok_or(Error::InvalidInput("polling request cannot be replayed"))?;
                 if let Some(tag) = &validator {
                     request = request.header(IF_NONE_MATCH, tag.clone());
                 }
@@ -475,11 +490,9 @@ impl TokenCraftClient {
                     drop(response);
                 } else {
                     validator = response.headers().get(ETAG).cloned();
-                    let trace: RequestTrace = Self::decode(response, Some(id)).await?;
-                    if trace.status.is_terminal()
-                        || trace.status == RequestStatus::AwaitingReconciliation
-                    {
-                        return Ok(trace);
+                    let value = Self::decode(response, Some(id)).await?;
+                    if done(&value)? {
+                        return Ok(value);
                     }
                 }
                 let delay = options.poll_interval.max(suggested_delay.unwrap_or_default());
@@ -499,7 +512,7 @@ impl TokenCraftClient {
         self.request(method, &format!("v1/requests/{id}{suffix}"), true)
     }
 
-    fn request(
+    pub(super) fn request(
         &self,
         method: Method,
         path: &str,
@@ -566,6 +579,19 @@ impl TokenCraftClient {
             request_id,
         })
     }
+}
+
+pub(super) fn validate_idempotency_key(key: &str) -> Result<(), Error> {
+    if !(8..=128).contains(&key.len())
+        || !key.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+        })
+    {
+        return Err(Error::InvalidInput(
+            "use 8 to 128 ASCII letters, numbers or . _ : - in Idempotency-Key",
+        ));
+    }
+    Ok(())
 }
 
 fn response_request_id(response: &Response) -> Option<&str> {

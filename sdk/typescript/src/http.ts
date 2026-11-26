@@ -93,5 +93,10 @@ function httpDate(value: string, now: number): number | undefined {
 }
 
 export function isRequestId(value: unknown): value is string {
-  return typeof value === "string" && /^req_[0-9a-hjkmnp-tv-z]{26}$/.test(value);
+  return hasIdPrefix(value, "req_");
+}
+
+export function hasIdPrefix(value: unknown, prefix: string): value is string {
+  return typeof value === "string" && value.length === prefix.length + 26
+    && value.startsWith(prefix) && /^[0-9a-hjkmnp-tv-z]{26}$/.test(value.slice(prefix.length));
 }

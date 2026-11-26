@@ -743,3 +743,117 @@ async fn artifact_download_checks_slot_size_digest_and_scoped_gateway_errors() {
     assert_eq!(error.status().unwrap(), 404);
     capture.await.unwrap();
 }
+
+#[tokio::test]
+async fn published_workflow_retries_and_polls_the_same_scoped_run() {
+    use tokencraft_sdk::{WorkflowInput, WorkflowInvokeOptions, WorkflowRunStatus};
+
+    let project = REQUEST.replace("req_", "proj_");
+    let workflow_id = REQUEST.replace("req_", "wf_");
+    let run = REQUEST.replace("req_", "wfr_");
+    let reuse_id = "wfr_01m881w0c8np13xfvetqsbk8m1";
+    let path = format!("/v1/projects/{project}/workflow-endpoints/{workflow_id}/runs");
+    let location = format!("{path}/{run}");
+    let admitted = json!({ "id": run, "workflow_version": 3, "replayed": false, "status_url": location });
+    let status = |status| json!({
+        "id": run, "status": status, "workflow_version": 3, "draft_revision": 8,
+        "created_at": "2026-11-26T00:00:00Z", "client_ref": "studio.23", "steps": [],
+    });
+    let responses = [
+        wire_response("429 Too Many Requests", "Retry-After: 0\r\n", "{}"),
+        wire_response("202 Accepted", "", &admitted.to_string()),
+        wire_response("200 OK", "ETag: \"run-1\"\r\n", &status("reconciling").to_string()),
+        wire_response("304 Not Modified", "", ""),
+        wire_response("200 OK", "", &status("expired").to_string()),
+        wire_response("204 No Content", "", ""),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}/edge", listener.local_addr().unwrap());
+    let requests = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        for response in responses {
+            seen.push(capture_and_reply(&listener, &response).await);
+        }
+        seen
+    });
+    let client = TokenCraftClient::new(&origin, Some("app-fixture")).unwrap()
+        .with_submit_max_attempts(2).unwrap();
+    let endpoint = client.workflow(&project, &workflow_id).unwrap();
+    let inputs = [("brief".into(), WorkflowInput::Text("Test shot".into()))].into();
+    let receipt = endpoint.invoke(&inputs, WorkflowInvokeOptions {
+        idempotency_key: "workflow-retry", client_ref: Some("studio.23"), reuse_run_id: Some(reuse_id),
+    }).await.unwrap();
+    let finished = endpoint.wait(&receipt.id, WaitOptions {
+        poll_interval: Duration::from_millis(1), timeout: Duration::from_secs(2),
+    }).await.unwrap();
+    assert_eq!(finished.status, WorkflowRunStatus::Expired);
+    assert_eq!(finished.client_ref.as_deref(), Some("studio.23"));
+    endpoint.cancel(&receipt.id).await.unwrap();
+
+    let seen = requests.await.unwrap();
+    assert_eq!(seen[0], seen[1]);
+    assert!(seen[0].0.starts_with(&format!("post /edge{path} ")));
+    assert!(seen[0].0.contains("idempotency-key: workflow-retry"));
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&seen[0].1).unwrap(), json!({
+        "inputs": { "brief": "Test shot" }, "client_ref": "studio.23", "reuse_run_id": reuse_id,
+    }));
+    assert!(!seen[2].0.contains("if-none-match:"));
+    assert!(seen[3].0.contains("if-none-match: \"run-1\""));
+    assert!(seen[4].0.contains("if-none-match: \"run-1\""));
+    assert!(seen[5].0.starts_with(&format!("post /edge{location}/cancel ")));
+    assert!(seen.iter().all(|(head, _)| head.contains("authorization: bearer app-fixture")));
+}
+
+#[tokio::test]
+async fn published_workflow_checks_binary_io_and_rejects_unscoped_urls() {
+    use tokencraft_sdk::{WorkflowInput, WorkflowInvokeOptions};
+
+    const SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let project = REQUEST.replace("req_", "proj_");
+    let workflow_id = REQUEST.replace("req_", "wf_");
+    let run = REQUEST.replace("req_", "wfr_");
+    let upload_id = REQUEST.replace("req_", "wfu_");
+    let (origin, capture) = reply("201 Created", "", &json!({
+        "upload_id": upload_id, "expires_at": "2026-11-26T00:00:00Z",
+    }).to_string()).await;
+    let client = TokenCraftClient::new(&origin, Some("app-fixture")).unwrap();
+    let endpoint = client.workflow(&project, &workflow_id).unwrap();
+    let uploaded = endpoint.upload("text/plain", b"abc".to_vec()).await.unwrap();
+    assert!(matches!(uploaded.input(), WorkflowInput::Upload(reference) if reference.upload_id == upload_id));
+    let (head, body) = capture.await.unwrap();
+    assert!(head.starts_with(&format!("post /v1/projects/{project}/workflow-endpoints/{workflow_id}/uploads ")));
+    assert!(head.contains("content-type: text/plain"));
+    assert!(head.contains(&format!("x-tokencraft-content-sha256: {SHA}")));
+    assert_eq!(body, "abc");
+
+    let (origin, capture) = reply("202 Accepted", "", &json!({
+        "id": run, "workflow_version": 1, "status_url": "https://outside.example/run", "replayed": false,
+    }).to_string()).await;
+    let client = TokenCraftClient::new(&origin, Some("app-fixture")).unwrap();
+    assert!(client.workflow(&format!("{project}/.."), &workflow_id).is_err());
+    let endpoint = client.workflow(&project, &workflow_id).unwrap();
+    assert!(matches!(endpoint.download_output(&run, "../secret").await, Err(Error::InvalidInput(_))));
+    let invalid = endpoint.invoke(&Default::default(), WorkflowInvokeOptions::new("workflow-fixture")).await;
+    assert!(matches!(invalid, Err(Error::Gateway { code, .. }) if code == "invalid_response"));
+    capture.await.unwrap();
+
+    for (body, valid) in [("abc", true), ("bad", false)] {
+        let wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/vtt\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nX-TokenCraft-Content-Sha256: {SHA}\r\n\r\n3\r\n{body}\r\n0\r\n\r\n"
+        );
+        let (origin, capture) = reply_wire(wire).await;
+        let client = TokenCraftClient::new(&origin, Some("app-fixture")).unwrap();
+        let endpoint = client.workflow(&project, &workflow_id).unwrap();
+        let artifact = endpoint.download_output(&run, "captions").await;
+        if valid {
+            let artifact = artifact.unwrap();
+            assert_eq!(artifact.bytes, b"abc");
+            assert_eq!(artifact.content_type, "text/vtt");
+        } else {
+            assert!(matches!(artifact, Err(Error::Gateway { code, .. }) if code == "invalid_artifact"));
+        }
+        let (head, _) = capture.await.unwrap();
+        assert!(head.starts_with(&format!("get /v1/projects/{project}/workflow-endpoints/{workflow_id}/runs/{run}/outputs/captions ")));
+        assert!(head.contains("accept: application/octet-stream"));
+    }
+}

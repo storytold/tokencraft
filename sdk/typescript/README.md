@@ -68,6 +68,29 @@ if (metadata.phase === "archived") {
 
 A cold object can return a `TokenCraftError` with status `409` and code `archive_retrieval_required`. A project administrator can start a restore in Requests. The SDK downloads stored output from the configured gateway and verifies the saved byte length and SHA-256. The default artifact location is `warm`. [Retention and restore guide](../../docs/chat-history.md)
 
+## Run a published workflow
+
+Create a client with the published workflow's application key. Use the active OpenAPI document to find the input names, supported file types, and named outputs. This example uses an endpoint with `video` and `narration` inputs and a `master` output.
+
+```ts
+import { readFile, writeFile } from "node:fs/promises";
+import { TokenCraft } from "@tokencraft/sdk";
+
+const client = new TokenCraft({ baseUrl, apiKey: workflowAppKey });
+const endpoint = client.workflow(projectId, workflowId);
+const contract = await endpoint.contract();
+const video = await endpoint.upload("video/mp4", await readFile("source.mp4"));
+const narration = await endpoint.upload("audio/wav", await readFile("narration.wav"));
+const receipt = await endpoint.invoke({ video, narration }, { idempotencyKey: jobKey, clientRef: customerRef });
+const run = await endpoint.wait(receipt.id, { timeoutMs: 120_000 });
+if (run.status === "succeeded") {
+  const output = await endpoint.downloadOutput(run.id, "master");
+  await writeFile("master.mp4", output.bytes);
+}
+```
+
+Save the invocation inputs and job key to replay admission after an interruption. Once you have the run ID, use `get` or `wait` to reopen it. Pass `reuseRunId` for a new invocation that can reuse eligible steps from a prior run. A timeout or `AbortSignal` stops the local wait. Call `cancel` with a key that has `runs:cancel` to stop further admission. The download method builds a scoped gateway route from the run ID and output name and verifies the SHA-256 returned with the bytes. [Workflow permissions and lifecycle](../../docs/workflows.md#build-and-invoke)
+
 ## Verify a terminal webhook
 
 Call `verifyWebhook(rawBody, headers, signingSecret)` for request events and `verifyWorkflowWebhook(rawBody, headers, signingSecret)` for [workflow events](../../docs/workflows.md#receive-terminal-events). Pass the original bytes before parsing the body. Both helpers enforce a five-minute timestamp window by default and accept overlapping keys during rotation. Deduplicate by the verified event ID before applying side effects. A tagged workflow event includes the invocation's customer reference in `event.data.client_ref`.

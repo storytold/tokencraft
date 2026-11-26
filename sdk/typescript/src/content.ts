@@ -51,37 +51,70 @@ export function validateArtifactRef(artifact: ArtifactRef) {
   }
 }
 
-export async function readArtifact(response: Response, artifact: ArtifactRef, requestId?: string): Promise<VerifiedArtifact> {
-  const invalid = () => new TokenCraftError(response.status, "invalid_artifact", "The gateway artifact did not match its saved reference.", requestId);
+export function readArtifact(response: Response, artifact: ArtifactRef, requestId?: string): Promise<VerifiedArtifact> {
+  return readVerifiedContent(response, maxArtifactBytes, requestId, artifact);
+}
+
+export function validContentType(contentType: string): boolean {
+  return contentType.length <= 127
+    && /^[a-z][a-z0-9.+-]*\/[a-z][a-z0-9.+-]*$/.test(contentType)
+    && !/\s/.test(contentType);
+}
+
+export async function sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function readVerifiedContent(
+  response: Response,
+  maxBytes: number,
+  requestId?: string,
+  reference?: ArtifactRef,
+): Promise<VerifiedArtifact> {
+  const invalid = () => new TokenCraftError(response.status, "invalid_artifact", "The gateway artifact did not match its declared content.", requestId);
   const contentType = response.headers.get("content-type");
   const contentLength = response.headers.get("content-length");
-  if (response.status !== 200 || !contentType || !mediaTypes.has(contentType) || !response.body
-      || response.headers.get("x-tokencraft-content-sha256") !== artifact.sha256
-      || (contentLength !== null && contentLength !== String(artifact.byte_length))) {
+  const declared = contentLength === null ? undefined : Number(contentLength);
+  const checksum = response.headers.get("x-tokencraft-content-sha256");
+  if (response.status !== 200 || !contentType || !response.body
+      || !(reference ? mediaTypes.has(contentType) : validContentType(contentType))
+      || checksum?.length !== 64 || !/^[0-9a-f]{64}$/.test(checksum)
+      || (declared !== undefined && (declared < 1 || declared > maxBytes || String(declared) !== contentLength
+        || !Number.isInteger(declared)))
+      || (reference && (reference.sha256 !== checksum || (declared !== undefined && declared !== reference.byte_length)))) {
     void response.body?.cancel().catch(() => undefined);
     throw invalid();
   }
 
-  const bytes = new Uint8Array(artifact.byte_length);
+  const expected = reference?.byte_length ?? declared;
+  const limit = expected ?? maxBytes;
+  let buffer = new Uint8Array(expected ?? 0);
   const reader = response.body.getReader();
   let length = 0;
   try {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (value.byteLength > bytes.length - length) {
+      if (value.byteLength > limit - length) {
         void reader.cancel().catch(() => undefined);
         throw invalid();
       }
-      bytes.set(value, length);
-      length += value.byteLength;
+      const nextLength = length + value.byteLength;
+      if (nextLength > buffer.length) {
+        const capacity = Math.min(limit, Math.max(64 * 1024, buffer.length * 2, nextLength));
+        const grown = new Uint8Array(capacity);
+        grown.set(buffer);
+        buffer = grown;
+      }
+      buffer.set(value, length);
+      length = nextLength;
     }
   } finally {
     reader.releaseLock();
   }
-  if (length !== bytes.length) throw invalid();
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const checksum = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  if (checksum !== artifact.sha256) throw invalid();
+  if (length === 0 || (expected !== undefined && length !== expected)) throw invalid();
+  const bytes = buffer.length === length ? buffer : buffer.slice(0, length);
+  if (await sha256(bytes) !== checksum) throw invalid();
   return { contentType, bytes };
 }

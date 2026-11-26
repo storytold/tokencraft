@@ -6,6 +6,7 @@ mod error;
 mod models;
 mod trace;
 mod webhooks;
+mod workflows;
 
 pub use client::TokenCraftClient;
 pub use content::*;
@@ -16,6 +17,8 @@ pub use webhooks::{
     verify_webhook, verify_workflow_webhook, VerificationError, VerifiedWebhook, VerifiedWorkflowWebhook,
     WebhookData, WebhookKind, WebhookOptions, WorkflowWebhookData, WorkflowWebhookKind, WorkflowWebhookStatus,
 };
+
+pub use workflows::*;
 
 fn valid_id(value: &str, prefix: &str) -> bool {
     value.strip_prefix(prefix).is_some_and(|suffix| {

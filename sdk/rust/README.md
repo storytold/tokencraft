@@ -50,6 +50,31 @@ request_id=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])' < 
 cargo run --quiet --locked -p tokencraft_sdk --example restart -- wait "$request_id"
 ```
 
+## Run a published workflow
+
+Create a client with the published workflow's application key. Use the active OpenAPI document to find the input names, supported file types, and named outputs. This example uses an endpoint with `video` and `narration` inputs and a `master` output.
+
+```rust
+use tokencraft_sdk::{TokenCraftClient, WaitOptions, WorkflowInvokeOptions, WorkflowRunStatus};
+
+let client = TokenCraftClient::new(&base_url, Some(&workflow_app_key))?;
+let endpoint = client.workflow(&project_id, &workflow_id)?;
+let contract = endpoint.contract().await?;
+let video = endpoint.upload("video/mp4", video_bytes).await?;
+let narration = endpoint.upload("audio/wav", narration_bytes).await?;
+let inputs = [("video".into(), video.input()), ("narration".into(), narration.input())].into();
+let mut options = WorkflowInvokeOptions::new(job_key);
+options.client_ref = Some(customer_ref);
+let receipt = endpoint.invoke(&inputs, options).await?;
+let run = endpoint.wait(&receipt.id, WaitOptions::default()).await?;
+if run.status == WorkflowRunStatus::Succeeded {
+    let output = endpoint.download_output(&run.id, "master").await?;
+    std::fs::write("master.mp4", output.bytes)?;
+}
+```
+
+Save the invocation inputs and job key to replay admission after an interruption. Once you have the run ID, use `get` or `wait` to reopen it. Pass `reuse_run_id` for a new invocation that can reuse eligible steps from a prior run. A polling timeout stops the local wait. Call `cancel` with a key that has `runs:cancel` to stop further admission. The download method builds a scoped gateway route from the run ID and output name and verifies the SHA-256 returned with the bytes. [Workflow permissions and lifecycle](../../docs/workflows.md#build-and-invoke)
+
 ## Verify a terminal webhook
 
 Give `verify_webhook` the actual HTTP header map and original body bytes. The verifier accepts the current key or overlapping keys during rotation. It verifies the HMAC, replay window, and event envelope. Deduplicate the verified event ID in durable storage before applying downstream side effects.

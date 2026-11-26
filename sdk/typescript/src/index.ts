@@ -6,3 +6,4 @@ export type { ContentMetadata, ContentPhase, DownloadOptions, RestoreProgress, R
 export type * from "./trace.js";
 export { planOfferComparison, refreshOfferComparison, runOfferComparison } from "./offer-comparison.js";
 export type { OfferComparisonOptions, OfferComparisonPlan, OfferComparisonArm, OfferComparisonSample } from "./offer-comparison.js";
+export type * from "./workflows.js";

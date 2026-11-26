@@ -1,5 +1,5 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CACHE_CONTROL, CONTENT_TYPE};
-use reqwest::{Method, StatusCode};
+use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -9,7 +9,7 @@ use crate::{
 };
 
 const MAX_ARTIFACT_BYTES: u32 = 8 * 1024 * 1024;
-const SHA256_HEADER: &str = "x-tokencraft-content-sha256";
+pub(super) const SHA256_HEADER: &str = "x-tokencraft-content-sha256";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -124,52 +124,93 @@ impl TokenCraftClient {
             ArtifactLocation::Warm => "/artifacts",
             ArtifactLocation::Archived => "/content/artifacts",
         };
-        let mut headers = HeaderMap::new();
-        headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
-        // Only gateway paths built from validated identifiers receive credentials.
-        let response = self
-            .request_for(Method::GET, id, &format!("{prefix}/{}", artifact.slot))?
-            .headers(headers)
-            .header(CACHE_CONTROL, "no-store")
-            .send()
-            .await
-            .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
-        let (mut response, request_id) = Self::checked_response(response, Some(id)).await?;
-        let response_status = response.status();
-        let invalid = || Error::Gateway {
-            status: response_status,
-            code: "invalid_artifact".to_owned(),
-            message: "the gateway artifact did not match its saved reference".to_owned(),
-            request_id: request_id.clone(),
-        };
-        let limit = artifact.byte_length as usize;
-        let header = |name| response.headers().get(name).and_then(|value| value.to_str().ok());
-        let mime = header(CONTENT_TYPE.as_str())
-            .filter(|value| matches!(*value, "image/png" | "video/mp4" | "audio/wav" | "model/gltf-binary"))
-            .ok_or_else(invalid)?
-            .to_owned();
-        if response_status != StatusCode::OK
-            || header(SHA256_HEADER) != Some(artifact.sha256.as_str())
-            || response.content_length().is_some_and(|length| length != limit as u64)
-        {
-            return Err(invalid());
-        }
-        let mut bytes = Vec::with_capacity(limit);
-        let mut checksum = Sha256::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|source| Error::from_http(source, request_id.clone()))?
-        {
-            if chunk.len() > limit - bytes.len() {
-                return Err(invalid());
-            }
-            checksum.update(&chunk);
-            bytes.extend_from_slice(&chunk);
-        }
-        if bytes.len() != limit || format!("{:x}", checksum.finalize()) != artifact.sha256 {
-            return Err(invalid());
-        }
-        Ok(VerifiedArtifact { content_type: mime, bytes })
+        let request = self.request_for(Method::GET, id, &format!("{prefix}/{}", artifact.slot))?;
+        download_verified(request, id, Some(artifact), MAX_ARTIFACT_BYTES as usize).await
     }
+}
+
+pub(super) fn valid_content_type(value: &str) -> bool {
+    value.len() <= 127 && value.split_once('/').is_some_and(|(kind, subtype)| {
+        [kind, subtype].into_iter().all(|part| {
+            part.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                && part.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit()
+                        || matches!(byte, b'.' | b'-' | b'+')
+                })
+        })
+    })
+}
+
+pub(super) async fn download_verified(
+    request: RequestBuilder,
+    id: &str,
+    reference: Option<&ArtifactRef>,
+    max_bytes: usize,
+) -> Result<VerifiedArtifact, Error> {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
+    let response = request
+        .headers(headers)
+        .header(CACHE_CONTROL, "no-store")
+        .send()
+        .await
+        .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
+    let (mut response, request_id) = TokenCraftClient::checked_response(response, Some(id)).await?;
+    let response_status = response.status();
+    let invalid = || Error::Gateway {
+        status: response_status,
+        code: "invalid_artifact".to_owned(),
+        message: "the gateway artifact did not match its declared content".to_owned(),
+        request_id: request_id.clone(),
+    };
+    let header = |name| response.headers().get(name).and_then(|value| value.to_str().ok());
+    let mime = header(CONTENT_TYPE.as_str())
+        .filter(|value| {
+            if reference.is_some() {
+                matches!(*value, "image/png" | "video/mp4" | "audio/wav" | "model/gltf-binary")
+            } else {
+                valid_content_type(value)
+            }
+        })
+        .ok_or_else(invalid)?
+        .to_owned();
+    let checksum = header(SHA256_HEADER)
+        .filter(|value| {
+            value.len() == 64 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .ok_or_else(invalid)?
+        .to_owned();
+    let declared = response.content_length();
+    if response_status != StatusCode::OK
+        || declared.is_some_and(|size| !(1..=max_bytes as u64).contains(&size))
+        || reference.is_some_and(|artifact| {
+            checksum != artifact.sha256
+                || declared.is_some_and(|size| size != u64::from(artifact.byte_length))
+        })
+    {
+        return Err(invalid());
+    }
+    let expected = reference.map(|artifact| artifact.byte_length as usize)
+        .or(declared.map(|size| size as usize));
+    let limit = expected.unwrap_or(max_bytes);
+    let mut bytes = Vec::with_capacity(expected.unwrap_or_default());
+    let mut digest = Sha256::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|source| Error::from_http(source, request_id.clone()))?
+    {
+        if chunk.len() > limit - bytes.len() {
+            return Err(invalid());
+        }
+        digest.update(&chunk);
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.is_empty()
+        || expected.is_some_and(|size| bytes.len() != size)
+        || format!("{:x}", digest.finalize()) != checksum
+    {
+        return Err(invalid());
+    }
+    Ok(VerifiedArtifact { content_type: mime, bytes })
 }

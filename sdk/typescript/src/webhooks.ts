@@ -1,4 +1,4 @@
-import { isRequestId, object } from "./http.js";
+import { hasIdPrefix, isRequestId, object } from "./http.js";
 import type { VerifyWebhookOptions, WebhookEvent, WorkflowWebhookEvent } from "./types.js";
 
 export class WebhookVerificationError extends Error {
@@ -112,10 +112,6 @@ async function verifyEnvelope(
 
 function invalidPayload() {
   return new WebhookVerificationError("payload", "The signed event does not match the TokenCraft v1 contract.");
-}
-
-function hasIdPrefix(value: unknown, prefix: string): value is string {
-  return typeof value === "string" && value.startsWith(prefix) && /^[0-9a-hjkmnp-tv-z]{26}$/.test(value.slice(prefix.length));
 }
 
 function isClientReference(value: unknown): value is string {
