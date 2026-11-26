@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( $# != 2 )); then
-  echo "Usage: bash scripts/smoke_hosted_console.sh CONSOLE_ORIGIN GATEWAY_ORIGIN" >&2
+if (( $# < 2 || $# > 3 )); then
+  echo "Usage: bash scripts/smoke_hosted_console.sh CONSOLE_ORIGIN GATEWAY_ORIGIN [SOURCE_REVISION]" >&2
   exit 2
 fi
 console=${1%/}
 gateway=${2%/}
+revision=${3:-}
+if (( $# == 3 )) && [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Use a full lowercase Git SHA for SOURCE_REVISION" >&2
+  exit 2
+fi
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 request() {
@@ -44,6 +49,23 @@ check_rate_limit_route() {
   printf 'PASS %s /v1/rate-limits\n' "$target"
 }
 
+check_gateway_revision() {
+  local origin=$1 target=$2
+  if ! request --fail --output /dev/null --dump-header - -- "$origin/ready" |
+    awk -v expected="$revision" '
+      tolower($1) == "tokencraft-source-revision:" {
+        sub(/\r$/, "", $2)
+        found++
+        if ($2 == expected) matched++
+      }
+      END { exit !(found == 1 && matched == 1) }
+    '; then
+    printf 'FAIL %s /ready must report the expected gateway source revision\n' "$target" >&2
+    return 1
+  fi
+  printf 'PASS %s gateway source revision\n' "$target"
+}
+
 result=0
 check "$console" console ready 'report the gateway ready' jq -es 'length == 1 and .[0].ready == true' || result=1
 check "$gateway" gateway ready 'report ready' jq -es 'length == 1 and .[0].ready == true' || result=1
@@ -54,4 +76,10 @@ check "$console" console catalog/artcraft-v1.json 'match the release ArtCraft ca
   cmp -s "$root/catalog/artcraft-v1.json" - || result=1
 check_rate_limit_route "$gateway" gateway || result=1
 check_rate_limit_route "$console" console || result=1
+if [[ -n "$revision" ]]; then
+  check_gateway_revision "$gateway" gateway || result=1
+  check_gateway_revision "$console" console || result=1
+  check "$console" console release.json 'report the expected console source revision' \
+    jq -es --arg revision "$revision" 'length == 1 and .[0].source_revision == $revision' || result=1
+fi
 exit "$result"

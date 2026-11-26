@@ -65,12 +65,14 @@ def run(args, **options):
     return subprocess.run(args, check=True, **options)
 
 
-def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT):
+def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT, source_revision=None):
     """Compile SQLx queries against a migrated cluster on a private Unix socket."""
     cargo = ["cargo", "build", "--locked", "--profile", cargo_profile]
     if offline:
         cargo.append("--offline")
     env = {**os.environ, "CARGO_TARGET_DIR": str(target), "SQLX_OFFLINE": "false"}
+    if source_revision is not None:
+        env["TOKENCRAFT_SOURCE_REVISION"] = source_revision
     directory = target / ("debug" if cargo_profile == "dev" else cargo_profile)
     with TemporaryDirectory(prefix="tc-build-", dir="/tmp") as temp:
         work = Path(temp)
@@ -177,6 +179,11 @@ def smoke_package(archive, name, pg_bin):
             return packaged_gateway([*command, "--state-dir", state_path], state_path, env, opener, api)
 
         with launch(state):
+            revision = json.loads((package / "VERSION.json").read_bytes()).get("source_revision")
+            if revision is not None:
+                with opener.open(api + "/ready", timeout=3) as readiness:
+                    if readiness.headers.get_all("TokenCraft-Source-Revision") != [revision]:
+                        raise RuntimeError("The packaged gateway source revision differs from VERSION.json.")
             with opener.open(api + "/openapi.json", timeout=3) as running_contract:
                 if json.load(running_contract) != json.loads((package / "contracts/openapi.json").read_bytes()):
                     raise RuntimeError("The packaged API contract differs from the running gateway.")
@@ -251,7 +258,7 @@ def main():
     binary_dir = args.bin_dir
     if binary_dir is None:
         target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
-        binary_dir = build_binaries(pg_bin, target, args.profile, args.offline)
+        binary_dir = build_binaries(pg_bin, target, args.profile, args.offline, source_revision=args.source_revision)
 
     args.output.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".package-", dir=args.output) as temp:

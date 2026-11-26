@@ -319,8 +319,11 @@ When proxying the API on the console origin, forward `/ready` and `/v1/` to the 
 
 The Vercel configs restrict browser scripts to the console, Google Identity Services, and the hashed standalone design script. They also block framing and send explicit content-type and referrer policies. The gateway supplies its own headers on proxied API responses. After editing the standalone design HTML, refresh its hashes in both Vercel configs with `node scripts/console_security_headers.mjs --write`.
 
+Pass the expected Git commit to verify source revisions as well as the contract. Release archives built with `native_package.py --source-revision` and container builds with `SOURCE_REVISION` stamp the gateway binary. Other gateway builds can set `TOKENCRAFT_SOURCE_REVISION` when compiling. The gateway exposes the stamp in the `TokenCraft-Source-Revision` header on `/ready`. Set the same build variable when building the console, or enable Vercel's Git system environment variables, to emit `/release.json`. [Vercel system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables#system-environment-variables)
+
 ```sh
-bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com
+source_revision="$(git rev-parse HEAD)"
+bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com "$source_revision"
 ```
 
 The check compares both console copies and the running gateway with the release snapshot and verifies the console catalog bytes. It also sends an unauthenticated request to `/v1/rate-limits` at both origins and expects the gateway's `401` JSON response. This confirms that the route is mounted and that the console forwards it to an API, without needing an account or creating a job. Treat a mismatch as a failed release check even when both `/ready` probes pass.
@@ -329,10 +332,10 @@ For deployments with the bundled `example_image` connector, run the authenticate
 
 ```sh
 python3 -B scripts/smoke_authenticated_gateway.py \
-  --api https://api.example.com --peer https://console.example.com
+  --api https://api.example.com --peer https://console.example.com --revision "$source_revision"
 ```
 
-The check submits one synthetic image with a zero-cost cap and replays its receipt. It verifies the PNG digest, connector trace, and one usage record scoped to the run. Inject the scoped project key into the process environment from your secret manager. For a private HTTPS ingress, supply its trusted CA bundle with `--ca`.
+With the revision set, the check verifies both origins without sending the scoped key. It then submits one synthetic image with a zero-cost cap and replays its receipt. It verifies the PNG digest, connector trace, and one usage record scoped to the run. Inject the scoped project key into the process environment from your secret manager. For a private HTTPS ingress, supply its trusted CA bundle with `--ca`.
 
 To deliver signed customer webhooks, set `TOKENCRAFT_DEMO_WEBHOOK_CONFIG` to an operator-maintained JSON registry such as `{"destinations":{"customer_updates":"https://events.example.com/tokencraft"}}`. Give the API and workers the same independent 32-byte hex `TOKENCRAFT_DEMO_WEBHOOK_KEY`. Hosts use the standard public certificate roots by default. Set `TOKENCRAFT_WEBHOOK_CA_FILE` to an operator-managed PEM bundle to use a private trust store for all webhook destinations. Tenants select a registry entry by ID. Register reviewed HTTPS destinations and set egress policy for the hosts you allow. TLS verifies the destination hostname and the client rejects redirects.
 

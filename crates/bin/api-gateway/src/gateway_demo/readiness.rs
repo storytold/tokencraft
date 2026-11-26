@@ -5,7 +5,7 @@ use std::{
 
 use axum::{
     extract::{Query, Request, State},
-    http::{header::{CACHE_CONTROL, RETRY_AFTER}, HeaderValue, StatusCode},
+    http::{header::{CACHE_CONTROL, RETRY_AFTER}, HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Extension, Json,
@@ -243,14 +243,21 @@ pub(super) struct SetupChecks {
 )]
 pub(super) async fn ready(
     Extension(readiness): Extension<Arc<Readiness>>,
-) -> (StatusCode, Json<ReadyResponse>) {
+) -> (StatusCode, HeaderMap, Json<ReadyResponse>) {
     let ready = readiness.traffic_ready();
     let status = if ready {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    (status, Json(ReadyResponse { ready }))
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Some(revision) = option_env!("TOKENCRAFT_SOURCE_REVISION").filter(|value| {
+        value.len() == 40 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    }) {
+        headers.insert("tokencraft-source-revision", HeaderValue::from_static(revision));
+    }
+    (status, headers, Json(ReadyResponse { ready }))
 }
 
 #[utoipa::path(

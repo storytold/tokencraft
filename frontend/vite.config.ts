@@ -19,6 +19,15 @@ export default defineConfig({
           this.addWatchFile(source);
           this.emitFile({ type: "asset", fileName, source: readFileSync(source) });
         }
+        const revision = process.env.TOKENCRAFT_SOURCE_REVISION || process.env.VERCEL_GIT_COMMIT_SHA;
+        if (revision) {
+          if (!/^[a-f0-9]{40}$/.test(revision)) this.error("Use a full lowercase Git SHA for the source revision.");
+          this.emitFile({
+            type: "asset",
+            fileName: "release.json",
+            source: JSON.stringify({ source_revision: revision }) + "\n",
+          });
+        }
       },
     },
     {

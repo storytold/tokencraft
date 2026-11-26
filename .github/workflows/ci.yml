@@ -114,7 +114,9 @@ jobs:
         env:
           VITE_API_BASE_URL: /
           VITE_TOKENCRAFT_DEMO: "true"
+          TOKENCRAFT_SOURCE_REVISION: ${{ github.sha }}
       - name: Check the published catalog and API contract bytes
         run: |
           cmp ../catalog/artcraft-v1.json dist/catalog/artcraft-v1.json
           cmp ../contracts/openapi.json dist/docs/openapi.json
+          jq -e --arg sha "$GITHUB_SHA" '.source_revision == $sha' dist/release.json >/dev/null

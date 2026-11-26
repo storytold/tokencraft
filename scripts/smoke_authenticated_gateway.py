@@ -42,7 +42,9 @@ class Gateway:
             connection = HTTPSConnection(host, port, timeout=8, context=self.tls)
         else:
             connection = HTTPConnection(host, port, timeout=8)
-        headers = {"Authorization": f"Bearer {self.key}"}
+        headers = {}
+        if self.key is not None:
+            headers["Authorization"] = f"Bearer {self.key}"
         if body is not None:
             headers["Content-Type"] = "application/json"
             body = json.dumps(body).encode()
@@ -69,6 +71,15 @@ class Gateway:
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def verify_revision(address, tls, revision):
+    state, headers = Gateway(address, None, tls).json("/ready")
+    require(
+        isinstance(state, dict) and state.get("ready") is True
+        and headers.get_all("TokenCraft-Source-Revision") == [revision],
+        f"{address.netloc} did not report the expected gateway source revision",
+    )
 
 
 def admit(first, peer, run_id):
@@ -155,13 +166,20 @@ def main():
     parser.add_argument("--api", required=True, type=origin)
     parser.add_argument("--peer", type=origin, help="Second trusted origin for replay and reads")
     parser.add_argument("--ca", help="PEM certificate bundle for a private HTTPS ingress")
+    parser.add_argument("--revision", help="Verify this Git SHA on both gateways before sending a scoped key")
     args = parser.parse_args()
+    if args.revision is not None and not re.fullmatch(r"[0-9a-f]{40}", args.revision):
+        parser.error("--revision must be a full lowercase Git SHA")
     key = os.environ.get("TOKENCRAFT_SMOKE_API_KEY", "")
     if not re.fullmatch(r"[A-Za-z0-9._~-]{16,256}", key):
         parser.error("set TOKENCRAFT_SMOKE_API_KEY to a scoped project API key")
     run_id = "release-smoke-" + token_hex(12)
     try:
         tls = ssl.create_default_context(cafile=args.ca)
+        if args.revision is not None:
+            verify_revision(args.api, tls, args.revision)
+            if args.peer is not None and args.peer != args.api:
+                verify_revision(args.peer, tls, args.revision)
         first = Gateway(args.api, key, tls)
         peer = Gateway(args.peer, key, tls) if args.peer else first
         request_id, path, trace_id = admit(first, peer, run_id)
