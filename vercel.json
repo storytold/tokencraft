@@ -11,5 +11,28 @@
     { "source": "/design", "destination": "/design/index.html" },
     { "source": "/design/", "destination": "/design/index.html" },
     { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/((?!v1(?:/|$)|ready(?:/|$)).*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' https://accounts.google.com/gsi/client 'sha256-xI/ZbWphht0Nqo59FROl4ZRPUnQ4pLW980LseB3drPE='; style-src 'self' https://fonts.googleapis.com https://accounts.google.com/gsi/style 'sha256-mt3pdVGuqPEYxys91q9W/UsZOw+/SfUwaWtbnmVv3Fo=' 'sha256-cQntu/p7FahQsmWlIpeN08I5sNA5FNka0lL0EriQNRs='; font-src 'self' https://fonts.gstatic.com; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
   ]
 }

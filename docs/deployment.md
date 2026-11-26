@@ -280,6 +280,8 @@ Terminate public TLS at your ingress and keep the gateway's HTTP listener privat
 
 When proxying the API on the console origin, forward `/ready` and `/v1/` to the gateway. The console can serve the release snapshot at `/openapi.json` and `/docs/openapi.json`. Run the read-only check from the release checkout after deployment. Supply the gateway origin separately so the check verifies the live contract even when the console serves a static snapshot.
 
+The Vercel configs restrict browser scripts to the console, Google Identity Services, and the hashed standalone design script. They also block framing and send explicit content-type and referrer policies. The gateway supplies its own headers on proxied API responses. After editing the standalone design HTML, refresh its hashes in both Vercel configs with `node scripts/console_security_headers.mjs --write`.
+
 ```sh
 bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com
 ```
