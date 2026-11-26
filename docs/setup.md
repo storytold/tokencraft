@@ -39,7 +39,7 @@ For an operator catalog and externally managed PostgreSQL, use the [gateway runt
 
 ### Start from a native package
 
-Choose the `.tar.gz` for your OS and architecture and keep its `.sha256` file alongside it. The archive includes the matching launcher, gateway, migration tool, OpenAPI contract, public pricing catalog, and deployment files. It also includes the [optional media worker](../plugins/tools/media/README.md) with the [workflow](workflows.md) and [media setup](media-tools.md) guides. Install the PostgreSQL 17 server tools before starting the launcher. [PostgreSQL for Ubuntu](https://www.postgresql.org/download/linux/ubuntu/) · [PostgreSQL 17 for macOS](https://formulae.brew.sh/formula/postgresql%4017)
+Choose the `.tar.gz` for your OS and architecture and keep its `.sha256` file alongside it. The archive includes the matching launcher, gateway, migration tool, OpenAPI contract, public pricing catalog, and deployment files. It also includes the [optional media worker](../plugins/tools/media/README.md) with the [workflow](workflows.md) and [media setup](media-tools.md) guides, plus the separate [Operations console](../deploy/monitoring/README.md) and its sample configuration. Install the PostgreSQL 17 server tools before starting the launcher. [PostgreSQL for Ubuntu](https://www.postgresql.org/download/linux/ubuntu/) · [PostgreSQL 17 for macOS](https://formulae.brew.sh/formula/postgresql%4017)
 
 ```sh
 shasum -a 256 -c tokencraft-0.1.0-darwin-arm64.tar.gz.sha256

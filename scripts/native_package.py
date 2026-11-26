@@ -36,6 +36,14 @@ MEDIA_FILES = (
     "mesh.manifest.json", "meshes.py", "queue_store.py", "recipes.py", "server.py",
     "speech.manifest.json", "speech.py", "studio.manifest.json", "studio.py",
 )
+OPERATIONS = "deploy/monitoring"
+OPERATIONS_FILES = (
+    "README.md", "autoscaling_snapshot.py", "history.py", "install.sql", "monitor.py",
+    "plugin_traffic.py", "prometheus.example.yml", "settings.compute.example.json",
+    "settings.example.json", "sources.py", "tokencraft-monitor.rules.yml",
+    "tokencraft-monitor.service", "web/console.css", "web/console.js", "web/index.html",
+    "web/tokencraft-mark.png",
+)
 SUPPORT_FILES = (
     "LICENSE", "README.md", "catalog/artcraft-v1.json", "contracts/openapi.json",
     "docs/setup.md", "docs/deployment.md", "docs/workflows.md", "docs/media-tools.md",
@@ -44,7 +52,11 @@ SUPPORT_FILES = (
     "examples/connector/bindings.json", "examples/connector/smoke.sh",
     "examples/postgres/export_to_postgres.py", "examples/postgres/postgres_usage_views.sql",
     "examples/postgres/grant_sync_role.sql", "examples/postgres/smoke.py",
-    "deploy/postgres/grant-runtime.sql",
+    "deploy/postgres/grant-runtime.sql", "docs/capacity.md",
+    "deploy/autoscaling/collect.py", "deploy/autoscaling/controller.py", "deploy/autoscaling/signals.sql",
+    "plugins/providers/compute/examples/two-target-chat/catalog.json",
+    "plugins/providers/compute/examples/two-target-chat/chat-bindings.json",
+    *(f"{OPERATIONS}/{name}" for name in OPERATIONS_FILES),
     *(f"{MEDIA_WORKER}/{name}" for name in MEDIA_FILES),
 )
 
@@ -130,8 +142,9 @@ def smoke_package(archive, name, pg_bin):
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(work, filter="data")
         package = work / name
-        run([sys.executable, "-B", package / MEDIA_WORKER / "server.py", "--help"],
-            cwd=package, env={"LC_ALL": "C"}, stdout=subprocess.DEVNULL, timeout=10)
+        for entry_point in (package / MEDIA_WORKER / "server.py", package / OPERATIONS / "monitor.py"):
+            run([sys.executable, "-B", entry_point, "--help"],
+                cwd=package, env={"LC_ALL": "C"}, stdout=subprocess.DEVNULL, timeout=10)
         tool_dir = work / "tools"
         tool_dir.mkdir()
         required = ["bash", "curl", "jq", "openssl", "mktemp", "rm", "rmdir", "cmp", "cut", "od", "tr", "sleep"]
