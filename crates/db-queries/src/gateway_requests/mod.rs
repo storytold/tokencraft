@@ -92,6 +92,7 @@ pub enum CostState {
     SupplierSettled,
 }
 
+#[derive(sqlx::FromRow)]
 pub struct RequestRow {
     pub id: GatewayRequestId,
     pub project_id: GatewayProjectId,

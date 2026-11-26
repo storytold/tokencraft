@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -12,6 +13,7 @@ import struct
 from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
+from urllib.parse import urlencode
 from zlib import compress, crc32
 
 from smoke_workflow_contract import HOST, ROOT, call, loopback_port, ready, rehearse, service
@@ -121,6 +123,46 @@ def read_image(port, receipt, auth):
     return body
 
 
+def verify_read_views(port, peer, session, account, project, first, second, first_client, second_client):
+    large_amount = 9_007_199_254_740_995
+    path = f"/v1/projects/{project}/requests/{first['id']}/settlements?account_id={account}"
+    for revision, amount in enumerate((large_amount + 5, large_amount)):
+        call(port, path, 201, method="POST", headers={**session, "Idempotency-Key": f"settlement-fixture-{revision}"},
+             body={"expected_revision": revision, "amount_usd_nanos": str(amount), "evidence_ref": "fixture-usage"})
+
+    def history(api, auth, **filters):
+        query = "?" + urlencode(filters) if filters else ""
+        page, _ = call(api, "/v1/requests" + query, 200, headers=auth)
+        assert page["next_after"] is None
+        return [row["id"] for row in page["requests"]]
+
+    project_scope = {"account_id": account, "project_id": project}
+    assert history(port, session, **project_scope) == [second["id"], first["id"]]
+    assert history(peer, session, **project_scope, after=second["id"]) == [first["id"]]
+    assert history(peer, first_client) == [first["id"]]
+    assert history(peer, first_client, after=second["id"]) == []
+    assert history(peer, second_client, after=second["id"]) == []
+    trace, _ = call(port, f"/v1/requests/{first['id']}/trace", 200, headers=first_client)
+    assert history(peer, session, **project_scope, trace_id=trace["correlation"]["trace_id"]) == [first["id"]]
+    today = datetime.now(timezone.utc).date()
+    dates = {"from": today - timedelta(days=1), "to": today + timedelta(days=2)}
+    assert history(peer, first_client, status="succeeded", cost_state="supplier_settled", **dates,
+                   provider="self_hosted", model="example_image", exact_model="true", app_unattributed="true") == [first["id"]]
+    assert history(peer, second_client, status="succeeded", cost_state="supplier_settled") == []
+
+    usage, _ = call(peer, "/v1/usage?" + urlencode({**project_scope, "group_by": "client"}), 200, headers=session)
+    assert usage["totals"]["requests"] == usage["totals"]["succeeded"] == 2
+    assert usage["totals"]["supplier_settled_usd_nanos"] == str(large_amount)
+    assert usage["totals"]["supplier_settled_requests"] == 1
+    assert usage["totals"]["provider_charges"] == [{
+        "provider": "self_hosted", "unit": "credit", "quantity": "7.38", "observations": 2,
+    }]
+    isolated, _ = call(peer, "/v1/usage", 200, headers=first_client)
+    assert isolated["totals"]["supplier_settled_usd_nanos"] == str(large_amount)
+    assert isolated["totals"]["provider_charges"][0]["quantity"] == "2.17"
+    print("PASS scoped pages, cursor isolation, trace and cost filters, and exact project and client usage")
+
+
 def verify_recovery(gateway, directory, settings, session, account, project):
     token = token_hex(32)
     port = int(settings["API_GATEWAY_PORT"])
@@ -203,6 +245,7 @@ def verify_recovery(gateway, directory, settings, session, account, project):
         assert connector.submissions == {first["id"]: 1, second["id"]: 1}
         assert connector.fetches == {"first": 1, "second": 1}
         print("PASS conflicting handle stayed unconfirmed, then recovered with the right output and charge after restart")
+        verify_read_views(port, peer, session, account, project, first, second, first_client, second_client)
 
 
 def main():

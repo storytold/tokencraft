@@ -52,9 +52,12 @@ pub async fn report_usage<'e, E: PgExecutor<'e>>(
     filter: UsageFilter<'_>,
     limit: i64,
 ) -> sqlx::Result<Vec<UsageRow>> {
-    sqlx::query_as!(
-        UsageRow,
-        r#"WITH activity AS (
+    // Keep client equality visible to a generic plan on a reused connection.
+    macro_rules! select_usage {
+        ($client_filter:literal) => {
+            sqlx::query_as!(
+                UsageRow,
+                r#"WITH activity AS (
             SELECT CASE $8::text
                    WHEN 'provider' THEN r.provider
                    WHEN 'model' THEN r.model
@@ -63,28 +66,33 @@ pub async fn report_usage<'e, E: PgExecutor<'e>>(
                    WHEN 'day' THEN to_char(r.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')
                  END AS group_key,
                  r.estimated_usd_nanos, r.succeeded_at, r.canceled_at, r.created_at, r.failed_at, r.uncertain_at,
-                 r.provider, charge.charge_unit, charge.charge_quantity,
+                 r.provider, u.charge_unit, u.charge_quantity,
                  r.adapter <> 'mock' AS provider_request,
                  u.mock_reported, u.provider_reported, u.provider_reports_missing_cost, u.output_count,
                  u.input_tokens, u.output_tokens, settled.amount_usd_nanos AS supplier_settled
             FROM gateway_requests r
             LEFT JOIN LATERAL (
               SELECT sum(o.amount_usd_nanos) FILTER (WHERE o.source = 'mock_provider') AS mock_reported,
-                     sum(o.amount_usd_nanos) FILTER (WHERE o.source <> 'mock_provider') AS provider_reported,
-                     count(*) FILTER (WHERE o.source <> 'mock_provider' AND o.amount_usd_nanos IS NULL) AS provider_reports_missing_cost,
-                     sum(o.output_count) AS output_count,
-                     sum(o.input_tokens) AS input_tokens, sum(o.output_tokens) AS output_tokens
+                     sum(o.amount_usd_nanos) FILTER (
+                         WHERE o.source NOT IN ('mock_provider', 'connector_charge')) AS provider_reported,
+                     count(*) FILTER (WHERE o.source NOT IN ('mock_provider', 'connector_charge')
+                         AND o.amount_usd_nanos IS NULL) AS provider_reports_missing_cost,
+                     sum(o.output_count) FILTER (WHERE o.source <> 'connector_charge') AS output_count,
+                     sum(o.input_tokens) FILTER (WHERE o.source <> 'connector_charge') AS input_tokens,
+                     sum(o.output_tokens) FILTER (WHERE o.source <> 'connector_charge') AS output_tokens,
+                     max(o.charge_unit) FILTER (
+                         WHERE o.attempt_number = 1 AND o.source = 'connector_charge') AS charge_unit,
+                     max(o.charge_quantity) FILTER (
+                         WHERE o.attempt_number = 1 AND o.source = 'connector_charge') AS charge_quantity
               FROM gateway_usage_observations o
-              WHERE o.account_id = r.account_id AND o.request_id = r.id AND o.source <> 'connector_charge'
+              WHERE o.account_id = r.account_id AND o.request_id = r.id
             ) u ON true
-            LEFT JOIN gateway_usage_observations charge ON charge.account_id = r.account_id
-              AND charge.request_id = r.id AND charge.attempt_number = 1 AND charge.source = 'connector_charge'
             LEFT JOIN LATERAL (
               SELECT amount_usd_nanos FROM gateway_supplier_settlements
               WHERE request_id = r.id ORDER BY revision DESC LIMIT 1
             ) settled ON true
             WHERE r.account_id = $1 AND r.project_id = $2 AND r.created_at >= $3 AND r.created_at < $4
-              AND ($5::text IS NULL OR r.client_ref = $5)
+              AND "# + $client_filter + r#"
               AND ($6::text IS NULL OR r.provider = $6)
               AND ($7::text IS NULL OR r.model IN ($7, $12::text))
               AND ($11::text IS NULL OR r.app_ref = $11)
@@ -137,19 +145,26 @@ pub async fn report_usage<'e, E: PgExecutor<'e>>(
             AND charges.group_key IS NOT DISTINCT FROM totals.group_key
           WHERE totals.is_total OR $9::text IS NULL OR totals.group_key COLLATE "C" > $9
           ORDER BY totals.is_total DESC, totals.group_key COLLATE "C" NULLS FIRST LIMIT $10"#,
-        scope.account.as_str(),
-        scope.project.as_str(),
-        filter.from,
-        filter.to,
-        scope.client_ref,
-        filter.provider,
-        filter.model,
-        filter.group_by,
-        filter.after,
-        limit,
-        filter.app_ref,
-        filter.alternate_model,
-    )
-    .fetch_all(exec)
-    .await
+                scope.account.as_str(),
+                scope.project.as_str(),
+                filter.from,
+                filter.to,
+                scope.client_ref,
+                filter.provider,
+                filter.model,
+                filter.group_by,
+                filter.after,
+                limit,
+                filter.app_ref,
+                filter.alternate_model,
+            )
+            .fetch_all(exec)
+            .await
+        };
+    }
+    if scope.client_ref.is_some() {
+        select_usage!("r.client_ref = $5")
+    } else {
+        select_usage!("$5::text IS NULL")
+    }
 }
