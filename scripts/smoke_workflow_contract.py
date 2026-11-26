@@ -925,6 +925,35 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     assert_on_hold(estimate * 4, estimate * 2)
     print("PASS shared submission quota for native requests, draft tests, concurrent published runs, replay, and deferred generation")
 
+    status = receipt["status_url"]
+    console = status + query + "&include_execution=true"
+    child = finished["steps"][0]["request"]
+
+    def before_retirement():
+        view, headers = call(port, console, 200, headers=session)
+        assert any("no-store" in value for value in headers.get_all("Cache-Control", [])), headers
+        assert not view["execution"]["evidence_expired"]
+        (node,) = view["execution"]["nodes"]
+        assert node["status"] == "succeeded" and node["request"] == child
+        return node
+
+    original_step = before_retirement()
+    app_view, _ = call(port, status + "?include_execution=true", 200, headers=auth)
+    assert "execution" not in app_view
+    sibling, _ = call(port, "/v1/projects" + query, 201, method="POST", headers=session,
+                      body={"name": "Another history scope"})
+    call(port, console.replace(f"/projects/{project}/", f"/projects/{sibling['id']}/"), 404, headers=session)
+
+    # Reproduce the state left by the retention worker without waiting for its minute-long sweep.
+    query_db("UPDATE workflow_runs SET content = NULL WHERE id = :'run'", run=receipt["id"])
+    retained, _ = call(peer, console, 200, headers=session)
+    assert retained["execution"]["evidence_expired"] and "outputs" not in retained and not retained["steps"]
+    (step,) = retained["execution"]["nodes"]
+    assert step == original_step and step["title"] == "Generate"
+    assert step["request_status"] == "succeeded" and step["provider"] == "self_hosted"
+    assert step["admitted_at"] and step["finished_at"]
+    print("PASS the session-only execution timeline retains its scoped request trace after run content expires")
+
 
 def rehearse(gateway, admin, directory):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}

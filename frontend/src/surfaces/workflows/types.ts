@@ -71,6 +71,18 @@ type RunOutput =
   | { type: "text"; text: string }
   | { type: "media"; kind: ArtifactKind; download_url: string }
   | { type: "fixture"; kind: ValueKind };
+export type ExecutionNode = {
+  id: string;
+  title: string;
+  kind: PrimitiveKind | "tool";
+  dependencies: string[];
+  status: string;
+  request: string | null;
+  request_status: string | null;
+  provider: string | null;
+  admitted_at: string | null;
+  finished_at: string | null;
+};
 export type Run = {
   id: string;
   workflow_version: number | null;
@@ -81,6 +93,7 @@ export type Run = {
   tools?: Record<string, { request_id: string; status: string; admitted_at: string; finished_at: string | null }>;
   error: string | null;
   outputs?: Record<string, RunOutput>;
+  execution?: { title: string; evidence_expired: boolean; nodes: ExecutionNode[] };
 };
 export type Permission = "runs:submit" | "runs:read" | "outputs:read" | "runs:cancel";
 export type AppKey = { app_id: string; key_id: string; scopes: Permission[]; name: string; prefix: string; expires_at: string; revoked_at: string | null };

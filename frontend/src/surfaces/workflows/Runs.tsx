@@ -5,6 +5,7 @@ import { errorMessage, type ProjectScope } from "@/lib/gateway";
 import { workflowApi } from "./api";
 import { usd } from "./editor";
 import { Dialog } from "./IntentDialog";
+import { RunTimeline } from "./RunTimeline";
 import { isFileInput } from "./wiring";
 import { statusLabel, TERMINAL, type Graph, type Run, type RunSummary, type InvocationInput, type UploadKind, type UploadReference, type WorkflowInput } from "./types";
 
@@ -91,21 +92,14 @@ export function Status({ status }: { status: RunSummary["status"] }) {
   return <span className={`wf-status wf-status-${status}`}>{statusLabel[status]}</span>;
 }
 
-function RunDetails({ run, graph, onCancel }: { run: Run; graph: Graph; onCancel: () => Promise<void> }) {
+function RunDetails({ scope, run, graph, onCancel }: { scope: ProjectScope; run: Run; graph: Graph; onCancel: () => Promise<void> }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const steps = [
-    ...run.steps.map((step) => ({ node: step.node, status: step.status, detail: step.request })),
-    ...Object.entries(run.tools ?? {}).map(([node, step]) => ({
-      node, status: step.status, detail: step.request_id,
-    })),
-  ];
   return <div className="wf-panel wf-stack">
     <div className="wf-panel-heading"><h3>Run timeline</h3><Status status={run.status} /></div>
-    <div className="wf-muted">{run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
-    {steps.length > 0 && <ol className="wf-timeline">{steps.map((step) =>
-      <li key={step.node}><span>{graph.nodes.find((item) => item.id === step.node)?.title ?? step.node}<small>{step.detail}</small></span>
-        <span>{step.status.replaceAll("_", " ")}</span></li>)}</ol>}
+    <div className="wf-muted">{run.execution?.title && `${run.execution.title} · `}
+      {run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
+    <RunTimeline scope={scope} run={run} graph={graph} />
     {run.error && <p className="wf-error" role="alert">{run.error.replaceAll("_", " ")}</p>}
     {run.outputs && <div className="wf-stack"><h4>Outputs</h4>
       {Object.entries(run.outputs).map(([name, output]) => <div className="wf-run-output" key={name}>
@@ -174,7 +168,7 @@ export function Runs({ scope, id, graph, selected, onSelect }: {
       </button>)}
       {list?.length === 0 && <p className="wf-muted">Run a draft or call a published endpoint to see results here.</p>}
     </section>
-    {run && run.id === selected && <RunDetails key={run.id} run={run} graph={graph} onCancel={async () => {
+    {run && run.id === selected && <RunDetails key={run.id} scope={scope} run={run} graph={graph} onCancel={async () => {
       await workflowApi.cancel(scope, id, run.id); setRefresh((value) => value + 1);
     }} />}
   </div>;

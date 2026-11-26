@@ -50,7 +50,7 @@ export const workflowApi = {
   runs: (scope: ProjectScope, id: string, signal?: AbortSignal) =>
     gatewayRequest<RunSummary[]>(`${consoleRoot(scope, id)}/runs${scopeSuffix(scope)}`, { signal }),
   run: (scope: ProjectScope, workflow: string, run: string, signal?: AbortSignal) =>
-    gatewayRequest<Run>(`${workflowEndpoint(scope, workflow)}/runs/${encodeURIComponent(run)}${scopeSuffix(scope)}`, { signal }),
+    gatewayRequest<Run>(`${workflowEndpoint(scope, workflow)}/runs/${encodeURIComponent(run)}${scopeSuffix(scope)}&include_execution=true`, { signal }),
   cancel: (scope: ProjectScope, workflow: string, run: string) =>
     gatewayRequest<void>(`${workflowEndpoint(scope, workflow)}/runs/${encodeURIComponent(run)}/cancel${scopeSuffix(scope)}`, { method: "POST" }),
   openApi: (scope: ProjectScope, workflow: string) =>

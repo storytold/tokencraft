@@ -15,7 +15,7 @@ const WORKFLOW_REQUEST: &str = "w.id = r.actor_id
     AND w.account_id = r.account_id AND w.project_id = r.project_id AND w.workflow_id = r.app_ref
     AND r.client_ref IS NOT DISTINCT FROM CASE WHEN w.version IS NOT NULL THEN w.actor_id END";
 
-const REQUEST_STATUS: &str = "CASE
+pub(super) const REQUEST_STATUS: &str = "CASE
     WHEN r.uncertain_at IS NOT NULL THEN 'awaiting_reconciliation'
     WHEN r.failed_at IS NOT NULL THEN 'failed'
     WHEN r.canceled_at IS NOT NULL THEN 'canceled'

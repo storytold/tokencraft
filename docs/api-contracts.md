@@ -16,6 +16,12 @@ The subscription and delivery lists return up to 50 items. Send the returned `ne
 
 Delivery records identify their subject with `request_id` or `workflow_run_id`. App subscriptions only receive terminal events for the assigned app.
 
+## Inspect a workflow run
+
+The gateway console uses the saved run graph for the timeline. A project developer or administrator can request that timeline by adding `include_execution=true` and `account_id` to the run status URL with a session cookie. Application keys continue to receive the published workflow status contract.
+
+The timeline includes the original step names and any retained child request IDs, statuses, providers, and timestamps. The step status describes the workflow. The request status describes the child inference request. When run content expires, the timeline continues to link to retained requests. Tool details and output content follow their existing retention settings.
+
 ## Review and export a contract change
 
 Start the [local gateway](setup.md#backend) from the same source you plan to release. Generate the two documents from it.
