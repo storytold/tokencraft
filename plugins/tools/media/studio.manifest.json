@@ -595,6 +595,192 @@
           "application/json"
         ]
       }
+    },
+    {
+      "id": "video.crossfade",
+      "revision": 1,
+      "label": "Crossfade two video clips",
+      "inputs": {
+        "first": {
+          "kind": "video"
+        },
+        "second": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 5000
+          },
+          "transition": {
+            "type": "string",
+            "enum": [
+              "fade",
+              "wipeleft",
+              "wiperight",
+              "dissolve"
+            ],
+            "default": "fade"
+          }
+        },
+        "required": [
+          "duration_ms"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "video",
+        "content_types": [
+          "video/mp4"
+        ]
+      }
+    },
+    {
+      "id": "audio.crossfade",
+      "revision": 1,
+      "label": "Crossfade two audio tracks",
+      "inputs": {
+        "first": {
+          "kind": "audio"
+        },
+        "second": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 5000
+          }
+        },
+        "required": [
+          "duration_ms"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "audio",
+        "content_types": [
+          "audio/wav"
+        ]
+      }
+    },
+    {
+      "id": "image.chroma_key",
+      "revision": 1,
+      "label": "Remove a solid color from an image",
+      "inputs": {
+        "image": {
+          "kind": "image"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": "string",
+            "enum": [
+              "green",
+              "blue",
+              "white",
+              "black"
+            ]
+          },
+          "similarity": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 0.75,
+            "default": 0.2
+          },
+          "blend": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.5,
+            "default": 0.04
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "image",
+        "content_types": [
+          "image/png"
+        ]
+      }
+    },
+    {
+      "id": "analysis.silence",
+      "revision": 1,
+      "label": "Measure quiet audio intervals",
+      "inputs": {
+        "audio": {
+          "kind": "audio"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "threshold_dbfs": {
+            "type": "integer",
+            "minimum": -80,
+            "maximum": -10,
+            "default": -50
+          },
+          "minimum_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 5000,
+            "default": 350
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    },
+    {
+      "id": "analysis.shots",
+      "revision": 1,
+      "label": "Detect shot changes",
+      "inputs": {
+        "video": {
+          "kind": "video"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sensitivity": {
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 0.95,
+            "default": 0.35
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
     }
   ]
 }

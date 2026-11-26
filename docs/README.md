@@ -14,7 +14,7 @@ The console opens the docs at `/docs`, the searchable operation reference at `/d
 - [Run provider plugins or configure compute endpoints](../plugins/providers/README.md)
 - [Connect providers and curate the catalog](provider-connectors.md)
 - [Map primitives to provider APIs](provider-mapping.md)
-- [Run the optional media tool plugin](media-tools.md)
+- [Attach optional media tool packs](media-tools.md)
 
 ## Run and operate TokenCraft
 
