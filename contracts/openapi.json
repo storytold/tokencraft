@@ -3422,6 +3422,26 @@
               }
             }
           },
+          "404": {
+            "description": "Workflow app unavailable in this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The workflow app already has an active subscription.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
           "default": {
             "$ref": "#/components/responses/RequestErrorResponse"
           }
@@ -7309,6 +7329,13 @@
           "name": {
             "type": "string",
             "description": "Display name with 1 to 80 characters after trimming."
+          },
+          "workflow_app_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Deliver terminal runs for one workflow application in this project."
           }
         },
         "additionalProperties": false
@@ -8791,7 +8818,6 @@
               "type": "object",
               "required": [
                 "id",
-                "request_id",
                 "subscription_id",
                 "event_type",
                 "state",
@@ -8834,7 +8860,10 @@
                   "format": "date-time"
                 },
                 "request_id": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "state": {
                   "type": "string",
@@ -8842,6 +8871,12 @@
                 },
                 "subscription_id": {
                   "type": "string"
+                },
+                "workflow_run_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -8913,6 +8948,12 @@
                 "signing_version": {
                   "type": "integer",
                   "format": "int32"
+                },
+                "workflow_app_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -12393,7 +12434,6 @@
         "type": "object",
         "required": [
           "id",
-          "request_id",
           "subscription_id",
           "event_type",
           "state",
@@ -12436,7 +12476,10 @@
             "format": "date-time"
           },
           "request_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "type": "string",
@@ -12444,6 +12487,12 @@
           },
           "subscription_id": {
             "type": "string"
+          },
+          "workflow_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -12555,6 +12604,12 @@
           "signing_version": {
             "type": "integer",
             "format": "int32"
+          },
+          "workflow_app_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

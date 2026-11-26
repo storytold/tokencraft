@@ -10,9 +10,11 @@ The [hosted release check](deployment.md#run-behind-an-https-ingress) compares a
 
 ## Manage project webhooks
 
-When the operator configures webhook destinations, organization owners and administrators use their session cookie and the `account_id` query parameter to manage subscriptions and inspect deliveries. List the project's destination IDs, then create a subscription using one of those IDs and an optional client reference. Save the signing secret from creation or rotation in the receiver's secret store. The list response contains subscription metadata. [Webhook deployment](deployment.md#run-behind-an-https-ingress)
+When the operator configures webhook destinations, organization owners and administrators use their session cookie and the `account_id` query parameter to manage subscriptions and inspect deliveries. List the project's destination IDs, then create a subscription using one of those IDs. Request subscriptions accept an optional `client_ref`. To receive [workflow events](workflows.md#receive-terminal-events), supply `workflow_app_id` instead and omit `client_ref`. Save the signing secret from creation or rotation in the receiver's secret store. [Webhook deployment](deployment.md#run-behind-an-https-ingress)
 
 The subscription and delivery lists return up to 50 items. Send the returned `next_before` value as `before` until it is null. The detail operation includes the latest 50 delivery attempts. Redrive a failed delivery while its subscription is active to queue the original event again. A project API key can attach an allowed subscription to a request using `delivery.webhook_subscription_id` on `POST /v1/requests`.
+
+Delivery records identify their subject with `request_id` or `workflow_run_id`. App subscriptions only receive terminal events for the assigned app.
 
 ## Review and export a contract change
 

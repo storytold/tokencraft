@@ -29,7 +29,7 @@ The default process runs the API and workers together. Set `TOKENCRAFT_PROCESS_R
 
 Deploy a gateway that supports migration overlap on the current schema before applying a newer migration. Each process checks the version, success flag, and checksum of every migration embedded in its binary. A newer binary becomes ready once its migrations are applied. An older binary can stay ready only if every later applied migration declares compatibility with its schema version.
 
-Add the declaration in the same transaction as the additive migration. The first migration to use overlap creates the compatibility table. For example, a migration 75 reviewed against schema-74 binaries would include:
+Add the declaration in the same transaction as the additive migration. The first migration to use overlap creates the compatibility table. For example, a migration 76 reviewed against schema-75 binaries would include the following SQL.
 
 ```sql
 CREATE TABLE public.gateway_schema_compatibility (
@@ -40,7 +40,7 @@ CREATE TABLE public.gateway_schema_compatibility (
 
 INSERT INTO public.gateway_schema_compatibility
     (migration_version, oldest_gateway_schema)
-VALUES (75, 74);
+VALUES (76, 75);
 ```
 
 Later compatible migrations add their own rows. Keep the table writable only by trusted migration operators and readable by gateway roles. Verify the oldest supported API and worker against the changed schema, including writes and in-flight requests, before declaring compatibility. For a breaking change, drain the affected binaries before applying it or use separate additive and cleanup migrations. Missing declarations, unsuccessful migrations, and mismatched embedded checksums all fail readiness.
@@ -56,7 +56,7 @@ The API checks the same database and schema state before handling operational re
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-Use a drain and restart for the schema 64 to 70 and schema 70 to 74 upgrades. The old hosted binaries refuse startup against the newer schema in each case. Migrations 71 through 74 add the workflow tables. Reapply the runtime grants after migrating so the restricted API and worker roles can access them. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key.
+Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70 or 74 to 75. Earlier hosted binaries refuse startup against schema 75. Migrations 71 through 74 add the workflow tables, and migration 75 adds app-scoped terminal events to the webhook outbox. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
 ## Connect existing compute endpoints
 

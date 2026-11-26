@@ -6,7 +6,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
-use db_queries::workflows as db;
+use db_queries::{gateway_webhooks, workflows as db};
 use ids::{AccountId, GatewayProjectId, WorkflowAppId, WorkflowId, WorkflowKeyId, WorkflowRunId};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -364,6 +364,10 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     }
     let id = WorkflowRunId::generate();
     let content = runner::State::new(inputs).seal(args.security, &id)?;
+    let webhook_subscription_id = match application {
+        Some(app) => gateway_webhooks::active_workflow_subscription(&mut *tx, args.scope, app).await?,
+        None => None,
+    };
     db::create_run(
         &mut *tx,
         db::NewRun {
@@ -371,6 +375,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
             id: &id,
             actor,
             version,
+            webhook_subscription_id: webhook_subscription_id.as_deref(),
             draft_revision: revision,
             idempotency_digest: &key_digest,
             intent_digest: &intent_digest,

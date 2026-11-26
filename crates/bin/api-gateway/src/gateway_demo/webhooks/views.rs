@@ -10,6 +10,8 @@ pub(in crate::gateway_demo) struct WebhookSubscription {
     destination_id: String,
     #[schema(required = true)]
     client_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workflow_app_id: Option<String>,
     pub(super) signing_version: i32,
     #[schema(required = true)]
     signing_rotated_at: Option<DateTime<Utc>>,
@@ -25,6 +27,7 @@ impl From<Subscription> for WebhookSubscription {
             name: row.name,
             destination_id: row.destination_id,
             client_ref: row.client_ref,
+            workflow_app_id: row.workflow_app_id,
             signing_version: row.signing_version,
             signing_rotated_at: row.signing_rotated_at,
             created_at: row.created_at,
@@ -36,7 +39,10 @@ impl From<Subscription> for WebhookSubscription {
 #[derive(Serialize, ToSchema)]
 pub(in crate::gateway_demo) struct WebhookDelivery {
     pub(super) id: String,
-    request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workflow_run_id: Option<String>,
     subscription_id: String,
     event_type: String,
     /// One of pending, sending, delivered, or dead.
@@ -55,6 +61,7 @@ impl From<Delivery> for WebhookDelivery {
         Self {
             id: row.id,
             request_id: row.request_id,
+            workflow_run_id: row.workflow_run_id,
             subscription_id: row.subscription_id,
             event_type: row.event_type,
             state: row.state,

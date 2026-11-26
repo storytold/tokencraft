@@ -65,6 +65,48 @@ pub struct VerifiedWebhook {
     pub data: WebhookData,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub enum WorkflowWebhookKind {
+    #[serde(rename = "workflow.run.succeeded")]
+    Succeeded,
+    #[serde(rename = "workflow.run.failed")]
+    Failed,
+    #[serde(rename = "workflow.run.canceled")]
+    Canceled,
+    #[serde(rename = "workflow.run.expired")]
+    Expired,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowWebhookStatus {
+    Succeeded,
+    Failed,
+    Canceled,
+    Expired,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WorkflowWebhookData {
+    pub run_id: String,
+    pub workflow_id: String,
+    pub project_id: String,
+    pub workflow_version: u32,
+    pub status: WorkflowWebhookStatus,
+    pub fetch_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct VerifiedWorkflowWebhook {
+    pub id: String,
+    pub schema_version: u32,
+    #[serde(rename = "type")]
+    pub kind: WorkflowWebhookKind,
+    pub occurred_at: String,
+    pub sequence: u64,
+    pub data: WorkflowWebhookData,
+}
+
 /// Check the original received bytes before deserializing them into a v1 event.
 pub fn verify_webhook(
     headers: &HeaderMap,
@@ -72,6 +114,62 @@ pub fn verify_webhook(
     signing_secrets: &[&str],
     options: WebhookOptions,
 ) -> Result<VerifiedWebhook, VerificationError> {
+    let id = verify_signature(headers, body, signing_secrets, options)?;
+    let event: VerifiedWebhook =
+        serde_json::from_slice(body).map_err(|_| VerificationError::Payload)?;
+    if event.id != id
+        || event.schema_version != 1
+        || event.sequence == 0
+        || event.occurred_at.is_empty()
+        || !valid_id(&event.data.request_id, "req_")
+    {
+        return Err(VerificationError::Payload);
+    }
+    Ok(event)
+}
+
+/// Verify a signed terminal notification for a published workflow run.
+pub fn verify_workflow_webhook(
+    headers: &HeaderMap,
+    body: &[u8],
+    signing_secrets: &[&str],
+    options: WebhookOptions,
+) -> Result<VerifiedWorkflowWebhook, VerificationError> {
+    let id = verify_signature(headers, body, signing_secrets, options)?;
+    let event: VerifiedWorkflowWebhook =
+        serde_json::from_slice(body).map_err(|_| VerificationError::Payload)?;
+    let data = &event.data;
+    let status = match event.kind {
+        WorkflowWebhookKind::Succeeded => WorkflowWebhookStatus::Succeeded,
+        WorkflowWebhookKind::Failed => WorkflowWebhookStatus::Failed,
+        WorkflowWebhookKind::Canceled => WorkflowWebhookStatus::Canceled,
+        WorkflowWebhookKind::Expired => WorkflowWebhookStatus::Expired,
+    };
+    if event.id != id
+        || event.schema_version != 1
+        || event.sequence == 0
+        || event.occurred_at.is_empty()
+        || !valid_id(&data.run_id, "wfr_")
+        || !valid_id(&data.workflow_id, "wf_")
+        || !valid_id(&data.project_id, "proj_")
+        || data.workflow_version == 0
+        || data.status != status
+        || data.fetch_url != format!(
+            "/v1/projects/{}/workflow-endpoints/{}/runs/{}",
+            data.project_id, data.workflow_id, data.run_id
+        )
+    {
+        return Err(VerificationError::Payload);
+    }
+    Ok(event)
+}
+
+fn verify_signature<'a>(
+    headers: &'a HeaderMap,
+    body: &[u8],
+    signing_secrets: &[&str],
+    options: WebhookOptions,
+) -> Result<&'a str, VerificationError> {
     let id = single_header(headers, "webhook-id")?;
     let timestamp = single_header(headers, "webhook-timestamp")?;
     let signature = single_header(headers, "webhook-signature")?;
@@ -126,17 +224,7 @@ pub fn verify_webhook(
         return Err(VerificationError::Signature);
     }
 
-    let event: VerifiedWebhook =
-        serde_json::from_slice(body).map_err(|_| VerificationError::Payload)?;
-    if event.id != id
-        || event.schema_version != 1
-        || event.sequence == 0
-        || event.occurred_at.is_empty()
-        || !valid_id(&event.data.request_id, "req_")
-    {
-        return Err(VerificationError::Payload);
-    }
-    Ok(event)
+    Ok(id)
 }
 
 fn single_header<'a>(

@@ -67,3 +67,7 @@ if (metadata.phase === "archived") {
 ```
 
 A cold object can return a `TokenCraftError` with status `409` and code `archive_retrieval_required`. A project administrator can start a restore in Requests. The SDK downloads stored output from the configured gateway and verifies the saved byte length and SHA-256. The default artifact location is `warm`. [Retention and restore guide](../../docs/chat-history.md)
+
+## Verify a terminal webhook
+
+Call `verifyWebhook(rawBody, headers, signingSecret)` for request events and `verifyWorkflowWebhook(rawBody, headers, signingSecret)` for [workflow events](../../docs/workflows.md#receive-terminal-events). Pass the original bytes before parsing the body. Both helpers enforce a five-minute timestamp window by default and accept overlapping keys during rotation. Deduplicate by the verified event ID before applying side effects.

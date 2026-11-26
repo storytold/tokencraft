@@ -4,7 +4,8 @@ const MAX_ATTEMPTS: i32 = 6;
 
 pub struct Claim {
     pub id: String,
-    pub request_id: String,
+    pub subject_id: String,
+    pub is_workflow: bool,
     pub trace_id: Option<String>,
     pub admission_span_id: Option<String>,
     pub subscription_id: String,
@@ -24,11 +25,14 @@ pub async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claim>> {
     let ready = sqlx::query!(
         "SELECT d.id, d.state, d.payload, d.attempt_count, d.attempt_baseline, s.id AS subscription_id,
            s.destination_id, s.destination_url, s.signing_version,
-           d.request_id, r.trace_id, r.admission_span_id,
+           coalesce(d.request_id, d.workflow_run_id) AS \"subject_id!\",
+           (d.workflow_run_id IS NOT NULL) AS \"is_workflow!\", r.trace_id, r.admission_span_id,
            (s.signing_rotated_at > clock_timestamp() - interval '24 hours') AS sign_with_previous,
            (d.deadline_at <= clock_timestamp()) AS \"expired!\", s.revoked_at
-         FROM gateway_webhook_deliveries d JOIN gateway_requests r ON r.id = d.request_id
-           JOIN gateway_webhook_subscriptions s ON s.id = r.webhook_subscription_id
+         FROM gateway_webhook_deliveries d
+           LEFT JOIN gateway_requests r ON r.id = d.request_id
+           LEFT JOIN workflow_runs w ON w.id = d.workflow_run_id
+           JOIN gateway_webhook_subscriptions s ON s.id = coalesce(r.webhook_subscription_id, w.webhook_subscription_id)
          WHERE d.state IN ('pending', 'sending') AND d.available_at <= statement_timestamp()
          ORDER BY d.available_at, d.id LIMIT 1
          FOR UPDATE OF d SKIP LOCKED FOR SHARE OF s SKIP LOCKED",
@@ -93,7 +97,8 @@ pub async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claim>> {
 
     Ok(Some(Claim {
         id: ready.id,
-        request_id: ready.request_id,
+        subject_id: ready.subject_id,
+        is_workflow: ready.is_workflow,
         trace_id: ready.trace_id,
         admission_span_id: ready.admission_span_id,
         subscription_id: ready.subscription_id,

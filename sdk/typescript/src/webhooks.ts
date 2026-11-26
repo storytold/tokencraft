@@ -1,5 +1,5 @@
 import { isRequestId, object } from "./http.js";
-import type { VerifyWebhookOptions, WebhookEvent } from "./types.js";
+import type { VerifyWebhookOptions, WebhookEvent, WorkflowWebhookEvent } from "./types.js";
 
 export class WebhookVerificationError extends Error {
   constructor(readonly code: "headers" | "timestamp" | "secret" | "signature" | "payload", message: string) {
@@ -9,6 +9,7 @@ export class WebhookVerificationError extends Error {
 }
 
 const eventTypes = new Set(["request.succeeded", "request.canceled", "request.failed"]);
+const terminalStates = new Set(["succeeded", "failed", "canceled", "expired"]);
 const bytes = new TextEncoder();
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -18,6 +19,30 @@ export async function verifyWebhook(
   signingSecrets: string | readonly string[],
   options: VerifyWebhookOptions = {},
 ): Promise<WebhookEvent> {
+  const { event, type, data } = await verifyEnvelope(body, headers, signingSecrets, options);
+  if (!eventTypes.has(type) || !isRequestId(data.request_id)) throw invalidPayload();
+  return event as unknown as WebhookEvent;
+}
+
+export async function verifyWorkflowWebhook(
+  body: Uint8Array,
+  headers: HeadersInit,
+  signingSecrets: string | readonly string[],
+  options: VerifyWebhookOptions = {},
+): Promise<WorkflowWebhookEvent> {
+  const { event, type, data } = await verifyEnvelope(body, headers, signingSecrets, options);
+  if (!hasIdPrefix(data.run_id, "wfr_") || !hasIdPrefix(data.workflow_id, "wf_") || !hasIdPrefix(data.project_id, "proj_")
+      || typeof data.workflow_version !== "number" || !Number.isSafeInteger(data.workflow_version) || data.workflow_version < 1
+      || typeof data.status !== "string" || !terminalStates.has(data.status) || type !== `workflow.run.${data.status}`
+      || data.fetch_url !== `/v1/projects/${data.project_id}/workflow-endpoints/${data.workflow_id}/runs/${data.run_id}`) {
+    throw invalidPayload();
+  }
+  return event as unknown as WorkflowWebhookEvent;
+}
+
+async function verifyEnvelope(
+  body: Uint8Array, headers: HeadersInit, signingSecrets: string | readonly string[], options: VerifyWebhookOptions,
+) {
   const incoming = new Headers(headers);
   const id = incoming.get("webhook-id");
   const timestamp = incoming.get("webhook-timestamp");
@@ -75,13 +100,21 @@ export async function verifyWebhook(
     throw new WebhookVerificationError("payload", "The signed body is not UTF-8 JSON.");
   }
   if (!object(event) || event.id !== id || event.schema_version !== 1
-      || typeof event.type !== "string" || !eventTypes.has(event.type)
+      || typeof event.type !== "string"
       || typeof event.occurred_at !== "string" || !Number.isFinite(Date.parse(event.occurred_at))
       || typeof event.sequence !== "number" || !Number.isSafeInteger(event.sequence) || event.sequence < 1
-      || !object(event.data) || !isRequestId(event.data.request_id)) {
-    throw new WebhookVerificationError("payload", "The signed event does not match the TokenCraft v1 contract.");
+      || !object(event.data)) {
+    throw invalidPayload();
   }
-  return event as unknown as WebhookEvent;
+  return { event, type: event.type, data: event.data };
+}
+
+function invalidPayload() {
+  return new WebhookVerificationError("payload", "The signed event does not match the TokenCraft v1 contract.");
+}
+
+function hasIdPrefix(value: unknown, prefix: string): value is string {
+  return typeof value === "string" && value.startsWith(prefix) && /^[0-9a-hjkmnp-tv-z]{26}$/.test(value.slice(prefix.length));
 }
 
 function decodeSha256(value: string) {

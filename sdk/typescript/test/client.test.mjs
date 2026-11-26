@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 import {
-  TokenCraft, TokenCraftError, TokenCraftTimeoutError, planOfferComparison, refreshOfferComparison, runOfferComparison, verifyWebhook,
+  TokenCraft, TokenCraftError, TokenCraftTimeoutError, planOfferComparison, refreshOfferComparison, runOfferComparison,
+  verifyWebhook, verifyWorkflowWebhook,
 } from "@tokencraft/sdk";
 
 const requestId = "req_01m881w0c8np13xfvetqsbk8m0";
@@ -372,6 +373,30 @@ test("verifies exact webhook bytes during signing-key overlap and rejects tamper
   await assert.rejects(verifyWebhook(mismatched, { ...headers, "Webhook-Signature": sign(first, mismatched) }, secret(first), { now }), { code: "payload" });
 });
 
+
+test("verifies workflow terminal events without changing the request event contract", async () => {
+  const now = 1_795_565_000;
+  const key = Buffer.alloc(32, 23);
+  const secret = `whsec_${key.toString("base64")}`;
+  const id = requestId.replace("req_", "whd_");
+  const project = requestId.replace("req_", "proj_");
+  const workflow = requestId.replace("req_", "wf_");
+  const run = requestId.replace("req_", "wfr_");
+  const event = {
+    id, schema_version: 1, type: "workflow.run.expired", occurred_at: new Date(now * 1000).toISOString(), sequence: 4,
+    data: { run_id: run, workflow_id: workflow, project_id: project, workflow_version: 2, status: "expired",
+      fetch_url: `/v1/projects/${project}/workflow-endpoints/${workflow}/runs/${run}` },
+  };
+  const headers = (body) => ({
+    "webhook-id": id, "webhook-timestamp": String(now),
+    "webhook-signature": "v1," + createHmac("sha256", key).update(`${id}.${now}.`).update(body).digest("base64"),
+  });
+  const body = Buffer.from(JSON.stringify(event, null, 2));
+  assert.deepEqual(await verifyWorkflowWebhook(body, headers(body), secret, { now }), event);
+  await assert.rejects(verifyWebhook(body, headers(body), secret, { now }), { code: "payload" });
+  const mismatched = Buffer.from(JSON.stringify({ ...event, data: { ...event.data, fetch_url: "/wrong-run" } }));
+  await assert.rejects(verifyWorkflowWebhook(mismatched, headers(mismatched), secret, { now }), { code: "payload" });
+});
 
 test("checks equivalent pinned quotes and combined estimates before submitting comparison samples", async () => {
   let downstreamCalls = 0;

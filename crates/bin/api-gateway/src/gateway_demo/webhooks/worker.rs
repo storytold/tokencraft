@@ -44,9 +44,13 @@ pub(in crate::gateway_demo) fn spawn(pool: db::PgPool, config: Arc<WebhookConfig
 }
 
 async fn deliver(pool: db::PgPool, config: Arc<WebhookConfig>, claim: Claim) {
-    let span = work_span(
-        "webhook_delivery", &claim.request_id, claim.trace_id.as_deref(), claim.admission_span_id.as_deref(),
-    );
+    let span = if claim.is_workflow {
+        tracing::info_span!("workflow_webhook_delivery", workflow_run_id = %claim.subject_id)
+    } else {
+        work_span(
+            "webhook_delivery", &claim.subject_id, claim.trace_id.as_deref(), claim.admission_span_id.as_deref(),
+        )
+    };
     async {
         let started = Instant::now();
         let result = send(&config, &claim).await;

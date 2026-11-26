@@ -1,20 +1,25 @@
 """Exercise a published workflow contract with disposable gateway and delivery worker processes."""
 
 import argparse
+from base64 import b64decode, b64encode
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from hashlib import sha256
+import hmac
 from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
+from queue import Queue
 from secrets import token_hex
 import signal
 import socket
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from time import monotonic, sleep
+from threading import Thread
+from time import monotonic, sleep, time
 
 from postgres_tools import postgres_bin
 
@@ -198,9 +203,91 @@ def verify_run_capacity(port, peer, path, spec, body, original, rotated):
     retried, _ = call(port, path, 202, method="POST", body=body, headers=attempts[denied])
     assert retried["replayed"] is False
     print("PASS two active runs across API replicas and keys, receipt replay at capacity, and admission after cancellation")
+    return first["id"]
 
 
-def verify_workflow(port, peer, session, account, project, stop_worker):
+class WebhookReceiver(BaseHTTPRequestHandler):
+    def do_POST(self):
+        event = {key.lower(): value for key, value in self.headers.items()}
+        body = self.rfile.read(int(event["content-length"]))
+        event_id = event["webhook-id"]
+        first = event_id not in self.server.seen
+        self.server.seen.add(event_id)
+        self.server.received.put((event, body))
+        self.send_response(503 if first else 204)
+        self.end_headers()
+
+    def log_message(self, *_):
+        pass
+
+
+@contextmanager
+def webhook_receiver():
+    with HTTPServer((HOST, 0), WebhookReceiver) as server:
+        server.seen = set()
+        server.received = Queue()
+        listener = Thread(target=server.serve_forever)
+        listener.start()
+        try:
+            yield server
+        finally:
+            server.shutdown()
+            listener.join()
+
+
+def verify_signed_delivery(port, listing, query, session, receiver, subscription, event_type, data):
+    secret = b64decode(subscription["signing_secret"].removeprefix("whsec_"))
+    original = None
+    for _ in range(2):
+        headers, raw = receiver.received.get(timeout=10)
+        notice = json.loads(raw)
+        event_id = headers["webhook-id"]
+        timestamp = headers["webhook-timestamp"]
+        signed = f"{event_id}.{timestamp}.".encode() + raw
+        expected = "v1," + b64encode(hmac.digest(secret, signed, sha256)).decode()
+        assert abs(time() - int(timestamp)) < 60 and hmac.compare_digest(expected, headers["webhook-signature"])
+        assert notice["id"] == event_id and notice["type"] == event_type and notice["schema_version"] == 1
+        assert notice["data"] == data
+        assert original is None or original == (event_id, raw)
+        original = (event_id, raw)
+    detail_path = listing + f"/{event_id}" + query
+    until = monotonic() + 5
+    while monotonic() < until:
+        detail, _ = call(port, detail_path, 200, headers=session)
+        delivery = detail["delivery"]
+        if delivery["state"] == "delivered":
+            break
+        sleep(0.1)
+    else:
+        raise RuntimeError("Signed webhook delivery was not recorded")
+    assert delivery["event_type"] == event_type and delivery["subscription_id"] == subscription["id"]
+    assert [attempt["http_status"] for attempt in detail["attempts"]] == [204, 503]
+    return delivery
+
+
+def verify_request_webhook(port, session, project_path, query, receiver, workflow_subscription):
+    registration = {"name": "Native receipt fixture", "destination_id": "fixture"}
+    native, _ = call(port, project_path + "/webhooks" + query, 201, method="POST", headers=session, body=registration)
+    principal, _ = call(port, project_path + "/service-principals" + query, 201, method="POST", headers=session,
+                        body={"name": "Native webhook receipt", "scopes": ["requests:submit", "requests:read"]})
+    auth = {"Authorization": "Bearer " + principal["token"]}
+    quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
+                    body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
+    body = {"quote_id": quote["id"], "input": quote["input"],
+            "delivery": {"webhook_subscription_id": workflow_subscription["id"]}}
+    invoke = {**auth, "Idempotency-Key": token_hex(16)}
+    call(port, "/v1/requests", 404, method="POST", body=body, headers=invoke)
+    body["delivery"]["webhook_subscription_id"] = native["id"]
+    accepted, _ = call(port, "/v1/requests", 202, method="POST", body=body, headers=invoke)
+    delivery = verify_signed_delivery(port, project_path + "/webhook-deliveries", query, session, receiver,
+        native, "request.succeeded",
+        {"request_id": accepted["id"], "project_id": project_path.rsplit("/", 1)[1],
+         "status": "succeeded", "fetch_url": accepted["status_url"]})
+    assert delivery["request_id"] == accepted["id"] and "workflow_run_id" not in delivery
+    print("PASS ordinary request webhooks retain their signed payload and cannot use an app-only subscription")
+
+
+def verify_workflow(port, peer, session, account, project, stop_worker, restart_worker, receiver):
     project_path = f"/v1/projects/{project}"
     query = f"?account_id={account}"
     tools, _ = call(port, project_path + "/workflow-tools" + query + "&verify=fixture-delivery", 200, headers=session)
@@ -237,6 +324,16 @@ def verify_workflow(port, peer, session, account, project, stop_worker):
         "name": "Contract fixture app", "days": 1,
         "scopes": ["runs:submit", "runs:read", "outputs:read", "runs:cancel"],
     })
+    hooks = project_path + "/webhooks"
+    listing = project_path + "/webhook-deliveries"
+    registration = {"name": "Terminal workflow fixture", "destination_id": "fixture", "workflow_app_id": app["app_id"]}
+    sibling_project, _ = call(port, "/v1/projects" + query, 201, method="POST", headers=session,
+                              body={"name": "Webhook scope fixture"})
+    call(port, f"/v1/projects/{sibling_project['id']}/webhooks" + query, 404, method="POST",
+         headers=session, body=registration)
+    subscription, _ = call(port, hooks + query, 201, method="POST", headers=session, body=registration)
+    assert subscription["workflow_app_id"] == app["app_id"]
+    call(port, hooks + query, 409, method="POST", headers=session, body=registration)
     auth = {"Authorization": "Bearer " + app["secret"]}
     spec, _ = call(port, endpoint + "/openapi.json", 200, headers=auth)
     paths = spec["paths"]
@@ -263,6 +360,15 @@ def verify_workflow(port, peer, session, account, project, stop_worker):
         assert int(headers["Retry-After"]) > 0
     assert replay == {**receipt, "replayed": True} and receipt["replayed"] is False
     state, status_headers = verify_output(port, receipt, auth, digest, len(png))
+    event = verify_signed_delivery(port, listing, query, session, receiver, subscription, "workflow.run.succeeded", {
+        "run_id": receipt["id"], "workflow_id": draft["id"], "project_id": project,
+        "workflow_version": 1, "status": "succeeded", "fetch_url": receipt["status_url"],
+    })
+    assert event["workflow_run_id"] == receipt["id"] and "request_id" not in event
+    call(port, f"/v1/projects/{sibling_project['id']}/webhook-deliveries/{event['id']}" + query,
+         404, headers=session)
+    verify_request_webhook(port, session, project_path, query, receiver, subscription)
+    print("PASS app-scoped terminal webhook signature and retry retain the original metadata-only event")
     status_operation = paths[paths_run]["get"]
     verify_json_response(spec, status_operation, 200, state, status_headers, expected_headers=("ETag",))
     assert "304" in status_operation["responses"] and "ETag" in status_operation["responses"]["304"]["headers"]
@@ -287,17 +393,24 @@ def verify_workflow(port, peer, session, account, project, stop_worker):
     replacement = {"Authorization": "Bearer " + rotated["secret"]}
     # Keep new runs queued while testing admission across independent API processes.
     stop_worker()
-    verify_run_capacity(port, peer, endpoint + "/runs", spec, body, auth, replacement)
+    canceled = verify_run_capacity(port, peer, endpoint + "/runs", spec, body, auth, replacement)
+    events, _ = call(port, listing + query, 200, headers=session)
+    workflow_events = [(event["event_type"], event["workflow_run_id"], event["state"])
+                       for event in events["items"] if "workflow_run_id" in event]
+    assert set(workflow_events) == {("workflow.run.succeeded", receipt["id"], "delivered"),
+                                   ("workflow.run.canceled", canceled, "pending")}
+    assert len(workflow_events) == 2
+    print("PASS canceled run queued one durable event with the delivery worker stopped")
 
     sibling, _ = call(port, manage + "/apps" + query, 201, method="POST", headers=session, body={
-        "name": "Independent submitting app", "days": 1, "scopes": ["runs:submit"],
+        "name": "Independent submitting app", "days": 1, "scopes": ["runs:submit", "runs:read", "outputs:read"],
     })
     sibling_auth = {"Authorization": "Bearer " + sibling["secret"]}
     sibling_upload, _ = call(peer, endpoint + "/uploads", 201, method="POST",
                              body=png, headers={**sibling_auth, **file_headers})
     sibling_body = {"inputs": {"image": {"upload_id": sibling_upload["upload_id"]}}}
-    call(peer, endpoint + "/runs", 202, method="POST", body=sibling_body,
-         headers={**sibling_auth, "Idempotency-Key": token_hex(16)})
+    sibling_run, _ = call(peer, endpoint + "/runs", 202, method="POST", body=sibling_body,
+                          headers={**sibling_auth, "Idempotency-Key": token_hex(16)})
     # Two runs for the original app, one for the sibling, and seven draft tests fill the workflow.
     for _ in range(7):
         call(port, test_path, 202, method="POST", body=trial, headers={**session, "Idempotency-Key": token_hex(16)})
@@ -315,6 +428,25 @@ def verify_workflow(port, peer, session, account, project, stop_worker):
                                    headers={**invoke, **replacement})
     assert replay_after_rotation == replay
     print("PASS application key rotation preserves upload ownership and run replay after revocation")
+
+    pending = next(event for event in events["items"] if event.get("workflow_run_id") == canceled)
+    call(port, hooks + f"/{subscription['id']}" + query, 204, method="DELETE", headers=session)
+    restart_worker()
+    delivery_path = listing + f"/{pending['id']}"
+    until = monotonic() + 5
+    while monotonic() < until:
+        detail, _ = call(port, delivery_path + query, 200, headers=session)
+        if detail["delivery"]["state"] == "dead":
+            break
+        sleep(0.1)
+    else:
+        raise RuntimeError("The restarted worker did not close the revoked delivery")
+    assert detail["delivery"]["last_error"] == "subscription_revoked" and detail["attempts"] == []
+    call(port, delivery_path + "/redrive" + query, 409, method="POST", headers=session)
+    verify_output(peer, sibling_run, sibling_auth, digest, len(png))
+    entries, _ = call(port, listing + query, 200, headers=session)
+    assert all(item.get("workflow_run_id") != sibling_run["id"] for item in entries["items"])
+    print("PASS restarted worker honors subscription revocation before delivering or redriving a queued event")
     print("PASS published workflow contract, upload, digest, replay, conditional polling, cancellation, and app isolation")
 
 
@@ -375,16 +507,24 @@ def rehearse(gateway, admin, directory):
             "account": account, "projects": [project],
         }]}))
         settings.update(TOKENCRAFT_WORKFLOW_TOOL_BINDINGS=str(registry), TOKENCRAFT_CONNECTOR_TOKEN_FIXTURE_DELIVERY=token)
+        receiver = stack.enter_context(webhook_receiver())
+        webhooks = directory / "webhooks.json"
+        webhooks.write_text(json.dumps({"destinations": {"fixture": f"http://{HOST}:{receiver.server_port}/events"}}))
+        settings.update(TOKENCRAFT_DEMO_WEBHOOK_CONFIG=str(webhooks), TOKENCRAFT_DEMO_WEBHOOK_KEY=token_hex(32))
         stack.enter_context(service("api", [gateway], directory, settings, lambda: ready(api_port)))
         peer_port = loopback_port()
         stack.enter_context(service("peer-api", [gateway], directory,
             dict(settings, API_GATEWAY_PORT=str(peer_port), APP_BASE_URL=f"http://localhost:{peer_port}"),
             lambda: ready(peer_port)))
         with ExitStack() as workers:
-            worker_port = loopback_port()
-            workers.enter_context(service("worker", [gateway], directory,
-                dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)), lambda: ready(worker_port)))
-            verify_workflow(api_port, peer_port, session, account, project, workers.close)
+            def start_worker():
+                worker_port = loopback_port()
+                workers.enter_context(service(f"worker-{worker_port}", [gateway], directory,
+                    dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)),
+                    lambda: ready(worker_port)))
+
+            start_worker()
+            verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver)
 
 
 def main():

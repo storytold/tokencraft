@@ -31,6 +31,14 @@ Workflow versions pin the graph. The backend checkpoints runs under database lea
 
 Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).
 
+## Receive terminal events
+
+Copy the app ID from the workflow's endpoint settings. In the same project's **Routing and access → Delivery** settings, select **Workflow app**, choose an operator-configured destination, and enter the app ID. An administrator can also create the project subscription with `workflow_app_id` through the [webhook management API](api-contracts.md#manage-project-webhooks). Each app can have one active subscription. Save its signing secret on the receiver.
+
+The gateway pins the subscription when it admits a published run. Draft tests and runs admitted before registration are excluded. The gateway saves the terminal state and enqueues `workflow.run.succeeded`, `workflow.run.failed`, `workflow.run.canceled`, or `workflow.run.expired` in the same transaction. The event includes the run ID, workflow ID, project ID, version, status, and relative status URL. Use an app key with `runs:read` to fetch the run.
+
+Verify the signature against the raw request body and timestamp with `verify_workflow_webhook` in the [Rust SDK](../sdk/rust/README.md) or `verifyWorkflowWebhook` in the [TypeScript SDK](../sdk/typescript/README.md). Acknowledge promptly and deduplicate using `webhook-id`. Retries and redrives preserve the original event identity and body. Inspect attempts and disable or rotate subscriptions from **Webhooks**.
+
 ## Verify a release
 
 The **Gateway, connector, and SDKs** CI job runs the published workflow against disposable PostgreSQL, separate API and worker processes, and the standard-library delivery pack. From a source checkout with matching gateway and migration binaries and PostgreSQL tools on `PATH`, reproduce the check with `python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli`.

@@ -67,7 +67,7 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-display text-xl font-semibold">Webhooks</h3>
-          <p className="mt-1 text-sm text-muted">Send signed request outcomes to a registered receiver.</p>
+          <p className="mt-1 text-sm text-muted">Send signed request or workflow outcomes to a registered receiver.</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => { setError(""); refresh(); }}>Refresh webhooks</Button>
       </div>
@@ -91,12 +91,17 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
               <li key={subscription.id} className="flex flex-wrap items-start justify-between gap-2 border-t border-border py-3 text-sm">
                 <div className="min-w-0 break-all">
                   <p className="font-medium">{subscription.name}{subscription.revoked_at && " · Revoked"}</p>
-                  <p className="text-muted">{subscription.destination_id}{subscription.client_ref && ` · Client ${subscription.client_ref}`}</p>
+                  <p className="text-muted">
+                    {subscription.destination_id}
+                    {subscription.client_ref && ` · Client ${subscription.client_ref}`}
+                    {subscription.workflow_app_id && ` · Workflow app ${subscription.workflow_app_id}`}
+                  </p>
                   <code className="text-xs text-muted">{subscription.id}</code>
                 </div>
                 {!subscription.revoked_at && <div className="flex flex-wrap items-center gap-2">
-                  <Link className="font-medium text-brand hover:underline" to={`${withProject("/compare", scope.project_id, scope.account_id)}&webhook_subscription_id=${encodeURIComponent(subscription.id)}`}
-                    state={{ webhookClient: subscription.client_ref }}>Try in comparison</Link>
+                  {!subscription.workflow_app_id && <Link className="font-medium text-brand hover:underline"
+                    to={`${withProject("/compare", scope.project_id, scope.account_id)}&webhook_subscription_id=${encodeURIComponent(subscription.id)}`}
+                    state={{ webhookClient: subscription.client_ref }}>Try in comparison</Link>}
                   <Button variant="outline" size="sm" disabled={disabled} onClick={() => {
                     void change(() => webhooksApi.rotate(scope, subscription.id), "Both signing keys are valid for 24 hours.");
                   }}>Rotate signing key</Button>
@@ -119,7 +124,7 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
                 <button type="button" className="flex w-full flex-wrap justify-between gap-2 text-left hover:text-brand"
                   aria-expanded={selected === delivery.id} onClick={() => setSelected(selected === delivery.id ? undefined : delivery.id)}>
                   <span className="min-w-0 break-all"><span className="font-medium">{delivery.event_type}</span>{" "}
-                    <span className="font-mono text-xs text-muted">{delivery.request_id}</span>
+                    <span className="font-mono text-xs text-muted">{delivery.request_id ?? delivery.workflow_run_id}</span>
                   </span>
                   <span>{stateLabels[delivery.state]} · {delivery.attempt_count} {delivery.attempt_count === 1 ? "attempt" : "attempts"}</span>
                 </button>
@@ -144,12 +149,20 @@ function AddSubscription({ destinations, disabled, create }: {
   const [name, setName] = useState("");
   const [target, setTarget] = useState(destinations[0] ?? "");
   const [client, setClient] = useState("");
+  const [eventSource, setEventSource] = useState("request");
+  const [app, setApp] = useState("");
+  const workflow = eventSource === "workflow";
+  const canSubmit = !disabled && Boolean(name.trim() && target && (!workflow || app.trim()));
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!name.trim() || !target || disabled) return;
-    if (await create({ name: name.trim(), destination_id: target, client_ref: client.trim() || null })) {
+    if (!canSubmit) return;
+    if (await create({
+      name: name.trim(), destination_id: target, client_ref: workflow ? null : client.trim() || null,
+      workflow_app_id: workflow ? app.trim() : undefined,
+    })) {
       setName("");
       setClient("");
+      setApp("");
     }
   }
   return (
@@ -162,10 +175,18 @@ function AddSubscription({ destinations, disabled, create }: {
           {destinations.map((id) => <option key={id} value={id}>{id}</option>)}
         </Select>
       </label>
-      <label className="min-w-0 w-full max-w-52 space-y-1 text-sm font-medium">Webhook client reference
-        <Input value={client} maxLength={64} placeholder="Optional" disabled={disabled} onChange={(event) => setClient(event.target.value)} />
+      <label className="min-w-0 w-full max-w-52 space-y-1 text-sm font-medium">Event source
+        <Select value={eventSource} disabled={disabled} onChange={(event) => setEventSource(event.target.value)}>
+          <option value="request">Requests</option>
+          <option value="workflow">Workflow app</option>
+        </Select>
       </label>
-      <Button type="submit" disabled={disabled || !name.trim() || !target}>Create subscription</Button>
+      {workflow ? <label className="min-w-0 w-full max-w-52 space-y-1 text-sm font-medium">Workflow app ID
+        <Input value={app} required maxLength={64} placeholder="wfa_…" disabled={disabled} onChange={(event) => setApp(event.target.value)} />
+      </label> : <label className="min-w-0 w-full max-w-52 space-y-1 text-sm font-medium">Webhook client reference
+        <Input value={client} maxLength={64} placeholder="Optional" disabled={disabled} onChange={(event) => setClient(event.target.value)} />
+      </label>}
+      <Button type="submit" disabled={!canSubmit}>Create subscription</Button>
     </form>
   );
 }
@@ -190,7 +211,10 @@ function DeliveryAttempts({ scope, id, revision, disabled, redrive }: {
     <div className="mt-2 space-y-2 bg-surface2/45 p-3 text-xs">
       <div className="flex flex-wrap items-center gap-3">
         <code className="break-all">{delivery.id}</code>
-        <Link className="font-medium text-brand hover:underline" to={`${withProject(`/dashboard/${scope.account_id}/requests`, scope.project_id)}&request_id=${encodeURIComponent(delivery.request_id)}`}>Open request trace</Link>
+        {delivery.request_id && <Link className="font-medium text-brand hover:underline"
+          to={`${withProject(`/dashboard/${scope.account_id}/requests`, scope.project_id)}&request_id=${encodeURIComponent(delivery.request_id)}`}>Open request trace</Link>}
+        {delivery.workflow_run_id && <Link className="font-medium text-brand hover:underline"
+          to={withProject(`/dashboard/${scope.account_id}/workflows`, scope.project_id)}>Open Workflows</Link>}
       </div>
       {delivery.state === "pending" && <p className="text-muted">Next attempt {date(delivery.available_at)}</p>}
       {delivery.last_error && <p className="text-muted">{delivery.last_error.replaceAll("_", " ")}</p>}

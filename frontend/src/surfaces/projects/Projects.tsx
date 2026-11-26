@@ -71,7 +71,7 @@ export default function Projects({ view = "settings" }: { view?: ProjectView }) 
               {!project.is_default && <ProjectDisclosure title="Project access" description="People with access to this project" defer>
                 <ProjectGrants scope={scope} />
               </ProjectDisclosure>}
-              <ProjectDisclosure title="Delivery" description="Webhook destinations for request events" defer>
+              <ProjectDisclosure title="Delivery" description="Webhooks for requests and workflows" defer>
                 <ProjectWebhooks scope={scope} />
               </ProjectDisclosure>
             </div>

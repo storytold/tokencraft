@@ -12,7 +12,7 @@ pub async fn find_request_delivery<'e, E: PgExecutor<'e>>(
 ) -> sqlx::Result<Option<Delivery>> {
     sqlx::query_as!(
         Delivery,
-        r#"SELECT d.id, d.request_id, r.webhook_subscription_id AS "subscription_id!",
+        r#"SELECT d.id, d.request_id, d.workflow_run_id, r.webhook_subscription_id AS "subscription_id!",
                   d.event_type, d.state, d.occurred_at, d.available_at, d.finished_at,
                   d.attempt_count, d.last_error
            FROM gateway_webhook_deliveries d JOIN gateway_requests r ON r.id = d.request_id

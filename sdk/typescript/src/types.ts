@@ -470,6 +470,24 @@ export interface WebhookEvent {
   data: Record<string, unknown> & { request_id: string };
 }
 
+export type WorkflowWebhookStatus = "succeeded" | "failed" | "canceled" | "expired";
+
+export interface WorkflowWebhookEvent {
+  id: string;
+  schema_version: 1;
+  type: `workflow.run.${WorkflowWebhookStatus}`;
+  occurred_at: string;
+  sequence: number;
+  data: {
+    run_id: string;
+    workflow_id: string;
+    project_id: string;
+    workflow_version: number;
+    status: WorkflowWebhookStatus;
+    fetch_url: string;
+  };
+}
+
 export interface VerifyWebhookOptions {
   now?: number;
   toleranceSeconds?: number;

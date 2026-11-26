@@ -61,6 +61,8 @@ let event = verify_webhook(&headers, &raw_body, &[&signing_secret], WebhookOptio
 handle_event_once(&event.id, &event)?;
 ```
 
+For [workflow terminal events](../../docs/workflows.md#receive-terminal-events), use `verify_workflow_webhook` with the same arguments. Its verified data contains the workflow run ID, terminal state, and relative status URL.
+
 `cargo test --locked -p tokencraft_sdk` runs the loopback HTTP and webhook tests. The restart example uses the disposable gateway described in the [demo guide](../../demo/README.md).
 
 ## Inspect a request

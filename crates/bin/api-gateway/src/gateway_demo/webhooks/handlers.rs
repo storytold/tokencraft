@@ -11,7 +11,7 @@ use db_queries::{
     gateway_webhooks::{self, NewSubscription},
 };
 use enums::AuditEvent;
-use ids::{AccountId, GatewayProjectId, GatewayWebhookDeliveryId, GatewayWebhookSubscriptionId};
+use ids::{AccountId, GatewayProjectId, GatewayWebhookDeliveryId, GatewayWebhookSubscriptionId, WorkflowAppId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -191,6 +191,8 @@ pub(in crate::gateway_demo) struct CreateWebhookSubscription {
     destination_id: String,
     /// Limit deliveries to requests with this client reference.
     client_ref: Option<String>,
+    /// Deliver terminal runs for one workflow application in this project.
+    workflow_app_id: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -215,6 +217,8 @@ pub(in crate::gateway_demo) struct IssuedWebhookSubscription {
          body = IssuedWebhookSubscription),
         (status = 400, description = "Invalid input or unknown destination.",
          content((GatewayError = "application/json"), (String = "text/plain"))),
+        (status = 404, description = "Workflow app unavailable in this project.", body = GatewayError),
+        (status = 409, description = "The workflow app already has an active subscription.", body = GatewayError),
         (status = "default", response = RequestErrorResponse),
     ),
 )]
@@ -230,11 +234,22 @@ pub(in crate::gateway_demo) async fn create(
     let name = validate_name(&input.name)?;
     let client_ref = input.client_ref.as_deref();
     validate_client_ref(client_ref)?;
+    let workflow_app = input.workflow_app_id.as_deref()
+        .map(|value| parse_id::<WorkflowAppId>(value, "workflow app ID"))
+        .transpose()?;
+    if workflow_app.is_some() && client_ref.is_some() {
+        return Err(ApiError::BadRequest("choose either a workflow app or a request client reference".into()));
+    }
     let destination = config
         .destination(&input.destination_id)
         .ok_or_else(|| ApiError::BadRequest("unknown webhook destination".into()))?;
     let id = GatewayWebhookSubscriptionId::generate();
     let mut tx = state.pool.begin().await?;
+    if let Some(app) = &workflow_app {
+        if !gateway_webhooks::workflow_app_exists(&mut *tx, project.scope(), app).await? {
+            return Err(ApiError::NotFound("workflow app not found in this project".into()));
+        }
+    }
     let subscription = gateway_webhooks::create_subscription(
         &mut *tx,
         project.scope(),
@@ -244,9 +259,14 @@ pub(in crate::gateway_demo) async fn create(
             destination_id: &input.destination_id,
             destination_url: destination.as_str(),
             client_ref,
+            workflow_app_id: workflow_app.as_ref(),
         },
     )
-    .await?;
+    .await.map_err(|error| match error {
+        sqlx::Error::Database(db) if db.constraint() == Some("gateway_webhook_active_workflow_app") =>
+            ApiError::Conflict("this workflow app already has an active webhook subscription".into()),
+        other => other.into(),
+    })?;
     audit(
         &mut tx,
         &project.account,

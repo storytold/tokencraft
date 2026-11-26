@@ -109,10 +109,11 @@ export const projectsApi = {
 
 export type WebhookSubscription = {
   id: string; name: string; destination_id: string; client_ref: string | null;
+  workflow_app_id?: string;
   signing_version: number; signing_rotated_at: string | null; revoked_at: string | null;
 };
 export type WebhookDelivery = {
-  id: string; request_id: string; subscription_id: string; event_type: string;
+  id: string; request_id?: string; workflow_run_id?: string; subscription_id: string; event_type: string;
   state: "pending" | "sending" | "delivered" | "dead"; occurred_at: string;
   available_at: string; attempt_count: number; last_error: string | null;
 };
@@ -125,7 +126,7 @@ export const webhooksApi = {
   destinations: (scope: ProjectScope, signal: AbortSignal) => gatewayRequest<string[]>(inProject(scope, "/webhook-destinations"), { signal }),
   subscriptions: (scope: ProjectScope, before: string | undefined, signal: AbortSignal) =>
     gatewayRequest<WebhookPage<WebhookSubscription>>(inProject(scope, "/webhooks", before), { signal }),
-  create: (scope: ProjectScope, input: { name: string; destination_id: string; client_ref: string | null }) =>
+  create: (scope: ProjectScope, input: { name: string; destination_id: string; client_ref: string | null; workflow_app_id?: string }) =>
     gatewayRequest<IssuedWebhook>(inProject(scope, "/webhooks"), write("POST", input)),
   rotate: (scope: ProjectScope, id: string) =>
     gatewayRequest<IssuedWebhook>(inProject(scope, `/webhooks/${encodeURIComponent(id)}/rotate`), { method: "POST" }),

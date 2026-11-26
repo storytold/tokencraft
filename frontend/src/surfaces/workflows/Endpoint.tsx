@@ -140,6 +140,7 @@ export function Endpoint({ scope, workflow, admin, onUpdate }: {
       {keys.map((key) => <article className="wf-key-row" key={key.key_id}>
         <div className="wf-panel-heading"><strong>{key.name}</strong><span className="wf-status">{accessState(key)}</span></div>
         <p className="wf-muted">{key.scopes.map((scope) => permissions[scope]).join(" · ")}</p>
+        <p className="wf-muted">App ID <code>{key.app_id}</code></p>
         <p className="wf-muted"><code>{key.prefix}…</code> · Expires {new Date(key.expires_at).toLocaleDateString()}</p>
         {accessState(key) === "Active" && <div className="wf-actions">
           <button type="button" className="wf-button wf-small" disabled={busy} onClick={() => void doAction(async () => setIssued(

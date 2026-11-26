@@ -13,7 +13,8 @@ pub use error::Error;
 pub use models::*;
 pub use trace::*;
 pub use webhooks::{
-    verify_webhook, VerificationError, VerifiedWebhook, WebhookData, WebhookKind, WebhookOptions,
+    verify_webhook, verify_workflow_webhook, VerificationError, VerifiedWebhook, VerifiedWorkflowWebhook,
+    WebhookData, WebhookKind, WebhookOptions, WorkflowWebhookData, WorkflowWebhookKind, WorkflowWebhookStatus,
 };
 
 fn valid_id(value: &str, prefix: &str) -> bool {
