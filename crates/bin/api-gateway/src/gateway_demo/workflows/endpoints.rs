@@ -344,6 +344,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     let graph = management::decode(definition.clone())?;
     let inputs = graph.resolve_inputs(inputs).map_err(ApiError::BadRequest)?;
     graph.compile().map_err(ApiError::BadRequest)?;
+    args.security.tools.validate(&graph, args.scope.account, args.scope.project)?;
     planner::validate_models(&graph, &args.catalog.current(), args.providers)
         .map_err(ApiError::BadRequest)?;
     if db::count_active_runs(&mut *tx, args.scope).await? >= 10 {
@@ -479,6 +480,8 @@ struct RunView {
     draft_revision: i64,
     created_at: DateTime<Utc>,
     steps: Vec<runner::Step>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    tools: BTreeMap<String, super::tool_execution::StepStatus>,
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     outputs: Option<BTreeMap<String, PublicOutput>>,
@@ -507,6 +510,7 @@ fn published_results(
                     download_url: url(),
                 },
                 Output::Fixture { kind } => PublicOutput::Fixture { kind: *kind },
+                Output::Tool { kind, .. } => PublicOutput::Media { kind: *kind, download_url: url() },
             };
             Some((name.clone(), output))
         })
@@ -580,12 +584,17 @@ pub(super) async fn status(
         status: row.status,
         created_at: row.created_at,
         steps: Vec::new(),
+        tools: BTreeMap::new(),
         error: None,
         outputs,
         execution,
     };
     if let Some(progress) = progress {
         view.steps = progress.steps;
+        view.tools = progress.tools.into_iter().map(|(node, step)| {
+            let status = step.into_status(&view.id, &node);
+            (node, status)
+        }).collect();
         view.error = progress.error;
     }
     if reader.actor.is_none() {
@@ -680,6 +689,7 @@ pub(super) async fn asset(
         .and_then(|source| progress.outputs.get(source))
     {
         Some(Output::Image { request_id } | Output::Video { request_id }) => request_id,
+        Some(Output::Tool { node, .. }) => return super::tool_execution::download(&state.pool, &security, &row, node).await,
         _ => return Err(management::missing()),
     };
     artifacts::download_for_scope(artifacts::ScopedDownload {
@@ -769,6 +779,20 @@ pub(super) async fn contract(
             (format!("{base}/{{run_id}}")): {
                 "parameters": [{ "in":"path", "name":"run_id", "required":true, "schema": { "type": "string" } }],
                 "get": { "operationId":"getWorkflowRun", "responses": {"200":{"description":"Run status and permitted outputs"}, "304":{"description":"Status unchanged"}} }
+            },
+            (format!("{base}/{{run_id}}/outputs/{{name}}")): {
+                "parameters": [
+                    { "in":"path", "name":"run_id", "required":true, "schema": { "type": "string" } },
+                    { "in":"path", "name":"name", "required":true, "schema": { "type": "string" } }
+                ],
+                "get": {
+                    "operationId":"downloadWorkflowOutput",
+                    "description":"Download a named artifact with the outputs:read scope.",
+                    "responses": {
+                        "200":{"description":"Verified artifact in its original media type"},
+                        "404":{"description":"Artifact unavailable in this application or retention window"}
+                    }
+                }
             }
         },
         "x-workflow-example-inputs": example,

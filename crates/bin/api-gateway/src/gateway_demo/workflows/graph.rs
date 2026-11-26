@@ -13,6 +13,7 @@ pub(super) enum Kind {
     Text,
     Image,
     Video,
+    Tool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -22,6 +23,11 @@ pub(super) enum ValueType {
     Integer,
     Image,
     Video,
+    Audio,
+    Media,
+    Metadata,
+    Mesh,
+    Document,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -69,6 +75,28 @@ pub(super) struct Node {
     pub model: String,
     pub max_usd_nanos: i64,
     pub settings: BTreeMap<String, Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<ToolStep>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToolStep {
+    pub binding_revision: String,
+    pub revision: u32,
+    pub inputs: BTreeMap<String, ValueType>,
+    pub output: ValueType,
+    pub parameters: BTreeMap<String, serde_json::Value>,
+}
+
+impl ValueType {
+    pub(super) fn file(self) -> bool {
+        matches!(self, Self::Image | Self::Video | Self::Audio | Self::Mesh | Self::Document)
+    }
+
+    fn accepts(self, source: Self) -> bool {
+        self == source || self == Self::Media && source.file()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -89,13 +117,14 @@ pub(super) enum Output {
     Image { request_id: ids::GatewayRequestId },
     Video { request_id: ids::GatewayRequestId },
     Fixture { kind: ValueType },
+    Tool { node: String, kind: ValueType },
 }
 
 impl Output {
     pub fn value(&self) -> Option<Value> {
         match self {
             Self::Text { text } => Some(Value::Text(text.clone())),
-            Self::Image { .. } | Self::Video { .. } | Self::Fixture { .. } => None,
+            Self::Image { .. } | Self::Video { .. } | Self::Fixture { .. } | Self::Tool { .. } => None,
         }
     }
 }
@@ -157,6 +186,7 @@ impl Kind {
             Self::Text => &[PROMPT, SYSTEM, MAX_OUTPUT],
             Self::Image => &[PROMPT, ASPECT],
             Self::Video => &[PROMPT, ASPECT, DURATION, RESOLUTION, FRAME],
+            Self::Tool => &[],
         }
     }
 
@@ -165,6 +195,7 @@ impl Kind {
             Self::Text => ValueType::Text,
             Self::Image => ValueType::Image,
             Self::Video => ValueType::Video,
+            Self::Tool => ValueType::Media,
         }
     }
 }
@@ -209,8 +240,7 @@ impl Graph {
             if !identifier(&node.id)
                 || node.title.trim().is_empty()
                 || node.title.len() > 100
-                || !super::super::catalog::valid_identifier(&node.model)
-                || node.model == "auto"
+                || !node.valid_model()
                 || !(0..=MAX_COST).contains(&node.max_usd_nanos)
                 || nodes.insert(node.id.as_str(), node).is_some()
             {
@@ -230,6 +260,20 @@ impl Graph {
         let mut dependencies = BTreeMap::new();
         for node in &self.nodes {
             let mut required = BTreeSet::new();
+            if let Some(tool) = &node.tool {
+                for (slot, kind) in &tool.inputs {
+                    let Some(binding @ Binding::Step { .. }) = node.settings.get(slot) else {
+                        return Err(format!("{} needs a media step for {slot}.", node.title));
+                    };
+                    self.validate_binding(binding, *kind, &nodes, &mut required)
+                        .map_err(|error| format!("{} · {slot}. {error}", node.title))?;
+                }
+                if node.settings.len() != tool.inputs.len() {
+                    return Err(format!("{} has an unknown input slot.", node.title));
+                }
+                dependencies.insert(node.id.as_str(), required);
+                continue;
+            }
             for setting in node.kind.settings() {
                 match node.settings.get(setting.name) {
                     Some(binding) => {
@@ -302,7 +346,7 @@ impl Graph {
         let step = |step: &'a str, required: &mut BTreeSet<&'a str>| {
             if nodes
                 .get(step)
-                .is_some_and(|node| node.kind.output() == kind)
+                .is_some_and(|node| kind.accepts(node.output()))
             {
                 required.insert(step);
                 Ok(())
@@ -365,7 +409,7 @@ impl Graph {
         self.nodes
             .iter()
             .find(|node| node.id == step)
-            .map(|node| node.kind.output())
+            .map(Node::output)
     }
 }
 
@@ -424,6 +468,29 @@ fn template<'a>(
 }
 
 impl Node {
+    fn valid_model(&self) -> bool {
+        let identifier = super::super::catalog::valid_identifier;
+        match (&self.tool, self.kind) {
+            (Some(tool), Kind::Tool) => {
+                self.max_usd_nanos == 0 && self.model.len() <= 96
+                    && self.model.split('.').all(identifier)
+                    && tool.revision > 0
+                    && tool.binding_revision.len() == 64
+                    && tool.binding_revision.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                    && (1..=8).contains(&tool.inputs.len())
+                    && tool.inputs.iter().all(|(name, kind)| super::graph::identifier(name)
+                        && (kind.file() || *kind == ValueType::Media))
+                    && (tool.output.file() || tool.output == ValueType::Metadata)
+            }
+            (None, Kind::Tool) | (Some(_), _) => false,
+            (None, _) => identifier(&self.model) && self.model != "auto",
+        }
+    }
+
+    pub(super) fn output(&self) -> ValueType {
+        self.tool.as_ref().map_or_else(|| self.kind.output(), |tool| tool.output)
+    }
+
     pub(super) fn dependencies(&self) -> Vec<String> {
         let mut sources = BTreeSet::new();
         for binding in self.settings.values() {

@@ -1,5 +1,5 @@
-import { canWire } from "./wiring";
-import type { Binding, Capabilities, Graph, PrimitiveKind, Setting, Step, ValueKind } from "./types";
+import { artifactKind, canWire } from "./wiring";
+import type { Binding, Capabilities, Graph, PrimitiveKind, Setting, Step, ToolBinding, ToolOperation } from "./types";
 
 export const EMPTY: Graph = { schema: 1, title: "Untitled workflow", inputs: {}, nodes: [], outputs: {}, max_usd_nanos: 0 };
 export const usd = (nanos: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 }).format(nanos / 1e9);
@@ -26,6 +26,19 @@ export function addStep(graph: Graph, kind: PrimitiveKind, capabilities: Capabil
     nodes: [...graph.nodes, { id, kind, settings, model: model?.id ?? "", title: primitive?.label ?? kind, max_usd_nanos: cap }] };
 }
 
+export function addTool(graph: Graph, binding: ToolBinding, operation: ToolOperation): Graph {
+  const id = nextId("tool", graph.nodes.map((step) => step.id));
+  const step: Step = {
+    id, title: operation.label, kind: "tool", model: operation.id, max_usd_nanos: 0, settings: {},
+    tool: {
+      binding_revision: binding.revision, revision: operation.revision, output: operation.output.kind,
+      inputs: Object.fromEntries(Object.entries(operation.inputs).map(([name, input]) => [name, input.kind])),
+      parameters: {},
+    },
+  };
+  return { ...graph, nodes: [...graph.nodes, step] };
+}
+
 export function updateStep(graph: Graph, node: Step): Graph {
   return { ...graph, nodes: graph.nodes.map((item) => item.id === node.id ? node : item) };
 }
@@ -35,10 +48,6 @@ export function setBinding(step: Step, setting: Setting, binding?: Binding): Ste
   if (binding) settings[setting.name] = binding;
   else delete settings[setting.name];
   return { ...step, settings };
-}
-
-function mediaValue(kind: ValueKind) {
-  return kind === "image" || kind === "video";
 }
 
 export function defaultBinding(source: Binding["source"], setting: Setting, graph: Graph, step: Step): Binding {
@@ -53,7 +62,7 @@ export function defaultBinding(source: Binding["source"], setting: Setting, grap
 }
 
 export function bindingModes(setting: Setting): { value: Binding["source"]; label: string }[] {
-  if (mediaValue(setting.kind)) return [{ value: "step", label: "Connected step" }];
+  if (artifactKind(setting.kind) || setting.kind === "media") return [{ value: "step", label: "Connected step" }];
   return [
     { value: "fixed", label: "Fixed value" },
     { value: "request", label: "Request input" },

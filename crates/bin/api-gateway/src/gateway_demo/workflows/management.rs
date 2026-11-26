@@ -294,6 +294,7 @@ pub(super) struct PublishInput {
 pub(super) async fn publish(
     State(state): State<AppState>,
     auth: AuthContext,
+    Extension(security): Extension<Arc<super::Security>>,
     Query(query): Query<ConsoleQuery>,
     Extension(catalog): Extension<Arc<CatalogStore>>,
     Extension(providers): Extension<Option<Arc<ProviderRuntime>>>,
@@ -319,6 +320,7 @@ pub(super) async fn publish(
     }
     let graph = decode(row.draft.clone())?;
     graph.compile().map_err(ApiError::BadRequest)?;
+    security.tools.validate(&graph, scope.account, scope.project)?;
     planner::validate_models(&graph, &catalog.current(), providers.as_deref())
         .map_err(ApiError::BadRequest)?;
     if !db::has_passed_test(&mut *tx, scope, row.revision).await? {

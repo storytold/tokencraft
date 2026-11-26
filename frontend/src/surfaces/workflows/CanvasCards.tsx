@@ -3,7 +3,7 @@ import type { DragEvent, ReactNode } from "react";
 
 import { modelName, primitiveIcons } from "./ComponentLibrary";
 import type { Graph, Primitive, Step, ValueKind } from "./types";
-import { canWire, inputPort, outputPort, readWire, sourceName, sourcePort, wireSources,
+import { canWire, inputPort, outputPort, readWire, sourceKind, sourceName, sourcePort, stepOutput, stepSettings, wireSources,
   MOVE_TRANSFER, WIRE_TRANSFER, type WireSource, type WireTarget } from "./wiring";
 
 type Wiring = {
@@ -15,7 +15,10 @@ type Wiring = {
   inspect: (id?: string, field?: string) => void;
 };
 
-const kindLabel: Record<ValueKind, string> = { text: "Text", integer: "Integer", image: "Image", video: "Video" };
+const kindLabel: Record<ValueKind, string> = {
+  text: "Text", integer: "Integer", image: "Image", video: "Video", audio: "Audio", media: "Media",
+  metadata: "Metadata", mesh: "Mesh", document: "Document",
+};
 
 function SourcePort({ wire, source, kind, label, details }: {
   wire: Wiring; source: WireSource; kind: ValueKind; label: string; details?: string;
@@ -105,14 +108,15 @@ export function StepCard({ step, primitive, wire, selected, spatial }: {
   step: Step; primitive?: Primitive; wire: Wiring; selected: boolean; spatial: boolean;
 }) {
   const Icon = primitiveIcons[step.kind];
-  const settings = primitive?.settings ?? [];
+  const settings = stepSettings(step, primitive?.settings);
+  const output = stepOutput(step);
   const shown = (setting: Primitive["settings"][number]) => setting.required
     || wireSources(step.settings[setting.name]).length > 0;
   const visible = settings.filter(shown);
   const optional = settings.filter((setting) => !shown(setting));
   return <>
     <Header icon={<span className={`wf-node-icon wf-node-${step.kind}`}><Icon size={16} /></span>}
-      title={step.title} subtitle={modelName(step.model)} selected={selected} onClick={() => wire.inspect(step.id)}
+      title={step.title} subtitle={step.kind === "tool" ? step.model : modelName(step.model)} selected={selected} onClick={() => wire.inspect(step.id)}
       move={spatial ? (event) => {
         const bounds = event.currentTarget.getBoundingClientRect();
         event.dataTransfer.setData(MOVE_TRANSFER, JSON.stringify({
@@ -128,8 +132,8 @@ export function StepCard({ step, primitive, wire, selected, spatial }: {
       </details>}
     </div>
     <footer className="wf-node-result">
-      <SourcePort wire={wire} source={{ source: "step", step: step.id }}
-        kind={primitive?.output ?? step.kind} label={`${step.title} output`} details={kindLabel[step.kind]} />
+      {output && <SourcePort wire={wire} source={{ source: "step", step: step.id }}
+        kind={output} label={`${step.title} output`} details={kindLabel[output]} />}
     </footer>
   </>;
 }
@@ -142,7 +146,7 @@ export function OutputCard({ wire, selected }: { wire: Wiring; selected: boolean
       onClick={() => wire.inspect()} />
     <div className="wf-node-ports">
       {outputs.map(([name, id]) => {
-        const kind = wire.graph.nodes.find((node) => node.id === id)?.kind;
+        const kind = sourceKind(wire.graph, { source: "step", step: id });
         return <button className="wf-port wf-port-in" key={name} type="button" data-kind={kind}
           data-wire-port={outputPort(name)} data-connected={!!kind} data-ready={wire.source?.source === "step" || undefined}
           aria-label={`Wire to response · ${name}`}

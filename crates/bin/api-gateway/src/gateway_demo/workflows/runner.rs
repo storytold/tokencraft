@@ -19,8 +19,8 @@ use super::super::quote::{QuoteInput, Workload};
 use super::super::requests::{
     self, AdmissionInput, NativeProviderResult, QuoteSelection, RequestStatus,
 };
-use super::graph::{Binding, InputValues, Kind, Node, Output, Value};
-use super::management;
+use super::graph::{Binding, InputValues, Kind, Node, Output, Value, ValueType};
+use super::{management, tool_execution};
 use super::Security;
 use crate::error::{ApiError, ApiResult};
 
@@ -44,6 +44,8 @@ pub(super) struct State {
     pub inputs: InputValues,
     pub outputs: BTreeMap<String, Output>,
     pub steps: Vec<Step>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, tool_execution::Progress>,
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_node: Option<String>,
@@ -55,6 +57,7 @@ impl State {
             inputs,
             outputs: BTreeMap::new(),
             steps: Vec::new(),
+            tools: BTreeMap::new(),
             error: None,
             failed_node: None,
         }
@@ -138,6 +141,34 @@ async fn advance(runtime: &Runtime) -> ApiResult<()> {
         return checkpoint(runtime, &row, state, "succeeded", 0).await;
     };
 
+    if node.kind == Kind::Tool {
+        return match tool_execution::advance(runtime, &row, node, &mut state).await {
+            Ok(Some(artifact)) => {
+                let content = state.seal(&runtime.security, &row.id)?;
+                let mut tx = runtime.pool.begin().await?;
+                if db::lock_active_run(&mut *tx, &row.id, row.lease).await?.is_none() {
+                    return Ok(());
+                }
+                db::insert_tool_artifact(&mut *tx, &row.id, &node.id, &artifact).await?;
+                db::checkpoint_run(&mut *tx, db::Checkpoint {
+                    id: &row.id, lease: row.lease, status: "running", content: &content, delay_seconds: 0,
+                }).await?;
+                tx.commit().await?;
+                Ok(())
+            }
+            Ok(None) => checkpoint(runtime, &row, state, "running", 1).await,
+            Err(ApiError::ServiceUnavailable(_)) => {
+                if let Some(step) = state.tools.get_mut(&node.id) {
+                    step.status = "reconciling".into();
+                }
+                checkpoint(runtime, &row, state, "reconciling", 3).await
+            }
+            Err(ApiError::Conflict(_)) => Ok(()),
+            Err(error @ ApiError::Internal(_)) => Err(error),
+            Err(_) => fail(runtime, &row, state, &node.id, "tool_step_failed").await,
+        };
+    }
+
     if let Some(step) = state.steps.last_mut().filter(|step| step.node == node.id) {
         let child = requests::get(&runtime.pool, scope(&row), &step.request).await?;
         match child.status {
@@ -211,6 +242,10 @@ async fn fail(
 ) -> ApiResult<()> {
     state.error = Some(error.into());
     state.failed_node = Some(node.to_owned());
+    if let Some(step) = state.tools.get_mut(node) {
+        step.status = "failed".into();
+        step.finished_at = Some(Utc::now());
+    }
     state.inputs.clear();
     checkpoint(runtime, row, state, "failed", 0).await
 }
@@ -249,6 +284,7 @@ async fn child_output(
             Kind::Text => Output::Text {
                 text: "Simulated model output.".into(),
             },
+            Kind::Tool => return Err(unavailable()),
             Kind::Image | Kind::Video => Output::Fixture {
                 kind: node.kind.output(),
             },
@@ -316,6 +352,7 @@ async fn submit(
 
     let mut messages = Vec::new();
     let workload = match node.kind {
+        Kind::Tool => return Err(unavailable()),
         Kind::Text => {
             if node.settings.contains_key("system") {
                 messages.push(Message::plain(
@@ -349,7 +386,7 @@ async fn submit(
             Some(Output::Fixture {
                 kind: super::graph::ValueType::Image,
             }) if fixture => {}
-            Some(Output::Image { request_id }) if !fixture => {
+            Some(output @ (Output::Image { .. } | Output::Tool { kind: ValueType::Image, .. })) if !fixture => {
                 let provider = runtime.providers.as_deref();
                 pin = catalog
                     .offers
@@ -364,14 +401,19 @@ async fn submit(
                         "choose a model binding that accepts a private image".into(),
                     ));
                 }
-                let (bytes, media_type, _) = artifacts::read_verified(artifacts::ScopedDownload {
-                    pool: &runtime.pool,
-                    scope: scope(row),
-                    runtime: provider,
-                    request: request_id,
-                    slot: 0,
-                })
-                .await?;
+                let (bytes, media_type, _) = match output {
+                    Output::Image { request_id } => artifacts::read_verified(artifacts::ScopedDownload {
+                        pool: &runtime.pool,
+                        scope: scope(row),
+                        runtime: provider,
+                        request: request_id,
+                        slot: 0,
+                    }).await?,
+                    Output::Tool { node, .. } => tool_execution::read_artifact(
+                        &runtime.pool, &runtime.security, row, node,
+                    ).await?,
+                    _ => return Err(unavailable()),
+                };
                 if media_type != artifacts::PNG || bytes.len() > artifacts::MAX_BYTES {
                     return Err(ApiError::BadRequest(
                         "the first frame must be a bounded PNG".into(),

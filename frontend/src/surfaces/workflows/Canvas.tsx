@@ -6,7 +6,7 @@ import { BOARD_LIMIT, CARD_ROW, CARD_WIDTH, loadPositions, placeCards, type Posi
 import { ComponentLibrary, type ComponentChoice } from "./ComponentLibrary";
 import { Connections } from "./Connections";
 import { ContractEditor } from "./ContractEditor";
-import { addStep, nextId, setBinding, updateStep, usd } from "./editor";
+import { addStep, addTool, nextId, setBinding, updateStep, usd } from "./editor";
 import { StepInspector } from "./StepInspector";
 import type { Capabilities, Graph } from "./types";
 import { canWire, COMPONENT_TRANSFER, MOVE_TRANSFER, sourceKind, sourceName, sourcePort, type WireSource, type WireTarget } from "./wiring";
@@ -68,9 +68,18 @@ export function Canvas({ graph, capabilities, workflowId, onChange }: {
   }
 
   function add(choice: ComponentChoice, position?: Position) {
-    if (graph.nodes.length >= 20 || !capabilities.primitives.some((primitive) => primitive.kind === choice.kind)) return;
-    if (choice.model && !capabilities.models.some((model) => model.kind === choice.kind && model.id === choice.model)) return;
-    const next = addStep(graph, choice.kind, capabilities, choice.model);
+    if (graph.nodes.length >= 20) return;
+    let next: Graph;
+    if (choice.kind === "tool") {
+      const binding = capabilities.tools?.find((item) => item.revision === choice.binding);
+      const operation = binding?.manifest.tools.find((item) => item.id === choice.model && item.revision === choice.revision);
+      if (!binding || !operation) return;
+      next = addTool(graph, binding, operation);
+    } else {
+      if (!capabilities.primitives.some((primitive) => primitive.kind === choice.kind)) return;
+      if (choice.model && !capabilities.models.some((model) => model.kind === choice.kind && model.id === choice.model)) return;
+      next = addStep(graph, choice.kind, capabilities, choice.model);
+    }
     const added = next.nodes[next.nodes.length - 1];
     if (position) setPositions((previous) => ({ ...previous, [added.id]: position }));
     inspect(added.id);
@@ -206,7 +215,7 @@ export function Canvas({ graph, capabilities, workflowId, onChange }: {
         </div>
       </div>
       <div className="wf-canvas-footer">
-        <span>{graph.nodes.length} model {graph.nodes.length === 1 ? "step" : "steps"}</span>
+        <span>{graph.nodes.length} {graph.nodes.length === 1 ? "step" : "steps"}</span>
         <span className={cap > graph.max_usd_nanos ? "wf-error" : ""}>{usd(cap)} allocated</span>
         <label>Run cap (USD) <input aria-label="Run spending cap (USD)" type="number" min="0" max="100" step="0.000001"
           value={graph.max_usd_nanos / 1e9} onChange={(event) => onChange({

@@ -1,5 +1,5 @@
 import { gatewayRequest, type ProjectScope } from "@/lib/gateway";
-import type { AppKey, Capabilities, Graph, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, Scalar, Workflow, WorkflowSummary } from "./types";
+import type { AppKey, Capabilities, Graph, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, Scalar, ToolBinding, Workflow, WorkflowSummary } from "./types";
 
 const scopeSuffix = (scope: ProjectScope) => `?account_id=${encodeURIComponent(scope.account_id)}`;
 const projectRoot = (scope: ProjectScope) => `/v1/projects/${encodeURIComponent(scope.project_id)}`;
@@ -15,6 +15,8 @@ function write(body: object, method = "POST", extra?: HeadersInit): RequestInit 
 
 export const workflowApi = {
   capabilities: (signal?: AbortSignal) => gatewayRequest<Capabilities>("/v1/workflows/capabilities", { signal }),
+  tools: (scope: ProjectScope, signal?: AbortSignal) =>
+    gatewayRequest<ToolBinding[]>(projectRoot(scope) + "/workflow-tools" + scopeSuffix(scope), { signal }),
   plan: (intent: string, useAdvisor: boolean, signal: AbortSignal) =>
     (useAdvisor
       ? gatewayRequest<{ primitives: ProposedStep[] }>("/v1/model-advisor/workflow-plan", { ...write({ intent }), signal })

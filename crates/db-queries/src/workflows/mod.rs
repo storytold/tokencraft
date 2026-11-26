@@ -163,3 +163,6 @@ pub use insert_key::*;
 
 mod revoke_key;
 pub use revoke_key::*;
+
+mod tool_artifact;
+pub use tool_artifact::*;

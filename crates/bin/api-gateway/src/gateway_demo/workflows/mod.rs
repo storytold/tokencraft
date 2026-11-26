@@ -19,6 +19,7 @@ mod management;
 mod planner;
 mod runner;
 mod tool_plugins;
+mod tool_execution;
 
 pub(super) struct Security {
     payloads: SealedBytes,

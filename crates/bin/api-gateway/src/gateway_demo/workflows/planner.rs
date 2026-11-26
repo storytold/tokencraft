@@ -106,6 +106,9 @@ pub(super) fn validate_models(
 ) -> Result<(), String> {
     let models = models(catalog, runtime);
     for node in &graph.nodes {
+        if node.kind == Kind::Tool {
+            continue;
+        }
         let model = models
             .iter()
             .find(|model| model.id == node.model && model.kind == node.kind)
@@ -231,8 +234,10 @@ pub(super) fn plan(
                 Kind::Text => 50_000_000,
                 Kind::Image => 250_000_000,
                 Kind::Video => 1_000_000_000,
+                Kind::Tool => 0,
             },
             settings,
+            tool: None,
         });
     }
     let title = if nodes.len() == 1 {
@@ -262,6 +267,7 @@ fn label(kind: Kind) -> &'static str {
         Kind::Text => "text",
         Kind::Image => "image",
         Kind::Video => "video",
+        Kind::Tool => "tool",
     }
 }
 

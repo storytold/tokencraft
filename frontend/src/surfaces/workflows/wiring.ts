@@ -20,7 +20,24 @@ export function wireSources(binding: Binding | undefined): WireSource[] {
 }
 
 export function sourceKind(graph: Graph, source: WireSource): ValueKind | undefined {
-  return source.source === "request" ? graph.inputs[source.field]?.kind : graph.nodes.find((node) => node.id === source.step)?.kind;
+  if (source.source === "request") return graph.inputs[source.field]?.kind;
+  const node = graph.nodes.find((item) => item.id === source.step);
+  return node && stepOutput(node);
+}
+
+export function stepOutput(step: Step): ValueKind | undefined {
+  return step.kind === "tool" ? step.tool?.output : step.kind;
+}
+
+export function stepSettings(step: Step, settings: Setting[] = []): Setting[] {
+  if (!step.tool) return settings;
+  return Object.entries(step.tool.inputs).map(([name, kind]) => ({
+    name, kind, required: true, label: name.replaceAll("_", " "),
+  }));
+}
+
+export function artifactKind(kind: ValueKind | undefined) {
+  return kind === "image" || kind === "video" || kind === "audio" || kind === "mesh" || kind === "document";
 }
 
 export function sourceName(graph: Graph, source: WireSource) {
@@ -28,7 +45,8 @@ export function sourceName(graph: Graph, source: WireSource) {
 }
 
 export function canWire(graph: Graph, source: WireSource, { step, setting }: WireTarget): boolean {
-  if (sourceKind(graph, source) !== setting.kind) return false;
+  const kind = sourceKind(graph, source);
+  if (kind !== setting.kind && !(setting.kind === "media" && artifactKind(kind))) return false;
   if (source.source === "request") return true;
   const seen = new Set<string>();
   const steps = new Map(graph.nodes.map((node) => [node.id, node]));

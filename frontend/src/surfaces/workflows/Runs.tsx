@@ -36,7 +36,7 @@ export function TestDialog({ graph, onClose, onRun }: {
       try { await onRun(inputs, intent.current.key); }
       catch (failure) { setError(errorMessage(failure)); setBusy(false); }
     }}>
-      <p className="wf-muted">Runs the saved draft with the selected models. The maximum spend is {usd(graph.max_usd_nanos)}.</p>
+      <p className="wf-muted">Runs the saved draft with the selected steps. The maximum spend is {usd(graph.max_usd_nanos)}.</p>
       {inputs.filter(([, input]) => input.default === null).map(field)}
       {optional.length > 0 && <details className="wf-disclosure">
         <summary>Optional inputs <span>{optional.length}</span></summary>
@@ -55,11 +55,17 @@ export function Status({ status }: { status: RunSummary["status"] }) {
 function RunDetails({ run, graph, onCancel }: { run: Run; graph: Graph; onCancel: () => Promise<void> }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const steps = [
+    ...run.steps.map((step) => ({ node: step.node, status: step.status, detail: step.request })),
+    ...Object.entries(run.tools ?? {}).map(([node, step]) => ({
+      node, status: step.status, detail: step.request_id,
+    })),
+  ];
   return <div className="wf-panel wf-stack">
     <div className="wf-panel-heading"><h3>Run timeline</h3><Status status={run.status} /></div>
     <div className="wf-muted">{run.workflow_version === null ? `Draft ${run.draft_revision}` : `Version ${run.workflow_version}`}</div>
-    {run.steps.length > 0 && <ol className="wf-timeline">{run.steps.map((step) =>
-      <li key={step.request}><span>{graph.nodes.find((item) => item.id === step.node)?.title ?? step.node}<small>{step.request}</small></span>
+    {steps.length > 0 && <ol className="wf-timeline">{steps.map((step) =>
+      <li key={step.node}><span>{graph.nodes.find((item) => item.id === step.node)?.title ?? step.node}<small>{step.detail}</small></span>
         <span>{step.status.replaceAll("_", " ")}</span></li>)}</ol>}
     {run.error && <p className="wf-error" role="alert">{run.error.replaceAll("_", " ")}</p>}
     {run.outputs && <div className="wf-stack"><h4>Outputs</h4>

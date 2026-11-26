@@ -67,9 +67,10 @@ pub(super) async fn read(
         .map(|(node, digest)| {
             let request = requests.get(digest);
             let step = steps.iter().find(|step| step.node == node.id);
+            let tool = progress.and_then(|state| state.tools.get(&node.id));
             let failed = progress.and_then(|state| state.failed_node.as_deref())
                 == Some(node.id.as_str());
-            let status = match (failed, step.map(|step| step.status.as_str())) {
+            let status = match (failed, step.map(|step| step.status.as_str()).or_else(|| tool.map(|step| step.status.as_str()))) {
                 (true, _) | (_, Some("failed")) => "failed",
                 (_, Some("succeeded")) => "succeeded",
                 (_, Some("reconciling")) if active => "reconciling",
@@ -88,8 +89,8 @@ pub(super) async fn read(
                 dependencies: node.dependencies(),
                 status,
                 request: request.map(|(id, _, _)| id.clone()).or_else(|| step.map(|step| step.request.as_str().to_owned())),
-                admitted_at: request.map(|(_, start, _)| *start),
-                finished_at: request.and_then(|(_, _, end)| *end),
+                admitted_at: request.map(|(_, start, _)| *start).or_else(|| tool.map(|progress| progress.admitted_at)),
+                finished_at: request.and_then(|(_, _, end)| *end).or_else(|| tool.and_then(|progress| progress.finished_at)),
             }
         })
         .collect();

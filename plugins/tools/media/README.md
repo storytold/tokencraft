@@ -68,4 +68,4 @@ This is the job submission shape for a trim operation. Supply the digest and len
 }
 ```
 
-The runner uses the existing queue's accepted receipt, lookup, polling, and artifact response formats. Tool input staging and output discovery extend the generation-only contract. The current gateway release can run its bundled generation connector independently. The media runner requires the dedicated tool binding and workflow integration before it appears in the TokenCraft console.
+The runner uses the existing queue's accepted receipt, lookup, polling, and artifact response formats. To use it in TokenCraft workflows, follow the [gateway binding setup](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway). The runner supports files up to 64 MiB per slot when called directly. TokenCraft workflows impose a 32 MiB limit per input and output for the gateway handoff.

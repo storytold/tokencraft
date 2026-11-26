@@ -44,6 +44,7 @@ const GatewayRequests = lazy(() => import("@/surfaces/dashboard/GatewayRequests"
 const GatewaySetup = lazy(() => import("@/surfaces/dashboard/GatewaySetup"));
 const Providers = lazy(() => import("@/surfaces/dashboard/Providers"));
 const Projects = lazy(() => import("@/surfaces/projects/Projects"));
+const Workflows = lazy(() => import("@/surfaces/workflows/WorkflowsPage"));
 const Usage = lazy(() => import("@/surfaces/dashboard/Usage"));
 const Exports = lazy(() => import("@/surfaces/dashboard/Exports"));
 const Billing = lazy(() => import("@/surfaces/dashboard/Billing"));
@@ -178,6 +179,7 @@ export default function App() {
           {demoEnabled && <Route path="/dashboard/:accountId?/usage" element={<Usage />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/exports" element={<LegacyExportsRoute />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/projects" element={<Projects />} />}
+          {demoEnabled && <Route path="/dashboard/:accountId?/workflows" element={<Workflows />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/providers" element={<Providers />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/providers/operations" element={<Providers operations />} />}
           {demoEnabled && <Route path="/dashboard/:accountId?/projects/keys" element={<Projects view="keys" />} />}

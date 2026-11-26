@@ -12,6 +12,7 @@ use reqwest::{header, Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::graph::{Graph, Node, ValueType};
 use super::management::{ConsoleQuery, Project};
 use super::Security;
 use crate::{error::{ApiError, ApiResult}, middleware::AuthContext, state::AppState};
@@ -48,13 +49,14 @@ struct BindingConfig {
 #[derive(Default)]
 pub(super) struct Bindings(BTreeMap<String, Binding>);
 
-struct Binding {
+pub(super) struct Binding {
     name: String,
     digest: String,
     account: AccountId,
     projects: BTreeSet<GatewayProjectId>,
     drain_only: bool,
     manifest: Value,
+    parsed: Manifest,
     origin: Url,
     authorization: header::HeaderValue,
     client: Client,
@@ -70,7 +72,7 @@ struct Manifest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Tool {
+pub(super) struct Tool {
     id: String,
     revision: u32,
     label: String,
@@ -161,6 +163,51 @@ impl Bindings {
     }
 }
 
+impl Bindings {
+    pub(super) fn validate(&self, graph: &Graph, account: &AccountId, project: &GatewayProjectId) -> ApiResult<()> {
+        for node in &graph.nodes {
+            if node.tool.is_some() {
+                self.select(node, account, project, false)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn select(
+        &self, node: &Node, account: &AccountId, project: &GatewayProjectId, in_flight: bool,
+    ) -> ApiResult<(&Binding, &Tool)> {
+        let invalid = || ApiError::BadRequest(format!("{} needs a tool binding and operation approved for this project", node.title));
+        let call = node.tool.as_ref().ok_or_else(invalid)?;
+        let binding = self.0.values().find(|entry| {
+            &entry.account == account && entry.projects.contains(project)
+                && entry.digest == call.binding_revision && (in_flight || !entry.drain_only)
+        }).ok_or_else(invalid)?;
+        let tool = binding.parsed.tools.iter().find(|tool| {
+            tool.id == node.model && tool.revision == call.revision
+        }).ok_or_else(invalid)?;
+        if call.output != tool.output.kind.value_type() || tool.inputs.len() != call.inputs.len()
+            || tool.inputs.iter().any(|(name, input)| call.inputs.get(name) != Some(&input.kind.value_type()))
+            || tool.parameters.required.iter().any(|name| !call.parameters.contains_key(name))
+            || call.parameters.iter().any(|(name, value)| {
+                tool.parameters.properties.get(name).is_none_or(|constraint| !constraint.matches(value))
+            })
+        {
+            return Err(ApiError::BadRequest(format!("{} must match the reviewed tool's inputs, output, and parameters", node.title)));
+        }
+        Ok((binding, tool))
+    }
+}
+
+impl Tool {
+    pub(super) fn accepts_source(&self, slot: &str, mime: &str) -> bool {
+        self.inputs.get(slot).is_some_and(|input| input.kind.accepts_type(mime))
+    }
+
+    pub(super) fn accepts_result(&self, mime: &str) -> bool {
+        self.output.content_types.contains(mime)
+    }
+}
+
 impl BindingConfig {
     fn build(self, location: &Path) -> anyhow::Result<Binding> {
         let origin = Url::parse(&self.origin).context("invalid workflow tool origin")?;
@@ -180,7 +227,7 @@ impl BindingConfig {
         let mut authorization = header::HeaderValue::from_str(&format!("Bearer {credential}"))?;
         authorization.set_sensitive(true);
         let bytes = bounded_file(&location.join(self.manifest), MAX_MANIFEST)?;
-        let manifest = checked_manifest(&bytes)?;
+        let (manifest, parsed) = checked_manifest(&bytes)?;
         let canonical = serde_json::to_string(&manifest)?;
         let identity = digest(format!(
             "workflow_tool/v1/{}/{}/{}/{}",
@@ -195,17 +242,17 @@ impl BindingConfig {
             .build()?;
         Ok(Binding {
             name: self.name, digest: identity, account: self.account, projects: self.projects,
-            drain_only: self.drain_only, manifest, origin, authorization, client,
+            drain_only: self.drain_only, manifest, parsed, origin, authorization, client,
         })
     }
 }
 
-fn checked_manifest(bytes: &[u8]) -> anyhow::Result<Value> {
+fn checked_manifest(bytes: &[u8]) -> anyhow::Result<(Value, Manifest)> {
     let manifest: Value = serde_json::from_slice(bytes).context("read workflow tool manifest")?;
     // Keep JSON numbers in the JSON value representation before interpreting the tagged schema.
     let typed: Manifest = serde_json::from_value(manifest.clone()).context("validate workflow tool manifest")?;
     typed.validate()?;
-    Ok(manifest)
+    Ok((manifest, typed))
 }
 
 impl Manifest {
@@ -245,7 +292,21 @@ impl Manifest {
 }
 
 impl MediaKind {
+    fn value_type(self) -> ValueType {
+        match self {
+            Self::Image => ValueType::Image, Self::Video => ValueType::Video,
+            Self::Audio => ValueType::Audio, Self::Media => ValueType::Media,
+            Self::Metadata => ValueType::Metadata, Self::Mesh => ValueType::Mesh,
+            Self::Document => ValueType::Document,
+        }
+    }
+
     fn accepts(self, values: &BTreeSet<String>) -> bool {
+        self.value_type() != ValueType::Media && !values.is_empty()
+            && values.iter().all(|value| self.accepts_type(value))
+    }
+
+    fn accepts_type(self, value: &str) -> bool {
         let allowed: &[&str] = match self {
             Self::Image => &["image/png", "image/jpeg", "image/webp", "image/gif"],
             Self::Video => &["video/mp4", "video/webm", "video/quicktime"],
@@ -253,9 +314,10 @@ impl MediaKind {
             Self::Metadata => &["application/json"],
             Self::Mesh => &["model/gltf-binary"],
             Self::Document => &["application/pdf", "text/plain", "text/vtt"],
-            Self::Media => &[],
+            Self::Media => return [Self::Image, Self::Video, Self::Audio, Self::Mesh, Self::Document]
+                .into_iter().any(|kind| kind.accepts_type(value)),
         };
-        !values.is_empty() && values.iter().all(|value| allowed.contains(&value.as_str()))
+        allowed.contains(&value)
     }
 }
 
@@ -265,6 +327,16 @@ fn slot_name(value: &str) -> bool {
 }
 
 impl Constraint {
+    fn matches(&self, value: &Value) -> bool {
+        match self {
+            Self::Integer { minimum, maximum, multiple_of, .. } => value.as_i64().is_some_and(|number| {
+                (*minimum..=*maximum).contains(&number) && multiple_of.is_none_or(|stride| number % stride == 0)
+            }),
+            Self::Number { minimum, maximum, .. } => value.as_f64().is_some_and(|number| (*minimum..=*maximum).contains(&number)),
+            Self::String { choices, .. } => value.as_str().is_some_and(|value| choices.contains(value)),
+        }
+    }
+
     fn valid(&self) -> bool {
         match self {
             Self::Integer { minimum, maximum, multiple_of, default } => {
@@ -292,6 +364,12 @@ fn bounded_file(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
 }
 
 impl Binding {
+    pub(super) fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let mut url = self.origin.clone();
+        url.set_path(path);
+        self.client.request(method, url).header(header::AUTHORIZATION, self.authorization.clone())
+    }
+
     async fn verify(&self) -> bool {
         let mut url = self.origin.clone();
         url.set_path("/v1/tools");
@@ -373,6 +451,6 @@ mod tests {
         let manifest = checked_manifest(include_bytes!(
             "../../../../../../plugins/tools/media/manifest.json"
         )).unwrap();
-        assert_eq!(manifest["tools"].as_array().unwrap().len(), 23);
+        assert_eq!(manifest.1.tools.len(), 23);
     }
 }

@@ -1,5 +1,24 @@
 export type PrimitiveKind = "text" | "image" | "video";
-export type ValueKind = PrimitiveKind | "integer";
+export type ArtifactKind = "image" | "video" | "audio" | "metadata" | "mesh" | "document";
+export type ValueKind = "text" | "integer" | "media" | ArtifactKind;
+export type ToolParameter = { type: "integer" | "number"; minimum: number; maximum: number; multipleOf?: number; default?: number }
+  | { type: "string"; enum: string[]; default?: string };
+export type ToolOperation = {
+  id: string;
+  revision: number;
+  label: string;
+  inputs: Record<string, { kind: ArtifactKind | "media" }>;
+  parameters: { properties: Record<string, ToolParameter>; required: string[] };
+  output: { kind: ArtifactKind; content_types: string[] };
+};
+export type ToolBinding = { name: string; revision: string; manifest: { tools: ToolOperation[] } };
+export type ToolStep = {
+  binding_revision: string;
+  revision: number;
+  inputs: Record<string, ArtifactKind | "media">;
+  output: ArtifactKind;
+  parameters: Record<string, Scalar>;
+};
 export type Scalar = string | number;
 export type Bindings = Record<string, Binding>;
 export type Binding =
@@ -19,14 +38,15 @@ export type WorkflowModel = {
   resolutions: string[];
   accepts_first_frame: boolean;
 };
-export type Capabilities = { primitives: Primitive[]; models: WorkflowModel[] };
+export type Capabilities = { primitives: Primitive[]; models: WorkflowModel[]; tools?: ToolBinding[] };
 export type ProposedStep = { kind: PrimitiveKind; title: string; animated_image?: boolean };
 export type WorkflowInput = { title: string; kind: "text" | "integer"; default: Scalar | null };
 export type Step = {
   id: string;
   title: string;
-  kind: PrimitiveKind;
+  kind: PrimitiveKind | "tool";
   model: string;
+  tool?: ToolStep;
   max_usd_nanos: number;
   settings: Bindings;
 };
@@ -46,7 +66,7 @@ export type RunSummary = { id: string; status: RunStatus; version: number | null
 export type Receipt = { id: string; workflow_version: number | null; status_url: string; replayed: boolean };
 type RunOutput =
   | { type: "text"; text: string }
-  | { type: "media"; kind: "image" | "video"; download_url: string }
+  | { type: "media"; kind: ArtifactKind; download_url: string }
   | { type: "fixture"; kind: ValueKind };
 export type Run = {
   id: string;
@@ -55,6 +75,7 @@ export type Run = {
   status: RunStatus;
   created_at: string;
   steps: { node: string; request: string; status: string }[];
+  tools?: Record<string, { request_id: string; status: string; admitted_at: string; finished_at: string | null }>;
   error: string | null;
   outputs?: Record<string, RunOutput>;
 };
