@@ -222,6 +222,8 @@ api-gateway catalog prepare --bundle artcraft.bundle.json --public-key artcraft-
 
 Both fetch modes verify the signature with the supplied key. The pinned mode also checks the requested snapshot hash. `prepare` verifies the saved bundle again and honors the selection's revision and key pins. The `reference_base64` field preserves the signed JSON byte for byte. Use `pack-reference` to produce an individual bundle for offline distribution.
 
+CI rehearses this flow with a temporary publisher key and a loopback HTTPS registry. Run the same check from the repository root with `python3 -B scripts/smoke_reference_catalog.py target/debug/api-gateway`. It verifies plugin coverage, pinned access to an older release, and preset updates that preserve the operator's local offers, bindings, and prices.
+
 ### Update the public pricing page
 
 Use the file at `catalog_path` in the checked release staging directory as the browser download. If you only have the bundle, recover the same bytes with the trusted publisher key and the immutable bundle path from `stage-reference`.
