@@ -17,6 +17,12 @@ export const workloadLabels = {
   other: "Other workload",
 } as const;
 
+export function latency(milliseconds: number | null) {
+  if (milliseconds === null) return "—";
+  if (milliseconds < 1_000) return `${milliseconds.toLocaleString()} ms`;
+  return `${(milliseconds / 1_000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
+}
+
 export function age(at: string, observedAt: string) {
   const seconds = Math.max(0, Math.floor((Date.parse(observedAt) - Date.parse(at)) / 1000));
   if (seconds < 60) return `${seconds}s`;

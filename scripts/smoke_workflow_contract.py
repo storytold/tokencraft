@@ -211,6 +211,33 @@ def verify_run_capacity(port, peer, path, spec, body, original, rotated):
     return first["id"]
 
 
+def queue_count(report, kind):
+    return sum(row["count"] for row in report["queues"] if row["kind"] == kind)
+
+
+def verify_workflow_operations(port, session, auth, query, project, sibling_project):
+    path = "/v1/operations/queues" + query
+    in_project, _ = call(port, path + f"&project_id={project}", 200, headers=session)
+    organization, _ = call(port, path, 200, headers=session)
+    sibling, _ = call(port, path + f"&project_id={sibling_project}", 200, headers=session)
+    call(port, path, 401, headers=auth)
+    workflows = in_project["workflows"]
+    assert workflows == organization["workflows"]
+    assert workflows["queued"]["count"] == workflows["due_queued"] == 2
+    assert workflows["queued"]["oldest_at"] <= in_project["observed_at"]
+    assert workflows["running"] == workflows["reconciling"] == {"count": 0, "oldest_at": None}
+    assert workflows["overdue"] == 0
+    outcomes = workflows["outcomes"]
+    assert outcomes["sampled"] == 3 and outcomes["sample_limit"] == 5000
+    assert outcomes["succeeded"] == outcomes["timing_samples"] == 2 and outcomes["canceled"] == 1
+    assert outcomes["failed"] == outcomes["expired"] == 0 and outcomes["p95_succeeded_ms"] >= 0
+    assert sibling["workflows"]["outcomes"]["sampled"] == 0
+    assert sibling["workflows"]["queued"] == {"count": 0, "oldest_at": None}
+    assert queue_count(in_project, "webhook_pending") == queue_count(organization, "webhook_pending") == 1
+    assert queue_count(sibling, "webhook_pending") == 0
+    print("PASS scoped operations shows workflow pressure, bounded outcomes, and pending app deliveries")
+
+
 class WebhookReceiver(BaseHTTPRequestHandler):
     def do_POST(self):
         event = {key.lower(): value for key, value in self.headers.items()}
@@ -406,6 +433,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
                                    ("workflow.run.canceled", canceled, "pending")}
     assert len(workflow_events) == 2
     print("PASS canceled run queued one durable event with the delivery worker stopped")
+    verify_workflow_operations(port, session, auth, query, project, sibling_project["id"])
 
     sibling, _ = call(port, manage + "/apps" + query, 201, method="POST", headers=session, body={
         "name": "Independent submitting app", "days": 1, "scopes": ["runs:submit", "runs:read", "outputs:read"],
@@ -447,6 +475,8 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     else:
         raise RuntimeError("The restarted worker did not close the revoked delivery")
     assert detail["delivery"]["last_error"] == "subscription_revoked" and detail["attempts"] == []
+    operations, _ = call(port, "/v1/operations/queues" + query + f"&project_id={project}", 200, headers=session)
+    assert queue_count(operations, "webhook_dead") >= 1
     call(port, delivery_path + "/redrive" + query, 409, method="POST", headers=session)
     verify_output(peer, sibling_run, sibling_auth, digest, len(png))
     entries, _ = call(port, listing + query, 200, headers=session)
@@ -594,6 +624,9 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     query_db("UPDATE workflow_runs SET content = decode('00','hex'), deadline = now() - interval '1 second', "
              "next_at = now() - interval '1 second' WHERE id = :'run'", run=unreadable["id"])
     assert_on_hold(estimate * 2 + run_cap, estimate + run_cap)
+    operations, _ = call(port, "/v1/operations/queues" + query + f"&project_id={project}", 200, headers=session)
+    assert operations["workflows"]["queued"]["count"] == operations["workflows"]["overdue"] == 1
+    assert operations["workflows"]["due_queued"] == 0
     start_worker()
     expect_expired(unreadable)
     preserved = query_db("SELECT encode(content, 'hex') FROM workflow_runs WHERE id = :'run'", run=unreadable["id"])

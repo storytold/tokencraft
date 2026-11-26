@@ -29,18 +29,14 @@ The default process runs the API and workers together. Set `TOKENCRAFT_PROCESS_R
 
 Deploy a gateway that supports migration overlap on the current schema before applying a newer migration. Each process checks the version, success flag, and checksum of every migration embedded in its binary. A newer binary becomes ready once its migrations are applied. An older binary can stay ready only if every later applied migration declares compatibility with its schema version.
 
-Add the declaration in the same transaction as the additive migration. The first migration to use overlap creates the compatibility table. For example, a migration 77 reviewed against schema-76 binaries would include the following SQL.
+Migration 77 adds workflow operations indexes and creates the compatibility table with schema 76 as its oldest supported gateway. In the same transaction it gives the current migration ledger readers read access to the new table. Schema 76 API and worker processes can stay online while you migrate and roll out schema 77. The index builds block writes to the workflow runs table until the migration commits. Duration depends on table size and concurrent work.
+
+Add each later declaration in the same transaction as the additive migration. For a migration 78 reviewed against schema 77 binaries, include the following SQL.
 
 ```sql
-CREATE TABLE public.gateway_schema_compatibility (
-    migration_version bigint PRIMARY KEY,
-    oldest_gateway_schema bigint NOT NULL
-        CHECK (oldest_gateway_schema BETWEEN 1 AND migration_version)
-);
-
 INSERT INTO public.gateway_schema_compatibility
     (migration_version, oldest_gateway_schema)
-VALUES (77, 76);
+VALUES (78, 77);
 ```
 
 Later compatible migrations add their own rows. Keep the table writable only by trusted migration operators and readable by gateway roles. Verify the oldest supported API and worker against the changed schema, including writes and in-flight requests, before declaring compatibility. For a breaking change, drain the affected binaries before applying it or use separate additive and cleanup migrations. Missing declarations, unsuccessful migrations, and mismatched embedded checksums all fail readiness.
@@ -56,7 +52,7 @@ The API checks the same database and schema state before handling operational re
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to 76. Earlier hosted binaries refuse startup against schema 76. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
+Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
 ## Connect existing compute endpoints
 

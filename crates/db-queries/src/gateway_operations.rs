@@ -2,6 +2,9 @@ use chrono::{DateTime, Utc};
 use ids::{AccountId, GatewayProjectId};
 use sqlx::PgExecutor;
 
+mod workflows;
+pub use workflows::{workflow_snapshot, WorkflowSample, WORKFLOW_OUTCOME_SAMPLE_LIMIT};
+
 pub struct QueueSample {
     pub kind: String,
     pub provider: Option<String>,
@@ -36,20 +39,27 @@ pub async fn queue_snapshot<'e>(
             LEFT JOIN gateway_dispatch_controls control ON control.account_id = r.account_id
             WHERE r.account_id = $1 AND ($2::text IS NULL OR r.project_id = $2)
               AND num_nonnulls(succeeded_at, failed_at, canceled_at) = 0
-        ), deliveries AS (
-            SELECT 'webhook_pending' AS kind, w.request_id, w.occurred_at AS entered_at
+        ), deliveries AS NOT MATERIALIZED (
+            SELECT 'webhook_pending' AS kind, w.request_id, w.workflow_run_id, w.occurred_at AS entered_at
             FROM gateway_webhook_deliveries w WHERE state IN ('pending', 'sending')
             UNION ALL
-            SELECT 'webhook_dead' AS kind, w.request_id, w.finished_at AS entered_at
+            SELECT 'webhook_dead' AS kind, w.request_id, w.workflow_run_id, w.finished_at AS entered_at
             FROM gateway_webhook_deliveries w
-            WHERE state = 'dead' AND finished_at >= statement_timestamp() - interval '24 hours'
+            WHERE state = 'dead' AND finished_at >= transaction_timestamp() - interval '24 hours'
+        ), scoped_deliveries AS (
+            SELECT w.kind, w.entered_at
+            FROM deliveries w JOIN gateway_requests r ON r.id = w.request_id
+            WHERE r.account_id = $1 AND ($2::text IS NULL OR r.project_id = $2)
+            UNION ALL
+            SELECT w.kind, w.entered_at
+            FROM deliveries w JOIN workflow_runs r ON r.id = w.workflow_run_id
+            WHERE r.account_id = $1 AND ($2::text IS NULL OR r.project_id = $2)
         ), queues AS (
             SELECT kind, provider, workload, count(*) AS count, min(entered_at) AS oldest_at, dispatch_paused
             FROM open_requests GROUP BY kind, provider, workload, dispatch_paused
             UNION ALL
             SELECT w.kind, NULL, NULL, count(*), min(w.entered_at), false
-            FROM deliveries w JOIN gateway_requests r ON r.id = w.request_id
-            WHERE r.account_id = $1 AND ($2::text IS NULL OR r.project_id = $2)
+            FROM scoped_deliveries w
             GROUP BY w.kind
             UNION ALL
             SELECT 'export_pending', NULL, NULL, count(*), min(occurred_at), false
@@ -57,7 +67,7 @@ pub async fn queue_snapshot<'e>(
             WHERE account_id = $1 AND ($2::text IS NULL OR project_id = $2) AND published_seq IS NULL
         )
         SELECT kind AS "kind!", provider, workload, count AS "count!", oldest_at, dispatch_paused AS "dispatch_paused!",
-               statement_timestamp() AS "observed_at!"
+               transaction_timestamp() AS "observed_at!"
         FROM queues ORDER BY kind, provider, workload"#,
         account.as_str(),
         project.map(GatewayProjectId::as_str),

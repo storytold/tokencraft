@@ -5,6 +5,7 @@ import { errorMessage, gatewayRequest, withProject } from "@/lib/gateway";
 import { useOrg } from "@/lib/org";
 import { useProject } from "@/surfaces/projects/ProjectScope";
 import { ArtifactPublication } from "./ArtifactPublication";
+import { WorkflowOperations, type WorkflowSnapshot } from "./WorkflowOperations";
 import { age, providerLabels, workloadLabels } from "./operationLabels";
 
 const labels = {
@@ -25,7 +26,7 @@ type QueueDepth = {
   dispatch_paused: boolean;
   oldest_at: string | null;
 };
-type Snapshot = { observed_at: string; queues: QueueDepth[] };
+type Snapshot = { observed_at: string; queues: QueueDepth[]; workflows?: WorkflowSnapshot };
 
 const requestKinds = ["queued", "running", "awaiting_reconciliation"] as const;
 const deliveryKinds = ["webhook_pending", "webhook_dead", "export_pending"] as const;
@@ -50,7 +51,9 @@ export function QueueBacklog({ accountId, initialProjectId, revision }: { accoun
           </label>
         </div>
         {error && <p role="alert" className="text-sm text-muted">{error}</p>}
-        <BacklogSnapshot key={`${selected?.id ?? "all"}:${revision}`} accountId={accountId} projectId={selected?.id} />
+        {loading ? <p role="status" className="text-sm text-muted">Loading projects…</p> : (
+          <BacklogSnapshot key={`${selected?.id ?? "all"}:${revision}`} accountId={accountId} projectId={selected?.id} />
+        )}
       </Card>
     </section>
   );
@@ -120,10 +123,12 @@ function BacklogSnapshot({ accountId, projectId }: { accountId: string; projectI
               </ul>
             </details>
           )}
+          {snapshot.workflows && <WorkflowOperations snapshot={snapshot.workflows} observedAt={snapshot.observed_at} />}
           {projectId && (
             <div className="flex flex-wrap gap-4 text-sm font-semibold text-brand">
               <Link className="hover:underline" to={withProject(withScope("/requests"), projectId)}>Open project requests</Link>
               <Link className="hover:underline" to={withProject(withScope("/requests/exports"), projectId)}>Open project exports</Link>
+              {snapshot.workflows && <Link className="hover:underline" to={withProject(withScope("/workflows"), projectId)}>Open project workflows</Link>}
             </div>
           )}
         </>

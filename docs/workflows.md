@@ -43,6 +43,12 @@ The gateway pins the subscription when it admits a published run. Draft tests an
 
 Verify the signature against the raw request body and timestamp with `verify_workflow_webhook` in the [Rust SDK](../sdk/rust/README.md) or `verifyWorkflowWebhook` in the [TypeScript SDK](../sdk/typescript/README.md). Acknowledge promptly and deduplicate using `webhook-id`. Retries and redrives preserve the original event identity and body. Inspect attempts and disable or rotate subscriptions from **Webhooks**.
 
+## Monitor workflow operations
+
+Organization owners and administrators can open **Providers → Operations → Queue backlog**, or call `GET /v1/operations/queues` with `account_id` and an optional `project_id`. The selected scope includes queued, running, and reconciling runs. Each populated state includes its oldest run's admission time. The report also counts queued runs ready to be claimed and active runs past their deadline.
+
+The outcomes section samples up to the latest 5,000 terminal runs in the last 24 hours. It counts successes, failures, cancellations, and expirations. Its p95 measures time from admission to completion for successful runs in the sample. Pending and dead webhook totals include both inference requests and workflow runs in the same scope.
+
 ## Verify a release
 
 The **Gateway, connector, and SDKs** CI job runs the published workflow against disposable PostgreSQL, separate API and worker processes, and the standard-library delivery pack. From a source checkout with matching gateway and migration binaries and PostgreSQL tools on `PATH`, reproduce the check with `python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli`.

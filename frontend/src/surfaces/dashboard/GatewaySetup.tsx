@@ -59,7 +59,7 @@ export function GatewayOperations({ accountId, projectId }: { accountId: string;
     <>
       <SetupStatus accountId={accountId} />
       <DispatchControls key={accountId} accountId={accountId} onSaved={() => setRevision((value) => value + 1)} />
-      <QueueBacklog accountId={accountId} initialProjectId={projectId} revision={revision} />
+      <QueueBacklog key={`${accountId}:${projectId ?? ""}`} accountId={accountId} initialProjectId={projectId} revision={revision} />
     </>
   );
 }

@@ -4,12 +4,16 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use db_queries::gateway_operations::{
-    publication_snapshot, queue_snapshot, PublicationSample, QueueSample, PUBLICATION_SAMPLE_LIMIT,
+    publication_snapshot, queue_snapshot, workflow_snapshot, PublicationSample, QueueSample,
+    PUBLICATION_SAMPLE_LIMIT,
 };
 use enums::MemberRole;
 use ids::{AccountId, GatewayProjectId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+mod workflows;
+use workflows::WorkflowOperations;
 
 use super::projects::{managed_project, OrganizationQuery};
 use crate::{
@@ -47,6 +51,7 @@ impl OperationsQuery {
 pub(super) struct OperationsReport {
     observed_at: DateTime<Utc>,
     queues: Vec<QueueDepth>,
+    workflows: WorkflowOperations,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -100,7 +105,7 @@ impl TryFrom<QueueSample> for QueueDepth {
         ("account_id" = String, Query, description = "Organization to inspect."),
         ("project_id" = Option<String>, Query, description = "Limit the snapshot to one project."),
     ),
-    responses((status = 200, description = "Current request, webhook, and export backlogs for the authorized scope.", body = OperationsReport)),
+    responses((status = 200, description = "Current request, workflow, webhook, and export backlogs and recent workflow outcomes for the authorized scope.", body = OperationsReport)),
 )]
 pub(super) async fn queues(
     State(state): State<AppState>,
@@ -108,7 +113,10 @@ pub(super) async fn queues(
     Query(query): Query<OperationsQuery>,
 ) -> ApiResult<Json<OperationsReport>> {
     let (account, project) = query.authorize(&state, &auth).await?;
-    let rows = queue_snapshot(&state.pool, &account, project.as_ref()).await?;
+    let mut tx = state.pool.begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await?;
+    let rows = queue_snapshot(&mut *tx, &account, project.as_ref()).await?;
+    let workflows = workflow_snapshot(&mut *tx, &account, project.as_ref()).await?;
+    tx.commit().await?;
     let observed_at = rows
         .first()
         .map(|row| row.observed_at)
@@ -121,6 +129,7 @@ pub(super) async fn queues(
     Ok(Json(OperationsReport {
         observed_at,
         queues,
+        workflows: workflows.into(),
     }))
 }
 

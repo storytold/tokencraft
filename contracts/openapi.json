@@ -2745,7 +2745,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Current request, webhook, and export backlogs for the authorized scope.",
+            "description": "Current request, workflow, webhook, and export backlogs and recent workflow outcomes for the authorized scope.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8790,7 +8790,8 @@
         "type": "object",
         "required": [
           "observed_at",
-          "queues"
+          "queues",
+          "workflows"
         ],
         "properties": {
           "observed_at": {
@@ -8802,6 +8803,9 @@
             "items": {
               "$ref": "#/components/schemas/QueueDepth"
             }
+          },
+          "workflows": {
+            "$ref": "#/components/schemas/WorkflowOperations"
           }
         }
       },
@@ -12610,6 +12614,112 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "WorkflowDepth": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "oldest_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Admission timestamp of the oldest run in this state."
+          }
+        }
+      },
+      "WorkflowOperations": {
+        "type": "object",
+        "required": [
+          "queued",
+          "running",
+          "reconciling",
+          "due_queued",
+          "overdue",
+          "outcomes"
+        ],
+        "properties": {
+          "due_queued": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queued runs eligible to be claimed at the observation time."
+          },
+          "outcomes": {
+            "$ref": "#/components/schemas/WorkflowOutcomes"
+          },
+          "overdue": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active runs whose deadline has already passed."
+          },
+          "queued": {
+            "$ref": "#/components/schemas/WorkflowDepth"
+          },
+          "reconciling": {
+            "$ref": "#/components/schemas/WorkflowDepth"
+          },
+          "running": {
+            "$ref": "#/components/schemas/WorkflowDepth"
+          }
+        }
+      },
+      "WorkflowOutcomes": {
+        "type": "object",
+        "required": [
+          "sampled",
+          "sample_limit",
+          "succeeded",
+          "failed",
+          "canceled",
+          "expired",
+          "timing_samples"
+        ],
+        "properties": {
+          "canceled": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expired": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "p95_succeeded_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Time from admission to completion for successful runs."
+          },
+          "sample_limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sampled": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Terminal runs sampled from the past 24 hours."
+          },
+          "succeeded": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timing_samples": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       }

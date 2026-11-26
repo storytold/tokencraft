@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui";
 import { errorMessage, gatewayRequest, withProject } from "@/lib/gateway";
-import { age, providerLabels, workloadLabels } from "./operationLabels";
+import { age, latency, providerLabels, workloadLabels } from "./operationLabels";
 
 type PublicationTiming = {
   observed: number;
@@ -20,12 +20,6 @@ type PublicationReport = {
   totals: PublicationTiming;
   groups: { provider: keyof typeof providerLabels; workload: keyof typeof workloadLabels; timing: PublicationTiming }[];
 };
-
-function latency(milliseconds: number | null) {
-  if (milliseconds === null) return "—";
-  if (milliseconds < 1_000) return `${milliseconds.toLocaleString()} ms`;
-  return `${(milliseconds / 1_000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
-}
 
 export function ArtifactPublication({ accountId, projectId }: { accountId: string; projectId?: string }) {
   const [report, setReport] = useState<PublicationReport>();
