@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ids::WorkflowUploadId;
 use serde::{Deserialize, Serialize};
 
+use super::parameters::Constraint;
+
 pub(super) const MAX_NODES: usize = 20;
 pub(super) const MAX_INPUT_BYTES: usize = 4000;
 pub(super) const MAX_COST: i64 = 100_000_000_000;
@@ -22,6 +24,7 @@ pub(super) enum Kind {
 pub(super) enum ValueType {
     Text,
     Integer,
+    Parameter,
     Image,
     Video,
     Audio,
@@ -37,6 +40,7 @@ pub(super) enum ValueType {
 pub(super) enum Value {
     Text(String),
     Integer(i64),
+    Number(serde_json::Number),
     Upload(UploadReference),
 }
 
@@ -47,6 +51,15 @@ pub(super) struct UploadReference {
 }
 
 impl Value {
+    pub(super) fn parameter(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Text(text) => Some(serde_json::Value::String(text.clone())),
+            Self::Integer(number) => Some(serde_json::Value::Number((*number).into())),
+            Self::Number(number) => Some(serde_json::Value::Number(number.clone())),
+            Self::Upload(_) => None,
+        }
+    }
+
     fn matches(&self, kind: ValueType) -> bool {
         match (self, kind) {
             (Self::Text(text), ValueType::Text) => {
@@ -68,12 +81,37 @@ pub(super) enum Binding {
     Template { text: String },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct InputField {
     pub title: String,
     pub kind: ValueType,
     pub default: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter: Option<Constraint>,
+}
+
+impl InputField {
+    fn matches(&self, value: &Value) -> bool {
+        if self.kind == ValueType::Parameter {
+            return self.parameter.as_ref().is_some_and(|rule| {
+                value.parameter().is_some_and(|value| rule.matches(&value))
+            });
+        }
+        value.matches(self.kind)
+    }
+
+    fn valid(&self) -> bool {
+        let schema_valid = match self.kind {
+            ValueType::Parameter => self.parameter.as_ref().is_some_and(Constraint::valid),
+            ValueType::Metadata | ValueType::Archive => false,
+            _ => self.parameter.is_none(),
+        };
+        schema_valid && self.default.as_ref().is_none_or(|value| {
+            matches!(self.kind, ValueType::Text | ValueType::Integer | ValueType::Parameter)
+                && self.matches(value)
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -97,6 +135,8 @@ pub(super) struct ToolStep {
     pub inputs: BTreeMap<String, ValueType>,
     pub output: ValueType,
     pub parameters: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameter_inputs: BTreeMap<String, String>,
 }
 
 impl ValueType {
@@ -235,11 +275,7 @@ impl Graph {
             if !identifier(name)
                 || field.title.trim().is_empty()
                 || field.title.len() > 100
-                || matches!(field.kind, ValueType::Metadata | ValueType::Archive)
-                || field.default.as_ref().is_some_and(|value| {
-                    !matches!(field.kind, ValueType::Text | ValueType::Integer)
-                        || !value.matches(field.kind)
-                })
+                || !field.valid()
             {
                 return Err(format!("Invalid request input {name}."));
             }
@@ -282,6 +318,13 @@ impl Graph {
                 }
                 if node.settings.len() != tool.inputs.len() {
                     return Err(format!("{} has an unknown input slot.", node.title));
+                }
+                for (name, field) in &tool.parameter_inputs {
+                    if tool.parameters.contains_key(name)
+                        || !self.inputs.get(field).is_some_and(|input| input.kind == ValueType::Parameter)
+                    {
+                        return Err(format!("{} needs one request parameter for {name}.", node.title));
+                    }
                 }
                 dependencies.insert(node.id.as_str(), required);
                 continue;
@@ -392,7 +435,7 @@ impl Graph {
             let value = supplied
                 .get(name)
                 .or(field.default.as_ref())
-                .filter(|value| value.matches(field.kind))
+                .filter(|value| field.matches(value))
                 .ok_or_else(|| format!("Supply a valid value for {name}."))?;
             let value = value.clone();
             supplied.entry(name.clone()).or_insert(value);
@@ -406,7 +449,9 @@ impl Graph {
                 previous
                     .inputs
                     .get(name)
-                    .is_some_and(|old| old.kind == field.kind && old.default == field.default)
+                    .is_some_and(|old| {
+                        old.kind == field.kind && old.default == field.default && old.parameter == field.parameter
+                    })
             })
             && self.outputs.len() == previous.outputs.len()
             && self.outputs.iter().all(|(name, step)| {
@@ -524,6 +569,30 @@ impl Node {
         sources.into_iter().map(str::to_owned).collect()
     }
 
+    pub(super) fn request_inputs(&self) -> BTreeSet<&str> {
+        let mut fields = BTreeSet::new();
+        for binding in self.settings.values() {
+            match binding {
+                Binding::Request { field } => {
+                    fields.insert(field.as_str());
+                }
+                Binding::Template { text } => {
+                    let _ = template(text, |reference| {
+                        if let Reference::Input(field) = reference {
+                            fields.insert(field);
+                        }
+                        Ok(String::new())
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let Some(tool) = &self.tool {
+            fields.extend(tool.parameter_inputs.values().map(String::as_str));
+        }
+        fields
+    }
+
     pub fn resolve(
         &self,
         field: &str,
@@ -545,7 +614,7 @@ impl Node {
                 }
                 .and_then(|value| match value {
                     Value::Text(text) => Some(text),
-                    Value::Integer(_) | Value::Upload(_) => None,
+                    Value::Integer(_) | Value::Number(_) | Value::Upload(_) => None,
                 })
                 .ok_or("A template value is unavailable.")
             })?)),

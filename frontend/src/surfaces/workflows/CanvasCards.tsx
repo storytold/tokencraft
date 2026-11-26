@@ -16,7 +16,8 @@ type Wiring = {
 };
 
 const kindLabel: Record<ValueKind, string> = {
-  text: "Text", integer: "Integer", image: "Image", video: "Video", audio: "Audio", media: "Media",
+  text: "Text", integer: "Integer", parameter: "Tool parameter",
+  image: "Image", video: "Video", audio: "Audio", media: "Media",
   metadata: "Metadata", mesh: "Mesh", document: "Document", archive: "Archive",
 };
 
@@ -84,9 +85,15 @@ export function InputCard({ wire, selected }: { wire: Wiring; selected: boolean 
   const wired = new Set(wire.graph.nodes.flatMap((step) => Object.values(step.settings)
     .flatMap(wireSources).flatMap((source) => source.source === "request" ? [source.field] : [])));
   const optional = entries.filter(([name, field]) => field.default !== null && !wired.has(name));
-  const port = ([name, field]: typeof entries[number]) => <SourcePort key={name} wire={wire}
-    source={{ source: "request", field: name }} kind={field.kind} label={field.title}
-    details={field.default === null ? "Required" : "Optional"} />;
+  const port = ([name, field]: typeof entries[number]) => {
+    const details = field.default === null ? "Required" : "Optional";
+    return field.kind === "parameter"
+      ? <button className="wf-port" type="button" key={name} onClick={() => wire.inspect()}>
+        <span>{field.title}</span><small>{details}</small>
+      </button>
+      : <SourcePort key={name} wire={wire} source={{ source: "request", field: name }}
+        kind={field.kind} label={field.title} details={details} />;
+  };
   return <>
     <Header icon={<span className="wf-node-icon"><Braces size={16} /></span>} title="Request inputs"
       subtitle={entries.length ? `${entries.length} ${entries.length === 1 ? "field" : "fields"}` : "From the caller"} selected={selected}

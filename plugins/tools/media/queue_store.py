@@ -91,7 +91,7 @@ class Store:
                         raise RuntimeError("state directory belongs to the original media pack")
                     db.execute("INSERT INTO runner_pack(id,name) VALUES (1,?)", (pack,))
                 elif pinned["name"] != pack:
-                    raise RuntimeError("state directory belongs to another tool pack")
+                    raise RuntimeError("state directory belongs to another tool pack or manifest")
                 db.execute("UPDATE requests SET status = 'queued' WHERE status = 'running'")
                 staged = {entry[0] for entry in db.execute(
                     "SELECT id FROM requests WHERE status != 'expired'",

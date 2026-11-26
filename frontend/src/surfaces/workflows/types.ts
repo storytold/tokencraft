@@ -1,6 +1,6 @@
 export type PrimitiveKind = "text" | "image" | "video";
 export type ArtifactKind = "image" | "video" | "audio" | "metadata" | "mesh" | "document" | "archive";
-export type ValueKind = "text" | "integer" | "media" | ArtifactKind;
+export type ValueKind = "text" | "integer" | "parameter" | "media" | ArtifactKind;
 export type ToolParameter = { type: "integer" | "number"; minimum: number; maximum: number; multipleOf?: number; default?: number }
   | { type: "string"; enum: string[]; default?: string };
 export type ToolOperation = {
@@ -18,6 +18,7 @@ export type ToolStep = {
   inputs: Record<string, UploadKind>;
   output: ArtifactKind;
   parameters: Record<string, Scalar>;
+  parameter_inputs?: Record<string, string>;
 };
 export type Scalar = string | number;
 export type UploadKind = Exclude<ArtifactKind, "metadata" | "archive"> | "media";
@@ -43,7 +44,10 @@ export type WorkflowModel = {
 };
 export type Capabilities = { primitives: Primitive[]; models: WorkflowModel[]; tools?: ToolBinding[] };
 export type ProposedStep = { kind: PrimitiveKind; title: string; animated_image?: boolean };
-export type WorkflowInput = { title: string; kind: "text" | "integer" | UploadKind; default: Scalar | null };
+export type WorkflowInput = { title: string; default: Scalar | null } & (
+  | { kind: "text" | "integer" | UploadKind }
+  | { kind: "parameter"; parameter: ToolParameter }
+);
 export type Step = {
   id: string;
   title: string;
@@ -93,6 +97,7 @@ export type Run = {
   client_ref?: string;
   steps: { node: string; request: string; status: string }[];
   tools?: Record<string, { request_id: string; status: string; admitted_at: string; finished_at: string | null }>;
+  reuse?: { source_run_id: string; steps: string[] };
   error: string | null;
   outputs?: Record<string, RunOutput>;
   execution?: { title: string; evidence_expired: boolean; nodes: ExecutionNode[] };

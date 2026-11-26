@@ -43,6 +43,13 @@ export function updateStep(graph: Graph, node: Step): Graph {
   return { ...graph, nodes: graph.nodes.map((item) => item.id === node.id ? node : item) };
 }
 
+export function pruneUnusedToolInputs(graph: Graph): Graph {
+  const used = new Set(graph.nodes.flatMap((step) => Object.values(step.tool?.parameter_inputs ?? {})));
+  const inputs = Object.fromEntries(Object.entries(graph.inputs)
+    .filter(([name, input]) => input.kind !== "parameter" || used.has(name)));
+  return { ...graph, inputs };
+}
+
 export function setBinding(step: Step, setting: Setting, binding?: Binding): Step {
   const settings = { ...step.settings };
   if (binding) settings[setting.name] = binding;

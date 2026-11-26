@@ -1,15 +1,32 @@
-from pathlib import Path
+from array import array
+from copy import deepcopy
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
 
-from contract import MediaError, TOOLS, validate_request
+from contract import DEFAULT_REGISTRY, MediaError, TOOLS, validate_request
 from engine import Engine, Limits
 
 
 class ContractTests(unittest.TestCase):
+    def test_a_profile_can_select_exact_operations_from_the_pack(self):
+        chosen = DEFAULT_REGISTRY.operation("video.attach_audio", 2)
+        profile = {**DEFAULT_REGISTRY.manifest, "tools": [deepcopy(chosen)]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            path.write_text(json.dumps(profile))
+            subset = DEFAULT_REGISTRY.subset(path)
+            self.assertEqual(subset.operation("video.attach_audio", 2), chosen)
+            with self.assertRaises(MediaError):
+                subset.operation("video.attach_audio", 1)
+            profile["tools"][0]["parameters"]["properties"]["offset_ms"]["default"] = False
+            path.write_text(json.dumps(profile))
+            with self.assertRaisesRegex(MediaError, "exact descriptors"):
+                DEFAULT_REGISTRY.subset(path)
+
     def test_strict_types_skips_neither_required_nor_unknown_parameters(self):
         for args in (
             ("video.trim", 2, {"video": True}, {"start_ms": 0, "duration_ms": 500}),
@@ -17,6 +34,9 @@ class ContractTests(unittest.TestCase):
             ("video.trim", 1, {"video": True}, {"start_ms": 0}),
             ("video.trim", 1, {"video": True}, {"start_ms": 0, "duration_ms": 500, "ffmpeg": []}),
             ("video.trim", 1, {"video": True, "audio": True}, {"start_ms": 0, "duration_ms": 500}),
+            ("video.attach_audio", 1, {"video": True, "audio": True}, {"offset_ms": 100}),
+            ("video.attach_audio", 2, {"video": True, "audio": True}, {"offset_ms": -1}),
+            ("video.attach_audio", 2, {"video": True, "audio": True}, {"video_mode": "auto"}),
             ("video.resize", 1, {"video": True}, {"width": 255, "height": 120}),
             ("video.change_speed", 1, {"video": True}, {"factor": float("nan")}),
             ("image.convert", 1, {"image": True}, {"format": "drawtext=text=local"}),
@@ -119,6 +139,42 @@ class EngineTests(unittest.TestCase):
                     self.assertEqual(self.engine.execute(
                         name, 1, {slot: source}, {"format": file_type}, self.root / f"result.{file_type}",
                     ), mime)
+
+    def test_soundtrack_offset_preserves_the_video_and_pads_to_its_end(self):
+        narration = self.root / "short-narration.wav"
+        self.make("-f", "lavfi", "-i", "sine=frequency=880:d=0.3", "-c:a", "pcm_s16le", str(narration))
+        inputs = {"video": self.video, "audio": narration}
+        for mode in ("encode", "copy_h264"):
+            with self.subTest(mode=mode):
+                output = self.root / f"soundtrack-{mode}.mp4"
+                self.assertEqual(self.engine.execute("video.attach_audio", 2, inputs, {
+                    "offset_ms": 250, "video_mode": mode,
+                }, output), "video/mp4")
+                self.assertAlmostEqual(self.engine.inspect(output)["duration_ms"], 1500, delta=50)
+                samples = array("h")
+                samples.frombytes(self.read_ffmpeg(output, "-map", "0:a:0", "-ac", "1", "-ar", "8000", "-f", "s16le"))
+                self.assertLess(max(abs(sample) for sample in samples[400:1600]), 32)
+                self.assertGreater(max(abs(sample) for sample in samples[2400:4000]), 1000)
+                self.assertLess(max(abs(sample) for sample in samples[6000:8800]), 32)
+                if mode == "copy_h264":
+                    def video_hash(path):
+                        return self.read_ffmpeg(path, "-map", "0:v:0", "-c:v", "copy", "-f", "streamhash")
+
+                    self.assertEqual(video_hash(output), video_hash(self.video))
+
+    def read_ffmpeg(self, source, *args):
+        return subprocess.run(
+            [self.engine.ffmpeg, "-nostdin", "-v", "error", "-i", str(source), *args, "-"],
+            check=True, capture_output=True, timeout=15,
+        ).stdout
+
+    def test_soundtrack_offset_must_fit_the_selected_video_track(self):
+        input_video = self.root / "audio-longer-than-video.mp4"
+        self.make("-i", str(self.muted), "-i", str(self.audio), "-map", "0:v", "-map", "1:a",
+                  "-c:v", "copy", "-c:a", "aac", "-af", "apad=pad_dur=1", str(input_video))
+        with self.assertRaisesRegex(MediaError, "audio offset must be shorter"):
+            self.engine.execute("video.attach_audio", 2, {"video": input_video, "audio": self.audio},
+                                {"offset_ms": 1500}, self.root / "invalid-offset.mp4")
 
     def test_invalid_ranges_wrong_media_and_output_budget(self):
         target = self.root / "invalid-result"

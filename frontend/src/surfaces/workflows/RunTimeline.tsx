@@ -16,6 +16,10 @@ export function RunTimeline({ scope, run, graph }: { scope: ProjectScope; run: R
     id: node.id, title: node.title, status: node.status, request: node.request,
     requestStatus: node.request_status, provider: node.provider,
   })) ?? [
+    ...(run.reuse?.steps ?? []).map((id) => ({
+      id, title: graph.nodes.find((node) => node.id === id)?.title ?? id,
+      status: "reused", request: null, requestStatus: null, provider: null,
+    })),
     ...run.steps.map((step) => ({
       id: step.node, title: graph.nodes.find((node) => node.id === step.node)?.title ?? step.node,
       status: step.status, request: step.request, requestStatus: null, provider: null,
@@ -36,6 +40,7 @@ export function RunTimeline({ scope, run, graph }: { scope: ProjectScope; run: R
             <code>{step.request}</code>
           </Link>
           : run.tools?.[step.id] && <small>{run.tools[step.id].request_id}</small>}
+        {step.status === "reused" && run.reuse && <small>From run <code>{run.reuse.source_run_id}</code></small>}
         {(step.provider || (step.requestStatus && step.requestStatus !== step.status)) && <small>
           {[step.provider, step.requestStatus && step.requestStatus !== step.status && `Request ${label(step.requestStatus)}`]
             .filter(Boolean).join(" · ")}

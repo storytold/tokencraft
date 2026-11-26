@@ -12,8 +12,9 @@ use reqwest::{header, Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::graph::{Graph, Node, ValueType};
+use super::graph::{Graph, InputValues, Node, ToolStep, ValueType};
 use super::management::{ConsoleQuery, Project};
+use super::parameters::Constraint;
 use super::Security;
 use crate::{error::{ApiError, ApiResult}, middleware::AuthContext, state::AppState};
 use crate::gateway_demo::{
@@ -118,28 +119,6 @@ struct Parameters {
     extra: bool,
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-enum Constraint {
-    Integer {
-        minimum: i64,
-        maximum: i64,
-        #[serde(rename = "multipleOf")]
-        multiple_of: Option<i64>,
-        default: Option<i64>,
-    },
-    Number {
-        minimum: f64,
-        maximum: f64,
-        default: Option<f64>,
-    },
-    String {
-        #[serde(rename = "enum")]
-        choices: BTreeSet<String>,
-        default: Option<String>,
-    },
-}
-
 impl Bindings {
     pub(super) fn load() -> anyhow::Result<Self> {
         let Some(path) = std::env::var_os(CONFIG) else {
@@ -196,8 +175,17 @@ impl Bindings {
 
     pub(super) fn validate(&self, graph: &Graph, account: &AccountId, project: &GatewayProjectId) -> ApiResult<()> {
         for node in &graph.nodes {
-            if node.tool.is_some() {
-                self.select(node, account, project, false)?;
+            if let Some(call) = &node.tool {
+                let (_, tool) = self.select(node, account, project, false)?;
+                for (name, field) in &call.parameter_inputs {
+                    let reviewed = tool.parameters.properties.get(name);
+                    let declared = graph.inputs.get(field).and_then(|input| input.parameter.as_ref());
+                    if reviewed.is_none() || reviewed != declared {
+                        return Err(ApiError::BadRequest(format!(
+                            "{} must use the reviewed parameter constraints for request input {field}", node.title,
+                        )));
+                    }
+                }
             }
         }
         Ok(())
@@ -217,7 +205,12 @@ impl Bindings {
         }).ok_or_else(invalid)?;
         if call.output != tool.output.kind.value_type() || tool.inputs.len() != call.inputs.len()
             || tool.inputs.iter().any(|(name, input)| call.inputs.get(name) != Some(&input.kind.value_type()))
-            || tool.parameters.required.iter().any(|name| !call.parameters.contains_key(name))
+            || tool.parameters.required.iter().any(|name| {
+                !call.parameters.contains_key(name) && !call.parameter_inputs.contains_key(name)
+            })
+            || call.parameter_inputs.keys().any(|name| {
+                call.parameters.contains_key(name) || !tool.parameters.properties.contains_key(name)
+            })
             || call.parameters.iter().any(|(name, value)| {
                 tool.parameters.properties.get(name).is_none_or(|constraint| !constraint.matches(value))
             })
@@ -229,6 +222,19 @@ impl Bindings {
 }
 
 impl Tool {
+    pub(super) fn resolve_parameters(
+        &self, call: &ToolStep, inputs: &InputValues,
+    ) -> ApiResult<BTreeMap<String, Value>> {
+        let mut parameters = call.parameters.clone();
+        for (name, field) in &call.parameter_inputs {
+            let value = inputs.get(field).and_then(|value| value.parameter())
+                .filter(|value| self.parameters.properties.get(name).is_some_and(|rule| rule.matches(value)))
+                .ok_or_else(|| ApiError::BadRequest(format!("Invalid tool parameter input {field}")))?;
+            parameters.insert(name.clone(), value);
+        }
+        Ok(parameters)
+    }
+
     pub(super) fn accepts_source(&self, slot: &str, mime: &str) -> bool {
         self.inputs.get(slot).is_some_and(|input| input.kind.accepts_type(mime))
     }
@@ -379,36 +385,6 @@ fn slot_name(value: &str) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
-impl Constraint {
-    fn matches(&self, value: &Value) -> bool {
-        match self {
-            Self::Integer { minimum, maximum, multiple_of, .. } => value.as_i64().is_some_and(|number| {
-                (*minimum..=*maximum).contains(&number) && multiple_of.is_none_or(|stride| number % stride == 0)
-            }),
-            Self::Number { minimum, maximum, .. } => value.as_f64().is_some_and(|number| (*minimum..=*maximum).contains(&number)),
-            Self::String { choices, .. } => value.as_str().is_some_and(|value| choices.contains(value)),
-        }
-    }
-
-    fn valid(&self) -> bool {
-        match self {
-            Self::Integer { minimum, maximum, multiple_of, default } => {
-                minimum <= maximum && multiple_of.is_none_or(|stride| stride > 0)
-                    && default.is_none_or(|value| (*minimum..=*maximum).contains(&value)
-                        && multiple_of.is_none_or(|stride| stride > 0 && value % stride == 0))
-            }
-            Self::Number { minimum, maximum, default } => {
-                minimum.is_finite() && maximum.is_finite() && minimum <= maximum
-                    && default.is_none_or(|value| (*minimum..=*maximum).contains(&value))
-            }
-            Self::String { choices, default } => {
-                (1..=64).contains(&choices.len()) && choices.iter().all(|choice| (1..=80).contains(&choice.len()))
-                    && default.as_ref().is_none_or(|value| choices.contains(value))
-            }
-        }
-    }
-}
-
 fn bounded_file(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?.take(max as u64 + 1).read_to_end(&mut bytes)?;
@@ -504,6 +480,29 @@ mod tests {
         let manifest = checked_manifest(include_bytes!(
             "../../../../../../plugins/tools/media/manifest.json"
         )).unwrap();
-        assert_eq!(manifest.1.tools.len(), 23);
+        let soundtrack_revisions: BTreeSet<_> = manifest.1.tools.iter()
+            .filter(|tool| tool.id == "video.attach_audio").map(|tool| tool.revision).collect();
+        assert_eq!(soundtrack_revisions, BTreeSet::from([1, 2]));
+    }
+
+    #[test]
+    fn resolves_reviewed_call_parameters_from_workflow_inputs() {
+        let (_, manifest) = checked_manifest(include_bytes!(
+            "../../../../../../plugins/tools/media/manifest.json"
+        )).unwrap();
+        let tool = manifest.tools.iter()
+            .find(|tool| tool.id == "video.attach_audio" && tool.revision == 2).unwrap();
+        let call: ToolStep = serde_json::from_value(serde_json::json!({
+            "binding_revision": "unused", "revision": 2, "inputs": {"video":"video","audio":"audio"},
+            "output":"video", "parameters":{"video_mode":"copy_h264"}, "parameter_inputs":{"offset_ms":"delay"}
+        })).unwrap();
+        let inputs = |value| serde_json::from_value::<InputValues>(serde_json::json!({"delay":value})).unwrap();
+        let resolved = tool.resolve_parameters(&call, &inputs(serde_json::json!(0))).unwrap();
+        assert_eq!(resolved["offset_ms"], 0);
+        assert_eq!(resolved["video_mode"], "copy_h264");
+        for value in [serde_json::json!(-1), serde_json::json!(700000), serde_json::json!(0.5), serde_json::json!("0")] {
+            assert!(tool.resolve_parameters(&call, &inputs(value)).is_err());
+        }
+        assert!(tool.resolve_parameters(&call, &InputValues::new()).is_err());
     }
 }

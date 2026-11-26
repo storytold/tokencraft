@@ -30,7 +30,7 @@ export function ComponentLibrary({ capabilities, canAdd, onAdd, onClose }: {
     matches(`${modelName(model.id)} ${model.id} ${model.providers.join(" ")} ${model.kind}`)).slice(0, 24) : [];
 
   const tools = (capabilities.tools ?? []).flatMap((binding) => binding.manifest.tools
-    .filter((tool) => matches(`${tool.label} ${tool.id} ${binding.name}`))
+    .filter((tool) => matches(`${tool.label} ${tool.id} ${binding.name} revision ${tool.revision}`))
     .map((tool) => ({ binding, tool })));
 
   function item(choice: ComponentChoice, title: string, detail: string, Icon: LucideIcon) {
@@ -66,7 +66,7 @@ export function ComponentLibrary({ capabilities, canAdd, onAdd, onClose }: {
       {tools.length > 0 && <h4>Media tools</h4>}
       {tools.map(({ tool, binding }) => item({
         kind: "tool", model: tool.id, binding: binding.revision, revision: tool.revision,
-      }, tool.label, `${binding.name} · ${tool.output.kind}`, primitiveIcons.tool))}
+      }, tool.label, `${binding.name} · ${tool.output.kind} · Revision ${tool.revision}`, primitiveIcons.tool))}
       {components.length + models.length + tools.length === 0 && <p className="wf-muted" role="status">No matching components.</p>}
     </div>
     <small>{canAdd ? "Drag onto the canvas or select to add." : "This workflow has reached its 20-step limit."}</small>

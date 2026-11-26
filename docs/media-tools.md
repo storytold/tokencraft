@@ -102,3 +102,28 @@ Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the
 Project developers and admins can discover their approved bindings at `GET /v1/projects/{project}/workflow-tools?account_id={account}` with a session cookie. An admin can add `&verify=studio-media` to verify the selected binding against the live worker. A successful check returns `reachable: true` and the matching manifest. Ordinary discovery uses the reviewed local manifest and succeeds during a worker outage. The gateway keeps connector origins and credentials out of the discovery response.
 
 A binding revision identifies the binding name, operator revision, origin, and reviewed manifest. Advertised tools include their own operation revisions. Give a replacement its own binding name and keep the older entry, origin, and manifest available with `drain_only: true` until admitted runs finish. New runs against a version pinned to the older binding require a revised workflow and publication.
+
+## Trim a clip and attach narration
+
+Select **Trim video**, wire in the clip, and set the start and duration in milliseconds. Connect the result to **Replace soundtrack**, revision 2, and connect a narration upload to its audio input. Set `offset_ms` to the narration's delay. For a clip from the trim tool, select `copy_h264` to reuse the compressed video stream. Expose the master in **Response outputs**. Expose the trimmed clip too if it will be used in a separate finishing run.
+
+To let callers set a trim time or delay on each run, choose **Expose as request input** beside the tool parameter. The endpoint uses the reviewed recipe's parameter range or allowed values. Set an optional default in **Request and response**. Draft tests and the published OpenAPI surface the same field. An existing published endpoint requires the same request contract across versions, so publish a separate workflow when introducing a new request field.
+
+For API-authored graphs, add a request field of kind `parameter` with the parameter descriptor from the project's reviewed tool manifest. In the tool step, map the tool parameter to that field name through `parameter_inputs`. Keep other settings in `parameters`. For example, wire `offset_ms` to `narration_delay` and set `video_mode` as a fixed value.
+
+```json
+{
+  "parameters": {"video_mode": "copy_h264"},
+  "parameter_inputs": {"offset_ms": "narration_delay"}
+}
+```
+
+After a successful draft test, choose **Test with reused steps** in its run timeline. Keep the prior uploads and change the narration delay. The new run copies the verified trim and issues a soundtrack job. Source generation and other upstream steps are reused when their request inputs and dependencies match.
+
+An application can do the same with `reuse_run_id` in a new invocation. Supply the original input values or upload IDs alongside your changes and use a fresh idempotency key. The source must be a successful run on the same workflow version by the same application, with a matching `client_ref` if one was supplied. The credential needs `runs:submit`, `runs:read`, and `outputs:read`. The run status reports the source ID and reused steps. If the source or its required outputs have expired, reuse fails before dispatching fresh work. A tool result copied to the new run follows that run's retention. Reused generation outputs retain their original artifact lifetime. Upgrade all gateway workers before accepting reruns.
+
+Operators can run both tools on one host or give each its own [reviewed runner profile](../plugins/tools/media/README.md#serve-only-selected-operations). With local gateway binaries and PostgreSQL 17, run the two-runner smoke using the same FFmpeg build required by the pack.
+
+```sh
+python3 -B scripts/smoke_media_finishing.py target/debug/api-gateway target/debug/admin-cli
+```
