@@ -15,6 +15,10 @@ DECLARE
     relation record;
     routine record;
 BEGIN
+    IF current_setting('server_version_num')::integer < 170000 THEN
+        RAISE EXCEPTION 'TokenCraft runtime grants require PostgreSQL 17 or newer';
+    END IF;
+
     SELECT oid INTO migration_owner FROM pg_roles WHERE rolname = current_user;
     SELECT oid INTO runtime_oid FROM pg_roles WHERE rolname = runtime_name;
     IF runtime_oid IS NULL THEN

@@ -9,20 +9,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install PostgreSQL and jq
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql libpq-dev jq
+      - name: Install PostgreSQL 17 and jq
+        run: bash .github/scripts/install-postgresql17-ubuntu.sh
       - name: Install Rust and verify PostgreSQL tools
         run: |
           rustup show
-          pg_bindir="$(pg_config --bindir)"
-          test -x "$pg_bindir/initdb"
-          test -x "$pg_bindir/pg_ctl"
+          postgres --version | grep -E '^postgres \(PostgreSQL\) 17\.'
+          command -v initdb pg_ctl
       - name: Verify capacity policy and PostgreSQL quota
         run: |
           python3 -B -m unittest discover -s deploy/autoscaling -p test_policy.py
-          python3 -B deploy/autoscaling/verify_postgres.py --pg-bin-dir "$(pg_config --bindir)"
+          python3 -B deploy/autoscaling/verify_postgres.py --pg-bin-dir "$(dirname "$(command -v initdb)")"
       - name: Test the launcher, provider mappings, shared enums, and Rust SDK
         run: cargo test --locked -p tokencraft -p provider_mapping -p enums -p tokencraft_sdk
       - name: Check gateway contracts and run the bundled connector

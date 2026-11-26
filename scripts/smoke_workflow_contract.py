@@ -15,6 +15,8 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 
+from postgres_tools import postgres_bin
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / ".github/fixtures/container"
@@ -222,7 +224,7 @@ def verify_workflow(port, session, account, project):
 
 def rehearse(gateway, admin, directory):
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
-    pg = Path(command("pg_config", "--bindir", cwd=directory, env=env))
+    pg = postgres_bin()
     data, password_file = directory / "pg", directory / "password"
     password, runtime_password = token_hex(24), token_hex(24)
     password_file.write_text(password + "\n")

@@ -305,7 +305,7 @@ For retryable responses, the worker honors `Retry-After` in seconds or as an HTT
 
 ### Separate migration and runtime roles
 
-Use a dedicated PostgreSQL database whose owner applies migrations and owns the TokenCraft objects in the `public` schema. Give the API and worker a separate login with an independent credential. The runtime login needs no database ownership, elevated role membership, or permission to create objects in `public`. In clusters upgraded from an older PostgreSQL release, check whether `PUBLIC` still has `CREATE` on that schema and revoke it in the dedicated database if needed.
+Use a dedicated PostgreSQL 17 database whose owner applies migrations and owns the TokenCraft objects in the `public` schema. Give the API and worker a separate login with an independent credential. The runtime login needs no database ownership, elevated role membership, or permission to create objects in `public`. In clusters upgraded from an older PostgreSQL release, check whether `PUBLIC` still has `CREATE` on that schema and revoke it in the dedicated database if needed.
 
 With the migration owner's verified `DATABASE_URL` configured for `admin-cli`, apply migrations. In staging and production the CLI requires a TCP connection with `sslmode=verify-full` before it connects. Run the grant script against the same database as the migration owner. The example uses a PostgreSQL service definition called `tokencraft_migration` with `sslmode=verify-full`. Keep the password in your secret configuration. The grant script is included in the source checkout and native package. When deploying only the runtime image, extract its matching copy before running `psql`.
 

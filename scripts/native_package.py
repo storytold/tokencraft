@@ -23,10 +23,11 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import ProxyHandler, Request, build_opener
 
+from postgres_tools import postgres_bin
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARIES = ("tokencraft", "api-gateway", "admin-cli")
-SERVER_TOOLS = ("postgres", "initdb", "pg_ctl", "pg_isready", "createdb")
 MEDIA_WORKER = "plugins/tools/media"
 MEDIA_FILES = (
     "README.md", "contract.py", "delivery.manifest.json", "delivery.py",
@@ -49,16 +50,6 @@ SUPPORT_FILES = (
 
 def run(args, **options):
     return subprocess.run(args, check=True, **options)
-
-
-def postgres_bin():
-    for folder in map(Path, os.get_exec_path()):
-        if all((folder / tool).is_file() and os.access(folder / tool, os.X_OK) for tool in SERVER_TOOLS):
-            return folder.resolve()
-    pg_config = shutil.which("pg_config")
-    if pg_config is None:
-        raise SystemExit("Put the PostgreSQL 17 server tools or their pg_config on PATH.")
-    return Path(run([pg_config, "--bindir"], capture_output=True, text=True).stdout.strip())
 
 
 def build_binaries(pg_bin, target, cargo_profile, offline):
