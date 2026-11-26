@@ -47,12 +47,28 @@ Gateway background workers start after the database and schema probes pass. When
 
 The API checks the same database and schema state before handling operational requests, including direct calls that bypass ingress. During a pause it returns HTTP `503` with `Retry-After: 5`. Clients can retry a submission with the same body and idempotency key. The Rust and TypeScript SDKs offer opt-in submission retries and honor the retry hint when polling. The public health, readiness, and API contract endpoints remain reachable for diagnosis.
 
+### Check the database before rollout
+
+Run `admin-cli schema-status` from the target build using the gateway runtime role and the deployment's verified database connection. The command checks the public migration ledger in a read-only transaction. It exits successfully when the recorded migrations are compatible with the target build and exits nonzero when they need operator action. Recheck after applying migrations and runtime grants.
+
+| Status | Meaning |
+| --- | --- |
+| `current` | The applied migrations match the target build. |
+| `forward_compatible` | The build's migrations match and every later migration explicitly allows it. |
+| `upgrade_required` | The applied migrations match a prefix of the target build. The command lists the pending versions. Follow the cutover or rolling procedure before starting the new fleet. |
+| `diverged` | The recorded history has a gap, a failed migration, or a checksum mismatch. Verify the release history before running migrations. |
+| `incompatible_newer` | One or more later migrations failed or lack a compatibility declaration for this build. Use the matching image or restore the prior recovery point before rolling back. |
+| `empty` | The public schema has no ledger or application objects. |
+| `unmanaged` | The public schema has objects without a TokenCraft ledger. Verify the database connection before proceeding. |
+
 ### Cut over without schema overlap
 
 1. Pause new submissions at ingress while the old API still serves status and results. Let active provider jobs and deliveries drain, then stop the old API and workers so the backup captures a stable recovery point.
 2. Retain the old image and deployment configuration. Back up PostgreSQL and record the corresponding recovery points for artifact storage, connector job state, and retained keys. Verify that the backup can be restored to a separate database before depending on it.
-3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
+3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
+
+A schema-70 fleet can move directly to schema 81 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 

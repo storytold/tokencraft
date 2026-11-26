@@ -8,7 +8,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 pub use sqlx::PgPool;
 
 mod schema;
-pub use schema::{initialize_demo, migrations_current};
+pub use schema::{initialize_demo, migrations_current, schema_status, SchemaState, SchemaStatus};
 
 /// Migrations embedded at compile time from `crates/db/migrations`.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

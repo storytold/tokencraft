@@ -1,7 +1,8 @@
 //! admin-cli — migrations and ops one-offs (codebase_layout_backend.md §2). Migrations
 //! are applied here. Hosted demo startup can initialize an empty database by explicit opt-in.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
+use db::SchemaState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,6 +26,29 @@ async fn main() -> Result<()> {
                 println!("existing demo schema is compatible");
             }
         }
+        "schema-status" => {
+            let pool = connect(&cfg).await?;
+            let report = db::schema_status(&pool).await?;
+            let state = match report.state {
+                SchemaState::Empty => "empty",
+                SchemaState::Unmanaged => "unmanaged",
+                SchemaState::UpgradeRequired => "upgrade_required",
+                SchemaState::Current => "current",
+                SchemaState::ForwardCompatible => "forward_compatible",
+                SchemaState::Diverged => "diverged",
+                SchemaState::IncompatibleNewer => "incompatible_newer",
+            };
+            println!("schema status: {state}");
+            println!("binary schema: {}", report.binary_version);
+            if let Some(version) = report.database_version {
+                println!("database schema: {version}");
+            }
+            if !report.pending_versions.is_empty() {
+                let versions = report.pending_versions.iter().map(i64::to_string).collect::<Vec<_>>();
+                println!("pending migrations: {}", versions.join(","));
+            }
+            ensure!(report.state.is_compatible(), "database schema requires operator review");
+        }
         "db-info" => {
             let pool = connect(&cfg).await?;
             let up = db::ping(&pool).await;
@@ -35,7 +59,7 @@ async fn main() -> Result<()> {
         }
         "" | "help" | "-h" | "--help" => {
             eprintln!(
-                "admin-cli <command>\n  migrate          apply pending migrations\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count"
+                "admin-cli <command>\n  migrate          apply pending migrations\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count"
             );
         }
         other => bail!("unknown command: {other} (try `help`)"),

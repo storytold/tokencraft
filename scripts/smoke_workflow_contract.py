@@ -1079,7 +1079,18 @@ def rehearse(gateway, admin, directory, *, verification=None):
         owner = dict(env, FOUNDATION_ENV="development",
                      DATABASE_URL=f"postgresql://tokencraft:{password}@{HOST}:{db_port}/postgres")
         psql = (pg / "psql", "-XAtw", "-d", "postgres", "-v", "ON_ERROR_STOP=1")
+        def schema_status(settings, state, *, ready=False):
+            result = subprocess.run([admin, "schema-status"], cwd=directory, env=settings,
+                                    capture_output=True, text=True, timeout=15)
+            assert result.returncode == (0 if ready else 1), result.stderr
+            lines = dict(line.split(": ", 1) for line in result.stdout.strip().splitlines())
+            assert lines["schema status"] == state, lines
+            return lines
+
+        empty = schema_status(owner, "empty")
+        assert empty["pending migrations"].split(",")[-1] == empty["binary schema"]
         command(*psql, "-c", "CREATE TABLE public.existing_fixture (id integer)", cwd=directory, env=pg_env)
+        assert "pending migrations" not in schema_status(owner, "unmanaged")
         rejected = subprocess.run([admin, "initialize-demo"], cwd=directory, env=owner,
                                   capture_output=True, text=True, timeout=15)
         assert rejected.returncode != 0 and "requires an empty public schema" in rejected.stderr
@@ -1099,7 +1110,10 @@ def rehearse(gateway, admin, directory, *, verification=None):
             TOKENCRAFT_CORE_CATALOG=str(FIXTURES / "runtime-catalog.json"), TOKENCRAFT_WORKFLOW_KEY=token_hex(32))
         compatible = command(admin, "initialize-demo", cwd=directory, env=settings)
         assert compatible == "existing demo schema is compatible"
-        print("PASS startup initializes an empty schema and verifies an existing schema with the runtime login")
+        current = schema_status(settings, "current", ready=True)
+        assert current["database schema"] == current["binary schema"] == empty["binary schema"]
+        assert "pending migrations" not in current
+        print("PASS startup initializes an empty schema and schema status verifies the ledger with the runtime login")
         with service("setup-api", [gateway], directory, settings, lambda: ready(api_port)):
             session, account, project = provision(api_port)
             contract, _ = call(api_port, "/openapi.json", 200)
