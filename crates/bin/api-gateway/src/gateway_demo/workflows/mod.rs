@@ -20,6 +20,7 @@ mod execution;
 mod graph;
 mod management;
 mod planner;
+pub(super) mod rollout;
 mod runner;
 mod tool_plugins;
 mod tool_execution;

@@ -320,7 +320,43 @@ def verify_request_webhook(port, session, project_path, query, receiver, workflo
     print("PASS ordinary request webhooks retain their signed payload and cannot use an app-only subscription")
 
 
-def verify_workflow(port, peer, session, account, project, stop_worker, restart_worker, receiver):
+def verify_tool_rollout(gateway, directory, settings, registry, sibling_project, digest):
+    candidate = directory / "candidate-tool-bindings.json"
+    catalog = settings["TOKENCRAFT_CORE_CATALOG"]
+    config = json.loads(registry.read_bytes())
+    (binding,) = config["bindings"]
+    projects = binding["projects"]
+
+    def check(reason):
+        env = dict(settings, TOKENCRAFT_WORKFLOW_TOOL_BINDINGS=str(candidate))
+        result = subprocess.run([gateway, "catalog", "check-drain", "--catalog", catalog],
+                                cwd=directory, env=env, capture_output=True, text=True, timeout=10)
+        assert result.returncode == (1 if reason else 0), result.stderr
+        report = json.loads(result.stdout)
+        assert report["checked_workflow_tool_references"] == 2 and report["ready"] is (reason is None)
+        blockers = [] if reason is None else [{
+            "binding_sha256": digest, "operation": "delivery.fingerprint", "operation_revision": 1,
+            "runs": 2, "reason": reason,
+        }]
+        assert report["workflow_tool_blockers"] == blockers
+
+    candidate.write_text(json.dumps({"version": 1, "bindings": []}))
+    check("tool_binding_unavailable")
+    candidate.write_text(json.dumps(config))
+    check(None)
+    binding["drain_only"] = True
+    candidate.write_text(json.dumps(config))
+    check(None)
+    binding["projects"] = [sibling_project]
+    candidate.write_text(json.dumps(config))
+    check("tool_scope_unavailable")
+    binding["projects"] = projects
+    candidate.write_text(json.dumps(config))
+    settings["TOKENCRAFT_WORKFLOW_TOOL_BINDINGS"] = str(candidate)
+    print("PASS rollout checks queued tool pins, accepts drain-only retention, and preserves project authorization")
+
+
+def verify_workflow(port, peer, session, account, project, stop_worker, restart_worker, receiver, check_rollout):
     project_path = f"/v1/projects/{project}"
     query = f"?account_id={account}"
     tools, _ = call(port, project_path + "/workflow-tools" + query + "&verify=fixture-delivery", 200, headers=session)
@@ -435,6 +471,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     assert len(workflow_events) == 2
     print("PASS canceled run queued one durable event with the delivery worker stopped")
     verify_workflow_operations(port, session, auth, query, project, sibling_project["id"])
+    check_rollout(sibling_project["id"], binding["revision"])
 
     sibling, _ = call(port, manage + "/apps" + query, 201, method="POST", headers=session, body={
         "name": "Independent submitting app", "days": 1, "scopes": ["runs:submit", "runs:read", "outputs:read"],
@@ -480,6 +517,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     assert queue_count(operations, "webhook_dead") >= 1
     call(port, delivery_path + "/redrive" + query, 409, method="POST", headers=session)
     verify_output(peer, sibling_run, sibling_auth, digest, len(png))
+    print("PASS restarted worker finished a pinned tool run with the drain-only binding")
     entries, _ = call(port, listing + query, 200, headers=session)
     assert all(item.get("workflow_run_id") != sibling_run["id"] for item in entries["items"])
     print("PASS restarted worker honors subscription revocation before delivering or redriving a queued event")
@@ -797,7 +835,12 @@ def rehearse(gateway, admin, directory):
                     lambda: ready(worker_port)))
 
             start_worker()
-            verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver)
+
+            def check_rollout(sibling_project, digest):
+                verify_tool_rollout(gateway, directory, settings, registry, sibling_project, digest)
+
+            verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
+                            check_rollout)
             verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver)
 
 

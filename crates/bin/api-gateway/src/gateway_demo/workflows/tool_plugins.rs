@@ -165,6 +165,24 @@ impl Bindings {
 }
 
 impl Bindings {
+    pub(super) fn rollout_blocker(
+        &self,
+        dependency: &db_queries::workflows::ToolDependency,
+    ) -> Option<&'static str> {
+        let Some(binding) = self.0.values().find(|binding| binding.digest == dependency.binding_digest) else {
+            return Some("tool_binding_unavailable");
+        };
+        if binding.account != dependency.account_id || !binding.projects.contains(&dependency.project_id) {
+            return Some("tool_scope_unavailable");
+        }
+        if !binding.parsed.tools.iter().any(|tool| {
+            tool.id == dependency.operation && i64::from(tool.revision) == dependency.operation_revision
+        }) {
+            return Some("tool_operation_unavailable");
+        }
+        None
+    }
+
     pub(super) fn validate(&self, graph: &Graph, account: &AccountId, project: &GatewayProjectId) -> ApiResult<()> {
         for node in &graph.nodes {
             if node.tool.is_some() {

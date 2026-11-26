@@ -3,18 +3,20 @@ use std::{env, ffi::OsString, io, net::IpAddr, path::Path, time::Duration};
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Utc};
 use db_queries::gateway_requests::{BindingDependency, binding_dependencies};
+use db_queries::workflows::tool_dependencies;
 use serde::Serialize;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{ChatBindings, Connectors, load_bindings, pin_catalog};
 use crate::gateway_demo::catalog::{Adapter, Catalog};
+use crate::gateway_demo::workflows::rollout as workflow_rollout;
 
 const MAX_GROUPS: i64 = 1024;
 const HELP: &str = "Usage: api-gateway catalog check-drain --catalog FILE
 
-Compare candidate bindings and offers with the outstanding work in DATABASE_URL.
+Compare candidate providers and workflow tool bindings with outstanding work in DATABASE_URL.
 Use the candidate's binding environment. The database connection is read-only.
-The JSON report lists blockers without exposing individual requests.
+The JSON report lists blockers without exposing individual requests or workflow runs.
 ";
 
 #[derive(Serialize)]
@@ -25,6 +27,8 @@ struct Report<'a> {
     ready: bool,
     checked_requests: i64,
     blockers: Vec<Blocker<'a>>,
+    #[serde(flatten)]
+    workflows: workflow_rollout::Report<'a>,
 }
 
 #[derive(Serialize)]
@@ -70,17 +74,23 @@ pub(in crate::gateway_demo) async fn run(mut args: impl Iterator<Item = OsString
         .connect_with(options)
         .await
         .context("connect to the drain check database")?;
-    let mut tx = pool.begin_with("BEGIN READ ONLY").await?;
+    let mut tx = pool.begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await?;
     sqlx::query("SET LOCAL statement_timeout = '5s'")
         .execute(&mut *tx)
         .await?;
     let checked_at = Utc::now();
     let dependencies = binding_dependencies(&mut tx, MAX_GROUPS + 1).await?;
+    let workflow_dependencies = tool_dependencies(&mut tx, MAX_GROUPS + 1).await?;
     tx.commit().await?;
     ensure!(
         dependencies.len() <= MAX_GROUPS as usize,
         "too many binding groups to certify this rollout"
     );
+    ensure!(
+        workflow_dependencies.len() <= MAX_GROUPS as usize,
+        "too many workflow tool binding groups to certify this rollout"
+    );
+    let workflows = workflow_rollout::check(&workflow_dependencies)?;
     let blockers: Vec<_> = dependencies
         .iter()
         .filter_map(|entry| {
@@ -99,15 +109,16 @@ pub(in crate::gateway_demo) async fn run(mut args: impl Iterator<Item = OsString
         version: 1,
         checked_at,
         base_revision: &catalog.revision,
-        ready: blockers.is_empty(),
+        ready: blockers.is_empty() && workflows.workflow_tool_blockers.is_empty(),
         checked_requests: dependencies.iter().map(|entry| entry.requests).sum(),
         blockers,
+        workflows,
     };
     serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
     println!();
     ensure!(
         report.ready,
-        "candidate does not retain all outstanding provider dependencies"
+        "candidate does not retain all outstanding provider or workflow tool dependencies"
     );
     Ok(())
 }

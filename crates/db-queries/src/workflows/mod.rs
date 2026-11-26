@@ -172,3 +172,6 @@ pub use tool_artifact::*;
 
 mod upload;
 pub use upload::*;
+
+mod rollout;
+pub use rollout::{tool_dependencies, ToolDependency};

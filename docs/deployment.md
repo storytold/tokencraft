@@ -363,21 +363,26 @@ After upgrading, a worker also publishes the removal event for expired successfu
 
 ## Check a connector rollout
 
-Run the drain check against the deployment database with the candidate catalog and the candidate binding environment. `DATABASE_URL` can use a role with read access to requests, provider runs, connector completion state, and provider credential state. Use verified PostgreSQL TLS for a remote database. The command reads a point-in-time snapshot in a read-only transaction.
+Run the drain check against the deployment database with the candidate catalog and the candidate binding environment. Include `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` and the referenced service token variables if the deployment uses workflow tools. `DATABASE_URL` can use a role with read access to requests, provider runs, connector completion state, provider credential state, and workflow runs. Use verified PostgreSQL TLS for a remote database. The command reads a point-in-time snapshot in a read-only transaction.
 
 ```sh
 api-gateway catalog check-drain --catalog catalog.next.json
 ```
 
-The JSON report gives the candidate base revision and counts by offer, request phase, and pinned binding digest. A blocker makes the command exit nonzero. Wait for outstanding work with the previous workers in place, then rerun the check close to cutover.
+The JSON report gives the candidate base revision and counts by offer, request phase, and pinned binding digest. It also reports `checked_workflow_tool_references` and `workflow_tool_blockers`. One reference represents an active, unexpired run and one pinned tool operation revision. An active run can contribute more than one reference. The check uses the saved graph, including tool steps the run may already have completed. It reports counts without account, project, or run IDs, and checks configuration without contacting tool services. A blocker makes the command exit nonzero. Wait for outstanding work with the previous workers in place, then rerun the check close to cutover.
 
 | Blocker | What to preserve |
 | --- | --- |
 | `queued_offer_changed` | Keep the original offer and its active binding until queued requests dispatch. The check uses the saved provider, upstream model, and binding identity. Rate-only changes preserve queued pins. |
 | `binding_unavailable` | Keep the original binding for in-flight work, submission recovery, and eligible rechecks. For queued media, a retained `drain_only` entry serves polling and recovery after the original offer stops accepting new work. |
 | `legacy_adapter` | Keep a worker that supports the original built-in adapter until its outstanding work finishes. |
+| `tool_binding_unavailable` | Keep the original workflow tool binding. Its name, revision, origin, and manifest determine its saved digest. |
+| `tool_scope_unavailable` | Retain the account and project authorization required by the active workflow run. |
+| `tool_operation_unavailable` | Retain the pinned tool operation and revision in the reviewed manifest. |
 
 When replacing a queue connector, provision a new binding name. Keep the old origin, revision, and completion settings available until the old work drains. A drain-only worker polls and recovers existing jobs on that binding. Workers with the active binding continue to claim submissions during cutover. Continue to coordinate admissions during cutover and review provider access and pricing for the candidate. [Connector protocol](provider-connectors.md#queued-media-protocol-version-1)
+
+For a workflow tool, a `drain_only` binding remains eligible for admitted runs. Publish the revised workflow against the replacement binding before resuming new runs. [Workflow tool bindings](media-tools.md)
 
 ## Move from a deployment with built-in provider adapters
 
