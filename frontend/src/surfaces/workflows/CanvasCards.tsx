@@ -17,7 +17,7 @@ type Wiring = {
 
 const kindLabel: Record<ValueKind, string> = {
   text: "Text", integer: "Integer", image: "Image", video: "Video", audio: "Audio", media: "Media",
-  metadata: "Metadata", mesh: "Mesh", document: "Document",
+  metadata: "Metadata", mesh: "Mesh", document: "Document", archive: "Archive",
 };
 
 function SourcePort({ wire, source, kind, label, details }: {

@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "plugin": "tokencraft-delivery",
+  "tools": [
+    {
+      "id": "delivery.fingerprint",
+      "revision": 1,
+      "label": "Fingerprint an asset",
+      "inputs": {
+        "source": {
+          "kind": "media"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    },
+    {
+      "id": "delivery.bundle_pair",
+      "revision": 1,
+      "label": "Bundle two assets",
+      "inputs": {
+        "first": {
+          "kind": "media"
+        },
+        "second": {
+          "kind": "media"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "archive",
+        "content_types": [
+          "application/zip"
+        ]
+      }
+    },
+    {
+      "id": "delivery.bundle_four",
+      "revision": 1,
+      "label": "Bundle four assets",
+      "inputs": {
+        "first": {
+          "kind": "media"
+        },
+        "second": {
+          "kind": "media"
+        },
+        "third": {
+          "kind": "media"
+        },
+        "fourth": {
+          "kind": "media"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "archive",
+        "content_types": [
+          "application/zip"
+        ]
+      }
+    }
+  ]
+}

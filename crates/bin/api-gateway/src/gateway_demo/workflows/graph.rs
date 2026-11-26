@@ -29,6 +29,7 @@ pub(super) enum ValueType {
     Metadata,
     Mesh,
     Document,
+    Archive,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -233,7 +234,7 @@ impl Graph {
             if !identifier(name)
                 || field.title.trim().is_empty()
                 || field.title.len() > 100
-                || field.kind == ValueType::Metadata
+                || matches!(field.kind, ValueType::Metadata | ValueType::Archive)
                 || field.default.as_ref().is_some_and(|value| {
                     !matches!(field.kind, ValueType::Text | ValueType::Integer)
                         || !value.matches(field.kind)
@@ -490,7 +491,7 @@ impl Node {
                     && (1..=8).contains(&tool.inputs.len())
                     && tool.inputs.iter().all(|(name, kind)| super::graph::identifier(name)
                         && (kind.file() || *kind == ValueType::Media))
-                    && (tool.output.file() || tool.output == ValueType::Metadata)
+                    && (tool.output.file() || matches!(tool.output, ValueType::Metadata | ValueType::Archive))
             }
             (None, Kind::Tool) | (Some(_), _) => false,
             (None, _) => identifier(&self.model) && self.model != "auto",

@@ -1,5 +1,5 @@
 export type PrimitiveKind = "text" | "image" | "video";
-export type ArtifactKind = "image" | "video" | "audio" | "metadata" | "mesh" | "document";
+export type ArtifactKind = "image" | "video" | "audio" | "metadata" | "mesh" | "document" | "archive";
 export type ValueKind = "text" | "integer" | "media" | ArtifactKind;
 export type ToolParameter = { type: "integer" | "number"; minimum: number; maximum: number; multipleOf?: number; default?: number }
   | { type: "string"; enum: string[]; default?: string };
@@ -7,7 +7,7 @@ export type ToolOperation = {
   id: string;
   revision: number;
   label: string;
-  inputs: Record<string, { kind: ArtifactKind | "media" }>;
+  inputs: Record<string, { kind: UploadKind }>;
   parameters: { properties: Record<string, ToolParameter>; required: string[] };
   output: { kind: ArtifactKind; content_types: string[] };
 };
@@ -15,12 +15,12 @@ export type ToolBinding = { name: string; revision: string; manifest: { tools: T
 export type ToolStep = {
   binding_revision: string;
   revision: number;
-  inputs: Record<string, ArtifactKind | "media">;
+  inputs: Record<string, UploadKind>;
   output: ArtifactKind;
   parameters: Record<string, Scalar>;
 };
 export type Scalar = string | number;
-export type UploadKind = Exclude<ArtifactKind, "metadata"> | "media";
+export type UploadKind = Exclude<ArtifactKind, "metadata" | "archive"> | "media";
 export type UploadReference = { upload_id: string };
 export type InvocationInput = Scalar | UploadReference;
 export type Bindings = Record<string, Binding>;

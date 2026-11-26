@@ -13,7 +13,7 @@ const fileTypes: Record<Exclude<UploadKind, "media">, Record<string, string>> = 
   video: { mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" },
   audio: { wav: "audio/wav", mp3: "audio/mpeg", flac: "audio/flac", ogg: "audio/ogg", opus: "audio/ogg" },
   mesh: { glb: "model/gltf-binary" },
-  document: { pdf: "application/pdf", txt: "text/plain", srt: "text/plain", vtt: "text/vtt" },
+  document: { pdf: "application/pdf", txt: "text/plain", srt: "text/plain", vtt: "text/vtt", gltf: "model/gltf+json" },
 };
 
 function extensions(kind: UploadKind): Record<string, string> {

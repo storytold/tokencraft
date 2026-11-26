@@ -145,12 +145,34 @@ pub(super) async fn read_artifact(
 }
 
 pub(super) async fn download(
-    pool: &sqlx::PgPool, security: &Security, row: &db::Run, node: &str,
+    pool: &sqlx::PgPool, security: &Security, row: &db::Run, node: &str, name: &str,
 ) -> ApiResult<Response> {
     let (bytes, content_type, sha256) = read_artifact(pool, security, row, node).await?;
+    let extension = match content_type.as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/webm" => "webm",
+        "audio/wav" => "wav",
+        "audio/mpeg" => "mp3",
+        "audio/flac" => "flac",
+        "audio/ogg" => "ogg",
+        "application/pdf" => "pdf",
+        "application/json" => "json",
+        "application/zip" => "zip",
+        "model/gltf-binary" => "glb",
+        "model/gltf+json" => "gltf",
+        "text/plain" => "txt",
+        "text/vtt" => "vtt",
+        _ => "bin",
+    };
     Ok(([
         (header::CONTENT_TYPE.as_str(), content_type),
-        (header::CONTENT_DISPOSITION.as_str(), "attachment".into()),
+        (header::CONTENT_DISPOSITION.as_str(), format!("attachment; filename=\"{name}.{extension}\"")),
+        (header::CONTENT_SECURITY_POLICY.as_str(), "sandbox; default-src 'none'".into()),
         (header::CACHE_CONTROL.as_str(), "private, no-store".into()),
         ("x-content-type-options", "nosniff".into()),
         ("x-tokencraft-content-sha256", sha256),
@@ -268,7 +290,8 @@ pub(super) fn matches_type(mime: &str, bytes: &[u8]) -> bool {
         "audio/ogg" => bytes.starts_with(b"OggS"),
         "model/gltf-binary" => bytes.starts_with(b"glTF"),
         "application/pdf" => bytes.starts_with(b"%PDF-"),
-        "application/json" => serde_json::from_slice::<serde_json::Value>(bytes).is_ok(),
+        "application/zip" => bytes.starts_with(b"PK\x03\x04"),
+        "application/json" | "model/gltf+json" => serde_json::from_slice::<serde_json::Value>(bytes).is_ok(),
         "text/plain" | "text/vtt" => std::str::from_utf8(bytes).is_ok(),
         _ => false,
     }

@@ -154,7 +154,7 @@
 }
 .wf-port[data-kind="text"] i { color: light-dark(#6a5390, #d6c3ef); }
 .wf-port[data-kind="image"] i { color: var(--wf-brand); }
-.wf-port:is([data-kind="audio"], [data-kind="media"], [data-kind="metadata"], [data-kind="mesh"], [data-kind="document"]) i { color: light-dark(#4b6156, #b7d1c1); }
+.wf-port:is([data-kind="audio"], [data-kind="media"], [data-kind="metadata"], [data-kind="mesh"], [data-kind="document"], [data-kind="archive"]) i { color: light-dark(#4b6156, #b7d1c1); }
 .wf-port[data-kind="video"] i { color: light-dark(#325a79, #a6d0ea); }
 .wf-port[data-kind="integer"] i { color: var(--wf-success); }
 .wf-port[data-connected] i, .wf-port[aria-pressed="true"] i { background: currentColor; }

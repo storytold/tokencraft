@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "plugin": "tokencraft-mesh",
+  "tools": [
+    {
+      "id": "mesh.inspect",
+      "revision": 1,
+      "label": "Inspect GLB mesh",
+      "inputs": {
+        "source": {
+          "kind": "mesh"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "metadata",
+        "content_types": [
+          "application/json"
+        ]
+      }
+    },
+    {
+      "id": "mesh.scale",
+      "revision": 1,
+      "label": "Scale GLB scenes",
+      "inputs": {
+        "source": {
+          "kind": "mesh"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "factor": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "factor"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "mesh",
+        "content_types": [
+          "model/gltf-binary"
+        ]
+      }
+    },
+    {
+      "id": "mesh.strip_extras",
+      "revision": 1,
+      "label": "Remove GLB application metadata",
+      "inputs": {
+        "source": {
+          "kind": "mesh"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "mesh",
+        "content_types": [
+          "model/gltf-binary"
+        ]
+      }
+    },
+    {
+      "id": "mesh.to_glb",
+      "revision": 1,
+      "label": "Pack embedded glTF into GLB",
+      "inputs": {
+        "source": {
+          "kind": "document"
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "kind": "mesh",
+        "content_types": [
+          "model/gltf-binary"
+        ]
+      }
+    }
+  ]
+}

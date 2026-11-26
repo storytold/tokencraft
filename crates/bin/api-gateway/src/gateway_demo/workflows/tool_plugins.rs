@@ -91,6 +91,7 @@ enum MediaKind {
     Metadata,
     Mesh,
     Document,
+    Archive,
 }
 
 #[derive(Deserialize)]
@@ -272,7 +273,7 @@ impl Manifest {
             );
             ensure!(
                 (1..=8).contains(&tool.inputs.len())
-                    && tool.inputs.iter().all(|(slot, input)| slot_name(slot) && !matches!(input.kind, MediaKind::Metadata)),
+                    && tool.inputs.iter().all(|(slot, input)| slot_name(slot) && !matches!(input.kind, MediaKind::Metadata | MediaKind::Archive)),
                 "invalid workflow tool input slots"
             );
             ensure!(
@@ -298,6 +299,7 @@ impl MediaKind {
             Self::Audio => ValueType::Audio, Self::Media => ValueType::Media,
             Self::Metadata => ValueType::Metadata, Self::Mesh => ValueType::Mesh,
             Self::Document => ValueType::Document,
+            Self::Archive => ValueType::Archive,
         }
     }
 
@@ -313,7 +315,8 @@ impl MediaKind {
             Self::Audio => &["audio/wav", "audio/mpeg", "audio/flac", "audio/ogg"],
             Self::Metadata => &["application/json"],
             Self::Mesh => &["model/gltf-binary"],
-            Self::Document => &["application/pdf", "text/plain", "text/vtt"],
+            Self::Document => &["application/pdf", "text/plain", "text/vtt", "model/gltf+json"],
+            Self::Archive => &["application/zip"],
             Self::Media => return [Self::Image, Self::Video, Self::Audio, Self::Mesh, Self::Document]
                 .into_iter().any(|kind| kind.accepts_type(value)),
         };

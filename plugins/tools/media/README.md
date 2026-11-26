@@ -13,7 +13,7 @@ python3 plugins/tools/media/server.py \
   --host 127.0.0.1 --port 8094
 ```
 
-Provide the service token to the authorized service caller through a secret store. Use one runner process per state directory and keep the directory on a local filesystem with SQLite locking and atomic rename support. For a separate host, run behind private HTTPS ingress with a verified hostname and a small connection pool. Run as an unprivileged account, mount only the state directory writable, and deny outbound network access from the media process. Use a maintained FFmpeg build, CPU and memory limits, and a disk quota. The worker can process one job at a time, with a 90-second processing timeout, 64 MiB per file, and 32 retained or staged requests by default. Successful results, failed jobs, and unsubmitted inputs remain for 24 hours. Expiration retains request identity in SQLite and removes media bytes. When sizing disk capacity, allow for 128 MiB of staged inputs and one result per retained request, upload spools, one active transcode, and SQLite.
+Provide the service token to the authorized service caller through a secret store. Use one runner process per state directory and keep the directory on a local filesystem with SQLite locking and atomic rename support. For a separate host, run behind private HTTPS ingress with a verified hostname and a small connection pool. Run as an unprivileged account, mount only the state directory writable, and deny outbound network access from the media process. Keep the selected system tools current and set CPU, memory, and disk limits. The worker can process one job at a time, with a 90-second processing timeout, 64 MiB per file, and 32 retained or staged requests by default. Successful results, failed jobs, and unsubmitted inputs remain for 24 hours. Expiration retains request identity in SQLite and removes media bytes. When sizing disk capacity, allow for 128 MiB of staged inputs and one result per retained request, upload spools, one active transcode, and SQLite.
 
 ```sh
 curl -fsS http://127.0.0.1:8094/ready
@@ -29,7 +29,7 @@ python3 -m unittest discover -s plugins/tools/media -v
 
 ## Select a pack
 
-The `media` pack uses FFmpeg and is the default when you start this optional runner. The `documents` pack uses Poppler's `pdfinfo`, `pdftoppm`, and `pdftotext`. Start each pack on its own port with a different private state directory and service token. A state directory stays with the pack that initialized it.
+The `media` pack uses FFmpeg and is the default when you start this optional runner. The `documents` pack uses Poppler's `pdfinfo`, `pdftoppm`, and `pdftotext`. The `mesh` and `delivery` packs run with Python's standard library. Start each pack on its own port with a different private state directory and service token. A state directory stays with the pack that initialized it.
 
 ```sh
 export TOKENCRAFT_MEDIA_SERVICE_TOKEN="$(openssl rand -hex 32)"
@@ -38,7 +38,7 @@ python3 plugins/tools/media/server.py \
   --state "$PWD/.tokencraft-documents"
 ```
 
-Use `documents.manifest.json` for the documents binding and `manifest.json` for the FFmpeg binding. The documents runner starts without FFmpeg. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
+Use `manifest.json` for the FFmpeg binding. The other packs use `documents.manifest.json`, `mesh.manifest.json`, and `delivery.manifest.json` respectively. Use the selected pack name in `--pack`. Each process serves only its own manifest at `/v1/tools`. [Register a pack in your gateway](../../../docs/media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway)
 
 ## Operations
 
@@ -50,8 +50,12 @@ Use `documents.manifest.json` for the documents binding and `manifest.json` for 
 | Images | Resize, crop, convert to PNG, JPEG, or WebP, overlay, and extend a still into an MP4 |
 | Documents | Inspect PDF page count and version, render a page as PNG, and extract text across a bounded page range |
 | Captions | Normalize UTF-8 SRT or WebVTT, shift timing, and extract a plain-text transcript |
+| Mesh | Inspect self-contained GLB files, scale scenes, strip application extras, and convert embedded glTF JSON into a GLB |
+| Delivery | Compute a SHA-256 fingerprint and bundle two or four assets into a ZIP with a digest manifest |
 
 The manifest is authoritative for names, revisions, input slots, parameter defaults and constraints, and possible response content types. For the FFmpeg pack, geometry uses encoded pixels. A time in milliseconds refers to the normalized source timeline. A video crop has even output dimensions for 4:2:0 encoding. The runner probes each source and verifies its actual kind. Supported source containers include MP4/MOV, Matroska/WebM, WAV, MP3, FLAC, Ogg, and supported PNG, JPEG, WebP, and GIF images.
+
+The mesh pack accepts glTF 2.0 with one embedded buffer and images stored in buffer views. Scaling wraps each scene's roots in a scale transform and preserves the embedded geometry bytes. [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#glb-file-format-specification)
 
 ## Tool protocol version 1
 

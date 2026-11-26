@@ -18,8 +18,10 @@ from threading import BoundedSemaphore, Event, Thread
 import time
 
 from contract import MediaError, Registry, validate_request
+from delivery import Delivery
 from documents import Documents
 from engine import Engine, Limits, run_command
+from meshes import Meshes
 from queue_store import Capacity, Conflict, Store
 
 
@@ -66,7 +68,7 @@ def validate_submission(data: object, key: str, limit: int, registry: Registry) 
 
 
 class Worker:
-    def __init__(self, engine: Engine | Documents, store: Store):
+    def __init__(self, engine: Engine | Documents | Meshes | Delivery, store: Store):
         self.engine = engine
         self.store = store
         self.stop = Event()
@@ -313,7 +315,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=positive, default=8094)
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--pack", choices=("media", "documents"), default="media")
+    parser.add_argument("--pack", choices=("media", "documents", "mesh", "delivery"), default="media")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--max-file-mib", type=positive, default=64)
@@ -331,6 +333,10 @@ def main():
     limits = Limits(size, size, args.timeout_seconds)
     if args.pack == "documents":
         engine = Documents(limits)
+    elif args.pack == "mesh":
+        engine = Meshes(limits)
+    elif args.pack == "delivery":
+        engine = Delivery(limits)
     else:
         engine = Engine(limits, args.ffmpeg, args.ffprobe)
         encoders = run_command([engine.ffmpeg, "-hide_banner", "-encoders"], 10, read_output=True).decode()

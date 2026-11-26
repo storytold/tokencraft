@@ -737,7 +737,9 @@ pub(super) async fn asset(
         .and_then(|source| progress.outputs.get(source))
     {
         Some(Output::Image { request_id } | Output::Video { request_id }) => request_id,
-        Some(Output::Tool { node, .. }) => return super::tool_execution::download(&state.pool, &security, &row, node).await,
+        Some(Output::Tool { node, .. }) => {
+            return super::tool_execution::download(&state.pool, &security, &row, node, &path.name).await;
+        }
         _ => return Err(management::missing()),
     };
     artifacts::download_for_scope(artifacts::ScopedDownload {

@@ -2,9 +2,9 @@
 
 ## Runner
 
-The independently started [media runner](../plugins/tools/media/README.md) uses reviewed, versioned recipes for video, audio, image, document, and caption operations. Its manifest supplies typed inputs, constrained parameters, and result media types to an editor or an API client. It speaks the queued connector's receipt, result status, request lookup, and artifact transport. The operator provides the service origin, trust configuration, service token, and compute capacity.
+The independently started [media runner](../plugins/tools/media/README.md) uses reviewed, versioned recipes for video, audio, image, document, caption, mesh, and delivery operations. Its manifest supplies typed inputs, constrained parameters, and result media types to an editor or an API client. It speaks the queued connector's receipt, result status, request lookup, and artifact transport. The operator provides the service origin, trust configuration, service token, and compute capacity.
 
-Start the FFmpeg and Poppler packs as separate workers with distinct reviewed manifests and state directories. A workflow can pass a PDF page rendered by Poppler to an image recipe on the FFmpeg worker. CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
+Start each selected pack as a separate worker with its own reviewed manifest and state directory. A workflow can pass a PDF page rendered by Poppler to an image recipe on the FFmpeg worker. CPU recipes can be replaced or extended by another tool service implementing the same contract. Generation models remain available through the existing inference bindings. The runner can process an existing source repeatedly with different parameters. Each operation gets its own request ID and keeps the input bytes immutable for that request.
 
 ## Workflow execution
 
@@ -46,7 +46,7 @@ A pack serves a version-1 JSON manifest at authenticated `GET /v1/tools`. The op
 | --- | --- |
 | Input slots | One to eight required named files. Kinds include `image`, `video`, `audio`, `document`, `mesh`, or `media` for any accepted file kind. |
 | Parameters | A JSON object with `additionalProperties: false`. Declare required keys, bounded integer or numeric values, or enumerated strings. Optional defaults are part of the pinned manifest. |
-| Result | One artifact with an explicit kind and one or more accepted content types. `metadata` uses JSON. |
+| Result | One artifact with an explicit kind and one or more accepted content types. `metadata` uses JSON. `archive` uses ZIP and is a terminal output. |
 | Lifecycle | Stage each input with its exact length and SHA-256. Persist the receipt before reporting acceptance. Return the same handle on identical replay and support request lookup after a lost response. |
 | Storage | Keep inputs immutable after staging and isolate each service's job state from other pack instances. Return verified bytes from the authenticated result endpoint. |
 
@@ -60,8 +60,8 @@ See the [documents and caption manifest](../plugins/tools/media/documents.manife
 | Audio | Extraction, loudness, transitions, channel routing, mix and concatenation, noise treatment, and stem workflows |
 | Image | Geometry, format conversion, masks and alpha compositing, thumbnails, color transforms, and batch preparation |
 | Analysis | Typed probe output, fingerprints, waveform and loudness data, timestamps, and quality inspection |
-| Specialist assets | Documents and rasterized pages, vector assets, mesh inspection and conversion, transcripts and captions, and optional model-backed finishing |
-| Publishing | Packaging several project outputs with verified metadata and deterministic names |
+| Specialist assets | Vector assets, mesh formats beyond self-contained glTF, and optional model-backed finishing |
+| Publishing | Extend fixed-size delivery bundles to larger project packages |
 
 CPU and model-backed packs share the versioned descriptor, explicit project policy, scoped inputs, and durable job receipts. Each pack declares its own media envelope, prerequisites, and execution model. The public image, video, and audio tooling reference for the first runner is the [FFmpeg documentation](https://ffmpeg.org/documentation.html).
 
@@ -84,7 +84,7 @@ Start the [worker](../plugins/tools/media/README.md#run-from-an-audited-checkout
 }
 ```
 
-Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the gateway and workflow workers. Set the named environment variable in their secret configuration to the worker's `TOKENCRAFT_MEDIA_SERVICE_TOKEN`. A loopback sidecar can use HTTP. A separate host requires HTTPS. Use the matching reviewed manifest on the worker and in the registry. To add the documents pack, add a second entry with a distinct binding name, token variable, origin, and the reviewed `documents.manifest.json` file.
+Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the gateway and workflow workers. Set the named environment variable in their secret configuration to the worker's `TOKENCRAFT_MEDIA_SERVICE_TOKEN`. A loopback sidecar can use HTTP. A separate host requires HTTPS. Use the matching reviewed manifest on the worker and in the registry. Add a separate binding for each additional pack with a distinct binding name, token variable, origin, and reviewed manifest.
 
 Project developers and admins can discover their approved bindings at `GET /v1/projects/{project}/workflow-tools?account_id={account}` with a session cookie. An admin can add `&verify=studio-media` to verify the selected binding against the live worker. A successful check returns `reachable: true` and the matching manifest. Ordinary discovery uses the reviewed local manifest and succeeds during a worker outage. The gateway keeps connector origins and credentials out of the discovery response.
 
