@@ -65,7 +65,7 @@ def run(args, **options):
     return subprocess.run(args, check=True, **options)
 
 
-def build_binaries(pg_bin, target, cargo_profile, offline):
+def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT):
     """Compile SQLx queries against a migrated cluster on a private Unix socket."""
     cargo = ["cargo", "build", "--locked", "--profile", cargo_profile]
     if offline:
@@ -84,9 +84,9 @@ def build_binaries(pg_bin, target, cargo_profile, offline):
         try:
             run([*settings, "-l", log, "-o", options, "-w", "start"])
             build_env = {**env, "DATABASE_URL": f"postgresql://tokencraft@localhost/postgres?host={quote(temp, safe='')}"}
-            run([*cargo, "-p", "tokencraft", "-p", "admin_cli"], cwd=ROOT, env=build_env)
+            run([*cargo, "-p", "tokencraft", "-p", "admin_cli"], cwd=source, env=build_env)
             run([directory / "admin-cli", "migrate"], cwd=work, env=build_env)
-            run([*cargo, "-p", "api_gateway", "--bin", "api-gateway"], cwd=ROOT, env=build_env)
+            run([*cargo, "-p", "api_gateway", "--bin", "api-gateway"], cwd=source, env=build_env)
         finally:
             if (db / "postmaster.pid").exists():
                 run([*settings, "-m", "fast", "-w", "stop"])

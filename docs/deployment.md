@@ -80,6 +80,21 @@ Use a coordinated drain and restart when moving to schema 80. Published workflow
 
 Migration 81 adds an optional customer reference to new terminal workflow webhook events. Schema-80 API and worker binaries can overlap with the new fleet. Existing queued deliveries keep their original payload bytes and runtime grants carry forward.
 
+### Rehearse the cutover before release
+
+The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. It checks preflight, receipt replay, artifact and webhook bytes, completion of queued work, and rollback to the older gateway with independently restored database and connector state.
+
+Run the same rehearsal from a source checkout with matching binaries, PostgreSQL 17, OpenSSL, and loopback port 4019 available.
+
+```sh
+python3 -B scripts/smoke_release_cutover.py \
+  --baseline-admin ./baseline/bin/admin-cli \
+  --baseline-gateway ./baseline/bin/api-gateway \
+  --candidate-admin ./target/debug/admin-cli \
+  --candidate-gateway ./target/debug/api-gateway \
+  --connector ./target/debug/tokencraft
+```
+
 ## Connect existing compute endpoints
 
 In the organization console, open **Providers → Compute → Connect endpoint**. Choose AWS, Firebase / Cloud Run, Render, or Custom endpoint. All four templates use the same OpenAI-compatible chat request and response. Supply the deployed endpoint, target name, placement, and priority. Use HTTPS and the name of a bearer token environment variable for a remote endpoint. Local fixtures can use loopback HTTP. The review step validates configuration without calling the endpoint.

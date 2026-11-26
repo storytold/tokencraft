@@ -1,0 +1,76 @@
+name: Release cutover
+
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/release-cutover.yml'
+      - '.github/scripts/install-postgresql17-ubuntu.sh'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'deploy/postgres/**'
+      - 'examples/connector/**'
+      - 'examples/mapping/**'
+      - 'scripts/**'
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out the schema-70 release
+        uses: actions/checkout@v4
+        with:
+          ref: 06276c924ad921a3b4b00a27d3a85b4b525b046c
+          path: cutover-baseline
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PostgreSQL 17
+        run: bash .github/scripts/install-postgresql17-ubuntu.sh
+      - name: Build both versions against their own migrated databases
+        shell: bash
+        run: |
+          PYTHONPATH=scripts python3 -B - "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import shutil
+          import sys
+
+          from native_package import build_binaries
+          from postgres_tools import postgres_bin
+
+          runner = Path(sys.argv[1])
+          target = runner / "cutover-target"
+          saved = runner / "cutover-baseline-bin"
+          saved.mkdir()
+          pg = postgres_bin()
+          baseline = build_binaries(pg, target, "dev", False, source=Path("cutover-baseline"))
+          for binary in ("admin-cli", "api-gateway"):
+              shutil.copy2(baseline / binary, saved / binary)
+          build_binaries(pg, target, "dev", False)
+          PY
+      - name: Verify the migration and restore the prior release
+        shell: bash
+        run: |
+          baseline="$RUNNER_TEMP/cutover-baseline-bin"
+          candidate="$RUNNER_TEMP/cutover-target/debug"
+          python3 -B scripts/smoke_release_cutover.py \
+            --baseline-admin "$baseline/admin-cli" \
+            --baseline-gateway "$baseline/api-gateway" \
+            --candidate-admin "$candidate/admin-cli" \
+            --candidate-gateway "$candidate/api-gateway" \
+            --connector "$candidate/tokencraft"

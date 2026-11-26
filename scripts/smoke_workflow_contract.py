@@ -270,11 +270,15 @@ def webhook_receiver():
             listener.join()
 
 
-def verify_signed_delivery(port, listing, query, session, receiver, subscription, event_type, data):
+def verify_signed_delivery(
+    port, listing, query, session, receiver, subscription, event_type, data, *, expected_payload=None,
+):
     secret = b64decode(subscription["signing_secret"].removeprefix("whsec_"))
     original = None
     for _ in range(2):
         headers, raw = receiver.received.get(timeout=10)
+        if expected_payload is not None:
+            assert raw == expected_payload
         notice = json.loads(raw)
         event_id = headers["webhook-id"]
         timestamp = headers["webhook-timestamp"]
