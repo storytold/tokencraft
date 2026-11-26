@@ -31,10 +31,11 @@ def origin(value):
 
 
 class Gateway:
-    def __init__(self, address, key, tls):
+    def __init__(self, address, key, tls, *, private_api=False):
         self.address = address
         self.key = key
         self.tls = tls
+        self.private_api = private_api
 
     def request(self, path, expected=200, *, body=None, idempotency_key=None):
         host, port = self.address.hostname, self.address.port
@@ -55,6 +56,11 @@ class Gateway:
             response = connection.getresponse()
             if response.status != expected:
                 raise RuntimeError(f"{path.split('?')[0]} returned HTTP {response.status}, expected {expected}")
+            if self.private_api and path.startswith("/v1/"):
+                policies = response.headers.get_all("Cache-Control", [])
+                directives = {part.strip().lower() for value in policies for part in value.split(",")}
+                require(len(policies) == 1 and {"private", "no-store"} <= directives,
+                        f"{path.split('?')[0]} did not return a private, non-storable response")
             raw = response.read(MAX_RESPONSE + 1)
             if len(raw) > MAX_RESPONSE:
                 raise RuntimeError("Gateway response exceeded the smoke check size limit")
@@ -180,8 +186,8 @@ def main():
             verify_revision(args.api, tls, args.revision)
             if args.peer is not None and args.peer != args.api:
                 verify_revision(args.peer, tls, args.revision)
-        first = Gateway(args.api, key, tls)
-        peer = Gateway(args.peer, key, tls) if args.peer else first
+        first = Gateway(args.api, key, tls, private_api=args.revision is not None)
+        peer = Gateway(args.peer, key, tls, private_api=args.revision is not None) if args.peer else first
         request_id, path, trace_id = admit(first, peer, run_id)
         wait_for_result(peer, path)
         verify_artifact(peer, path)

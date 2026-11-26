@@ -244,7 +244,7 @@ pub(super) async fn project_media(
             "scoped media profile is unavailable".into(),
         )),
     };
-    super::no_store(result.into_response()).await
+    result.into_response()
 }
 
 async fn run(gateway: &MediaGateway, request: Request) -> ApiResult<Response> {

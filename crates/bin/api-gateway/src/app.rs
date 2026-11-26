@@ -341,5 +341,6 @@ fn build_router_inner(
     .layer(cors)
     .layer(trace)
     .layer(axum::middleware::from_fn(trace_context::scope))
+    .layer(axum::middleware::map_response(crate::middleware::cache_control::apply))
     .with_state(state)
 }

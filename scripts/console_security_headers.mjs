@@ -29,16 +29,27 @@ const headers = [
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
 ];
 
+const proxyCache = [{ key: "Vercel-CDN-Cache-Control", value: "no-store" }];
+const rules = [
+  { source: "/v1/:path*", headers: proxyCache },
+  { source: "/ready", headers: proxyCache },
+  { source, headers },
+];
+
 const write = process.argv[2] === "--write";
 for (const filename of ["vercel.json", "frontend/vercel.json"]) {
   const path = new URL(filename, root);
-  const current = readFileSync(path, "utf8");
-  const config = JSON.parse(current);
-  const expected = { source, headers };
-  const entry = config.headers?.find(({ source: pattern }) => pattern === source);
-  if (JSON.stringify(entry) === JSON.stringify(expected)) continue;
-  if (!write) throw new Error(`${filename} has stale console security headers. Run node scripts/console_security_headers.mjs --write.`);
-  const retained = config.headers?.filter(({ source: pattern }) => pattern !== source) ?? [];
-  config.headers = [...retained, expected];
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  const existing = config.headers ?? [];
+  const matches = rules.every((rule) => {
+    const entries = existing.filter(({ source: pattern }) => pattern === rule.source);
+    return entries.length === 1 && JSON.stringify(entries[0]) === JSON.stringify(rule);
+  });
+  if (matches) continue;
+  if (!write) throw new Error(`${filename} has stale console or proxy security headers. Run node scripts/console_security_headers.mjs --write.`);
+  config.headers = [
+    ...existing.filter(({ source: pattern }) => !rules.some((rule) => rule.source === pattern)),
+    ...rules,
+  ];
   writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
 }

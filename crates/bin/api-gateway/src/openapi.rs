@@ -4,8 +4,9 @@
 use std::sync::LazyLock;
 
 use axum::body::Bytes;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::CONTENT_TYPE;
 use axum::response::IntoResponse;
+use axum::Extension;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
@@ -14,6 +15,7 @@ use crate::handlers::{
   account, api_keys, audit_logs, auth, avatar, catalog, files, invitations, login_methods, org, root,
   sessions,
 };
+use crate::middleware::cache_control::PublicSchema;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -115,7 +117,8 @@ static DOCUMENT: LazyLock<Bytes> = LazyLock::new(|| {
 )]
 pub(crate) async fn document() -> impl IntoResponse {
   (
-    [(CONTENT_TYPE, "application/json"), (CACHE_CONTROL, "public, max-age=300")],
+    Extension(PublicSchema),
+    [(CONTENT_TYPE, "application/json")],
     (*DOCUMENT).clone(),
   )
 }
@@ -127,7 +130,8 @@ pub(crate) async fn document() -> impl IntoResponse {
 )]
 pub(crate) async fn primitive_schemas() -> impl IntoResponse {
   (
-    [(CONTENT_TYPE, "application/schema+json"), (CACHE_CONTROL, "public, max-age=300")],
+    Extension(PublicSchema),
+    [(CONTENT_TYPE, "application/schema+json")],
     Bytes::from_static(provider_mapping::Registry::builtin_json()),
   )
 }

@@ -29,6 +29,7 @@ async fn signup_sets_cookie_and_me_returns_user() {
     .await
     .unwrap();
   assert_eq!(resp.status(), StatusCode::CREATED);
+  assert_eq!(resp.headers()[header::CACHE_CONTROL], "private, no-store");
   let cookie = session_cookie(&resp).expect("signup should set a session cookie");
   let body = body_json(resp).await;
   assert_eq!(body["user"]["email"], email);
@@ -36,11 +37,13 @@ async fn signup_sets_cookie_and_me_returns_user() {
   // /me with the cookie → the same user.
   let me = app.clone().oneshot(get("/v1/auth/me", Some(&cookie))).await.unwrap();
   assert_eq!(me.status(), StatusCode::OK);
+  assert_eq!(me.headers()[header::CACHE_CONTROL], "private, no-store");
   assert_eq!(body_json(me).await["user"]["email"], email);
 
   // /me without a cookie → 401.
   let anon = app.oneshot(get("/v1/auth/me", None)).await.unwrap();
   assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+  assert_eq!(anon.headers()[header::CACHE_CONTROL], "private, no-store");
 }
 
 #[tokio::test]

@@ -3,9 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::header::CACHE_CONTROL;
-use axum::http::HeaderValue;
-use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 
@@ -394,14 +391,6 @@ fn router(config: DemoConfig) -> Router<AppState> {
     router
         .layer(Extension(archive_storage))
         .layer(DefaultBodyLimit::max(8192))
-        .layer(axum::middleware::map_response(no_store))
-}
-
-async fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
 }
 
 pub(crate) fn probe_router<S: Clone + Send + Sync + 'static>(config: &DemoConfig) -> Router<S> {
@@ -414,7 +403,7 @@ pub(crate) fn probe_router<S: Clone + Send + Sync + 'static>(config: &DemoConfig
     router
         .layer(Extension(Arc::clone(&config.readiness)))
         .layer(Extension(config.providers.clone()))
-        .layer(axum::middleware::map_response(no_store))
+        .layer(axum::middleware::map_response(crate::middleware::cache_control::apply))
 }
 
 pub(crate) fn mount_api_routes(base: Router<AppState>, config: DemoConfig) -> Router<AppState> {

@@ -66,6 +66,30 @@ check_gateway_revision() {
   printf 'PASS %s gateway source revision\n' "$target"
 }
 
+check_session_cache_policy() {
+  local origin=$1 target=$2
+  if ! request --output /dev/null --dump-header - -- "$origin/v1/auth/me" |
+    awk '
+      /^HTTP\// { denied = ($2 == 401); policies = 0; private = 0; no_store = 0 }
+      tolower($1) == "cache-control:" {
+        policies++
+        line = tolower($0)
+        sub(/^cache-control:/, "", line)
+        gsub(/[ \t\r]/, "", line)
+        count = split(line, directive, ",")
+        for (i = 1; i <= count; i++) {
+          if (directive[i] == "private") private = 1
+          if (directive[i] == "no-store") no_store = 1
+        }
+      }
+      END { exit !(denied && policies == 1 && private && no_store) }
+    '; then
+    printf 'FAIL %s /v1/auth/me must return a private, non-storable 401\n' "$target" >&2
+    return 1
+  fi
+  printf 'PASS %s session cache policy\n' "$target"
+}
+
 result=0
 check "$console" console ready 'report the gateway ready' jq -es 'length == 1 and .[0].ready == true' || result=1
 check "$gateway" gateway ready 'report ready' jq -es 'length == 1 and .[0].ready == true' || result=1
@@ -79,6 +103,8 @@ check_rate_limit_route "$console" console || result=1
 if [[ -n "$revision" ]]; then
   check_gateway_revision "$gateway" gateway || result=1
   check_gateway_revision "$console" console || result=1
+  check_session_cache_policy "$gateway" gateway || result=1
+  check_session_cache_policy "$console" console || result=1
   check "$console" console release.json 'report the expected console source revision' \
     jq -es --arg revision "$revision" 'length == 1 and .[0].source_revision == $revision' || result=1
 fi

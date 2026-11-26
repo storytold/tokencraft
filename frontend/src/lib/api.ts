@@ -52,6 +52,7 @@ async function send<T>(method: string, path: string, init: { headers?: Record<st
     resp = await fetch(`${API_BASE_URL}${path}`, {
       method,
       credentials: "include",
+      cache: "no-store",
       headers: init.headers,
       body: init.body,
     });

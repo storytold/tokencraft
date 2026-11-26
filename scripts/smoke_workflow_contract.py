@@ -67,6 +67,28 @@ def call(port, path, expected, *, method="GET", body=None, headers=None):
         connection.close()
 
 
+def assert_private_response(headers):
+    assert headers.get_all("Cache-Control", []) == ["private, no-store"], headers
+
+
+def verify_cache_policy(port, session, account, project):
+    for path, status, headers in (
+        ("/v1/auth/me", 200, session),
+        ("/v1/auth/me", 401, None),
+        ("/v1/auth/sessions", 200, session),
+        ("/v1/accounts", 200, session),
+        ("/v1/user/audit_logs", 200, session),
+        (f"/v1/usage?account_id={account}&project_id={project}", 200, session),
+        ("/v1/not-a-route", 404, session),
+    ):
+        _, response = call(port, path, status, headers=headers)
+        assert_private_response(response)
+    for path in ("/openapi.json", "/v1/schemas/primitives"):
+        _, response = call(port, path, 200)
+        assert response.get_all("Cache-Control", []) == ["public, max-age=300"], response
+    print("PASS session, audit, usage and errors are non-storable while public schema documents retain their TTL")
+
+
 def ready(port):
     return call(port, "/ready", 200)[0]["ready"] is True
 
@@ -617,6 +639,8 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     tag = status_headers["ETag"]
     empty, cached = call(port, receipt["status_url"], 304, headers={**auth, "If-None-Match": tag})
     assert empty == b"" and cached["ETag"] == tag
+    assert_private_response(status_headers)
+    assert_private_response(cached)
     error, rejected = call(port, receipt["status_url"] + "/cancel", 409, method="POST", headers=auth)
     verify_json_response(spec, paths[paths_run + "/cancel"]["post"], 409, error, rejected)
     assert error["error"]["code"] == "conflict"
@@ -1291,6 +1315,7 @@ def rehearse(gateway, admin, directory, *, verification=None):
         print("PASS startup initializes an empty schema and schema status verifies the ledger with the runtime login")
         with service("setup-api", [gateway], directory, settings, lambda: ready(api_port)):
             session, account, project = provision(api_port)
+            verify_cache_policy(api_port, session, account, project)
             contract, _ = call(api_port, "/openapi.json", 200)
             for path in ("/v1/setup/status", "/v1/operations/queues", "/v1/operations/artifact-publication"):
                 assert path not in contract["paths"]
