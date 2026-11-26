@@ -1,4 +1,4 @@
-import type { Binding, Graph, Setting, Step, ValueKind } from "./types";
+import type { Binding, Graph, Setting, Step, UploadKind, ValueKind } from "./types";
 
 export type WireSource = Extract<Binding, { source: "request" | "step" }>;
 export type WireTarget = { step: Step; setting: Setting };
@@ -44,9 +44,16 @@ export function sourceName(graph: Graph, source: WireSource) {
   return source.source === "request" ? graph.inputs[source.field]?.title : graph.nodes.find((node) => node.id === source.step)?.title;
 }
 
+export function isFileInput(kind: ValueKind | undefined): kind is UploadKind {
+  return kind === "media" || artifactKind(kind);
+}
+
+export function acceptsKind(target: ValueKind, source: ValueKind | undefined) {
+  return source === target || (target === "media" && artifactKind(source));
+}
+
 export function canWire(graph: Graph, source: WireSource, { step, setting }: WireTarget): boolean {
-  const kind = sourceKind(graph, source);
-  if (kind !== setting.kind && !(setting.kind === "media" && artifactKind(kind))) return false;
+  if (!acceptsKind(setting.kind, sourceKind(graph, source))) return false;
   if (source.source === "request") return true;
   const seen = new Set<string>();
   const steps = new Map(graph.nodes.map((node) => [node.id, node]));

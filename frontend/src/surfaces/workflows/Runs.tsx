@@ -5,10 +5,31 @@ import { errorMessage, type ProjectScope } from "@/lib/gateway";
 import { workflowApi } from "./api";
 import { usd } from "./editor";
 import { Dialog } from "./IntentDialog";
-import { statusLabel, TERMINAL, type Graph, type Run, type RunSummary, type Scalar, type WorkflowInput } from "./types";
+import { isFileInput } from "./wiring";
+import { statusLabel, TERMINAL, type Graph, type Run, type RunSummary, type InvocationInput, type UploadKind, type UploadReference, type WorkflowInput } from "./types";
 
-export function TestDialog({ graph, onClose, onRun }: {
-  graph: Graph; onClose: () => void; onRun: (inputs: Record<string, Scalar>, key: string) => Promise<void>;
+const fileTypes: Record<Exclude<UploadKind, "media">, Record<string, string>> = {
+  image: { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" },
+  video: { mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" },
+  audio: { wav: "audio/wav", mp3: "audio/mpeg", flac: "audio/flac", ogg: "audio/ogg", opus: "audio/ogg" },
+  mesh: { glb: "model/gltf-binary" },
+  document: { pdf: "application/pdf", txt: "text/plain", vtt: "text/vtt" },
+};
+
+function extensions(kind: UploadKind): Record<string, string> {
+  return kind === "media" ? Object.assign({}, ...Object.values(fileTypes)) : fileTypes[kind];
+}
+
+async function fileDigest(file: File) {
+  const hash = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function TestDialog({ graph, onClose, onUpload, onRun }: {
+  graph: Graph;
+  onClose: () => void;
+  onUpload: (file: File, type: string, digest: string) => Promise<UploadReference>;
+  onRun: (inputs: Record<string, InvocationInput>, key: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -19,22 +40,40 @@ export function TestDialog({ graph, onClose, onRun }: {
     {input.title} <code>{name}</code>
     {input.kind === "integer"
       ? <input name={name} type="number" min={1} max={32000} defaultValue={input.default ?? ""} required={input.default === null} />
-      : <textarea name={name} rows={2} maxLength={4000} defaultValue={input.default ?? ""} required={input.default === null} />}
+      : isFileInput(input.kind)
+        ? <input name={name} type="file" required accept={Object.keys(extensions(input.kind)).map((ext) => "." + ext).join(",")} />
+        : <textarea name={name} rows={2} maxLength={4000} defaultValue={input.default ?? ""} required={input.default === null} />}
   </label>;
   return <Dialog title="Test draft" onClose={onClose}>
     <form className="wf-stack" onSubmit={async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
-      const inputs: Record<string, Scalar> = {};
-      for (const [name, definition] of Object.entries(graph.inputs)) {
-        const raw = String(form.get(name) ?? "").trim();
-        if (raw !== "") inputs[name] = definition.kind === "integer" ? Number(raw) : raw;
-      }
-      const serialized = JSON.stringify(inputs);
-      if (intent.current?.serialized !== serialized) intent.current = { serialized, key: crypto.randomUUID() };
       setBusy(true); setError("");
-      try { await onRun(inputs, intent.current.key); }
-      catch (failure) { setError(errorMessage(failure)); setBusy(false); }
+      try {
+        const values: Record<string, InvocationInput> = {};
+        for (const [name, definition] of inputs) {
+          const raw = form.get(name);
+          if (isFileInput(definition.kind)) {
+            if (!(raw instanceof File) || !raw.size || raw.size > 32 * 1024 * 1024) {
+              throw new Error(`Choose a file up to 32 MiB for ${definition.title}.`);
+            }
+            const types = extensions(definition.kind);
+            const type = Object.values(types).find((mime) => mime === raw.type)
+              ?? types[raw.name.toLowerCase().split(".").pop() ?? ""];
+            if (!type) throw new Error(`Choose a supported file format for ${definition.title}.`);
+            const { upload_id } = await onUpload(raw, type, await fileDigest(raw));
+            values[name] = { upload_id };
+          } else if (typeof raw === "string" && raw.trim()) {
+            values[name] = definition.kind === "integer" ? Number(raw) : raw.trim();
+          }
+        }
+        const serialized = JSON.stringify(values);
+        if (intent.current?.serialized !== serialized) intent.current = { serialized, key: crypto.randomUUID() };
+        await onRun(values, intent.current.key);
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : errorMessage(failure));
+        setBusy(false);
+      }
     }}>
       <p className="wf-muted">Runs the saved draft with the selected steps. The maximum spend is {usd(graph.max_usd_nanos)}.</p>
       {inputs.filter(([, input]) => input.default === null).map(field)}

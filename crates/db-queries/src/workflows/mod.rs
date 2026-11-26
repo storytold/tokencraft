@@ -166,3 +166,6 @@ pub use revoke_key::*;
 
 mod tool_artifact;
 pub use tool_artifact::*;
+
+mod upload;
+pub use upload::*;

@@ -2,17 +2,20 @@ import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
 import { nextId } from "./editor";
-import type { Graph, WorkflowInput } from "./types";
+import { isFileInput } from "./wiring";
+import type { Graph, UploadKind, WorkflowInput } from "./types";
 
 export function ContractEditor({ graph, onChange }: { graph: Graph; onChange: (graph: Graph) => void }) {
   const [outputName, setOutputName] = useState("");
   const [revealOptional, setRevealOptional] = useState(false);
+  const [fileKind, setFileKind] = useState<UploadKind>("image");
   function changeInput(name: string, input: WorkflowInput) {
     onChange({ ...graph, inputs: { ...graph.inputs, [name]: input } });
   }
   function addInput(kind: WorkflowInput["kind"]) {
-    const name = nextId(kind === "text" ? "input" : "number", Object.keys(graph.inputs));
-    changeInput(name, { title: kind === "text" ? "Text input" : "Numeric input", kind, default: null });
+    const name = nextId(kind === "text" ? "input" : kind === "integer" ? "number" : kind, Object.keys(graph.inputs));
+    const title = kind === "text" ? "Text input" : kind === "integer" ? "Numeric input" : `${kind} file`;
+    changeInput(name, { title, kind, default: null });
   }
   function removeInput(name: string) {
     const inputs = { ...graph.inputs };
@@ -27,13 +30,13 @@ export function ContractEditor({ graph, onChange }: { graph: Graph; onChange: (g
         <label className="wf-field">Display name
           <input value={input.title} maxLength={100} onChange={(event) => changeInput(name, { ...input, title: event.target.value })} />
         </label>
-        <label className="wf-checkbox">
+        {!isFileInput(input.kind) && <label className="wf-checkbox">
           <input type="checkbox" checked={input.default !== null} onChange={(event) => {
             const checked = event.target.checked;
             if (checked) setRevealOptional(true);
             changeInput(name, { ...input, default: checked ? (input.kind === "integer" ? 1 : "") : null });
           }} /> Provide a default
-        </label>
+        </label>}
         {input.default !== null && <input aria-label={`${name} default value`} type={input.kind === "integer" ? "number" : "text"}
           value={input.default} onChange={(event) => changeInput(name, {
             ...input, default: input.kind === "integer" ? Number(event.target.value) : event.target.value,
@@ -54,6 +57,15 @@ export function ContractEditor({ graph, onChange }: { graph: Graph; onChange: (g
     <div className="wf-actions">
       <button className="wf-button wf-small" type="button" disabled={inputs.length >= 24} onClick={() => addInput("text")}><Plus size={13} /> Text field</button>
       <button className="wf-button wf-small" type="button" disabled={inputs.length >= 24} onClick={() => addInput("integer")}><Plus size={13} /> Numeric field</button>
+    </div>
+    <div className="wf-inline-form">
+      <select aria-label="File input type" value={fileKind} onChange={(event) => setFileKind(event.target.value as UploadKind)}>
+        <option value="image">Image</option><option value="video">Video</option><option value="audio">Audio</option>
+        <option value="document">Document</option><option value="mesh">3D mesh</option><option value="media">Any supported file</option>
+      </select>
+      <button className="wf-button wf-small" type="button" disabled={inputs.length >= 24} onClick={() => addInput(fileKind)}>
+        <Plus size={13} /> File field
+      </button>
     </div>
     <h4>Response outputs</h4>
     {Object.entries(graph.outputs).map(([name, step]) =>

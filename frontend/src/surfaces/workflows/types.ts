@@ -20,6 +20,9 @@ export type ToolStep = {
   parameters: Record<string, Scalar>;
 };
 export type Scalar = string | number;
+export type UploadKind = Exclude<ArtifactKind, "metadata"> | "media";
+export type UploadReference = { upload_id: string };
+export type InvocationInput = Scalar | UploadReference;
 export type Bindings = Record<string, Binding>;
 export type Binding =
   | { source: "fixed"; value: Scalar }
@@ -40,7 +43,7 @@ export type WorkflowModel = {
 };
 export type Capabilities = { primitives: Primitive[]; models: WorkflowModel[]; tools?: ToolBinding[] };
 export type ProposedStep = { kind: PrimitiveKind; title: string; animated_image?: boolean };
-export type WorkflowInput = { title: string; kind: "text" | "integer"; default: Scalar | null };
+export type WorkflowInput = { title: string; kind: "text" | "integer" | UploadKind; default: Scalar | null };
 export type Step = {
   id: string;
   title: string;

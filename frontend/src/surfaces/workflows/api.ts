@@ -1,5 +1,5 @@
 import { gatewayRequest, type ProjectScope } from "@/lib/gateway";
-import type { AppKey, Capabilities, Graph, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, Scalar, ToolBinding, Workflow, WorkflowSummary } from "./types";
+import type { AppKey, Capabilities, Graph, InvocationInput, IssuedKey, Permission, ProposedStep, Receipt, Release, Run, RunSummary, ToolBinding, UploadReference, Workflow, WorkflowSummary } from "./types";
 
 const scopeSuffix = (scope: ProjectScope) => `?account_id=${encodeURIComponent(scope.account_id)}`;
 const projectRoot = (scope: ProjectScope) => `/v1/projects/${encodeURIComponent(scope.project_id)}`;
@@ -37,7 +37,12 @@ export const workflowApi = {
     `${consoleRoot(scope, workflow.id)}/activation${scopeSuffix(scope)}`,
     write({ expected_version: workflow.active_version, version, paused }),
   ),
-  test: (scope: ProjectScope, workflow: Workflow, inputs: Record<string, Scalar>, idempotencyKey: string) =>
+  upload: (scope: ProjectScope, workflow: string, file: File, type: string, sha256: string) =>
+    gatewayRequest<UploadReference & { expires_at: string }>(
+      `${workflowEndpoint(scope, workflow)}/uploads${scopeSuffix(scope)}`,
+      { method: "POST", headers: { "Content-Type": type, "X-TokenCraft-Content-Sha256": sha256 }, body: file },
+    ),
+  test: (scope: ProjectScope, workflow: Workflow, inputs: Record<string, InvocationInput>, idempotencyKey: string) =>
     gatewayRequest<Receipt>(`${consoleRoot(scope, workflow.id)}/test-runs${scopeSuffix(scope)}`,
       write({ revision: workflow.revision, inputs }, "POST", { "Idempotency-Key": idempotencyKey })),
   runs: (scope: ProjectScope, id: string, signal?: AbortSignal) =>
@@ -47,7 +52,7 @@ export const workflowApi = {
   cancel: (scope: ProjectScope, workflow: string, run: string) =>
     gatewayRequest<void>(`${workflowEndpoint(scope, workflow)}/runs/${encodeURIComponent(run)}/cancel${scopeSuffix(scope)}`, { method: "POST" }),
   openApi: (scope: ProjectScope, workflow: string) =>
-    gatewayRequest<{ "x-workflow-example-inputs"?: Record<string, Scalar> }>(`${workflowEndpoint(scope, workflow)}/openapi.json${scopeSuffix(scope)}`),
+    gatewayRequest<{ "x-workflow-example-inputs"?: Record<string, InvocationInput>; "x-workflow-upload-inputs"?: Record<string, string> }>(`${workflowEndpoint(scope, workflow)}/openapi.json${scopeSuffix(scope)}`),
   keys: (scope: ProjectScope, id: string, signal?: AbortSignal) =>
     gatewayRequest<AppKey[]>(`${consoleRoot(scope, id)}/apps${scopeSuffix(scope)}`, { signal }),
   createApp: (scope: ProjectScope, id: string, name: string, scopes: Permission[], days: number) =>

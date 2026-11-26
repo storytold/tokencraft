@@ -7,14 +7,14 @@ use reqwest::{Method, StatusCode};
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 
-use super::graph::{Binding as Edge, Node, Output};
+use super::graph::{Binding as Edge, Node, Output, Value};
 use super::runner::{self, Runtime, State};
 use super::tool_plugins::{Binding, Tool};
-use super::Security;
+use super::{uploads, Security};
 use crate::error::{ApiError, ApiResult};
 use crate::gateway_demo::artifacts::{self, ScopedDownload};
 
-const MAX_ARTIFACT: usize = 32 * 1024 * 1024;
+pub(super) const MAX_ARTIFACT: usize = 32 * 1024 * 1024;
 const MAX_INPUT_SUM: usize = 64 * 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
@@ -89,7 +89,7 @@ fn valid_handle(value: &str) -> bool {
         value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-fn sha(bytes: &[u8]) -> String {
+pub(super) fn sha(bytes: &[u8]) -> String {
     hex::encode(digest(&SHA256, bytes).as_ref())
 }
 
@@ -164,15 +164,21 @@ async fn stage(
     let mut total = 0;
     for (slot, edge) in &node.settings {
         let missing = || ApiError::BadRequest(format!("tool input {slot} has no usable media"));
-        let Edge::Step { step } = edge else { return Err(missing()); };
-        let (bytes, mime, sha256) = match state.outputs.get(step) {
-            Some(Output::Image { request_id } | Output::Video { request_id }) => {
-                artifacts::read_verified(ScopedDownload {
-                    pool: &runtime.pool, scope: runner::scope(row), runtime: runtime.providers.as_deref(),
-                    request: request_id, slot: 0,
-                }).await?
-            }
-            Some(Output::Tool { node, .. }) => read_artifact(&runtime.pool, &runtime.security, row, node).await?,
+        let (bytes, mime, sha256) = match edge {
+            Edge::Step { step } => match state.outputs.get(step) {
+                Some(Output::Image { request_id } | Output::Video { request_id }) => {
+                    artifacts::read_verified(ScopedDownload {
+                        pool: &runtime.pool, scope: runner::scope(row), runtime: runtime.providers.as_deref(),
+                        request: request_id, slot: 0,
+                    }).await?
+                }
+                Some(Output::Tool { node, .. }) => read_artifact(&runtime.pool, &runtime.security, row, node).await?,
+                _ => return Err(missing()),
+            },
+            Edge::Request { field } => match state.inputs.get(field) {
+                Some(Value::Upload(reference)) => uploads::read(runtime, row, &reference.upload_id).await?,
+                _ => return Err(missing()),
+            },
             _ => return Err(missing()),
         };
         total += bytes.len();
@@ -248,7 +254,7 @@ async fn fetch(binding: &Binding, tool: &Tool, handle: &str) -> ApiResult<(Vec<u
     Ok((bytes, mime, checksum))
 }
 
-fn matches_type(mime: &str, bytes: &[u8]) -> bool {
+pub(super) fn matches_type(mime: &str, bytes: &[u8]) -> bool {
     match mime {
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),

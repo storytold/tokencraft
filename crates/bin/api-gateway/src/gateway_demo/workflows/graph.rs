@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use ids::WorkflowUploadId;
 use serde::{Deserialize, Serialize};
 
 pub(super) const MAX_NODES: usize = 20;
@@ -35,6 +36,13 @@ pub(super) enum ValueType {
 pub(super) enum Value {
     Text(String),
     Integer(i64),
+    Upload(UploadReference),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct UploadReference {
+    pub upload_id: WorkflowUploadId,
 }
 
 impl Value {
@@ -44,6 +52,7 @@ impl Value {
                 !text.trim().is_empty() && text.len() <= MAX_INPUT_BYTES
             }
             (Self::Integer(number), ValueType::Integer) => (1..=32000).contains(number),
+            (Self::Upload(_), kind) => kind.file() || kind == ValueType::Media,
             _ => false,
         }
     }
@@ -94,7 +103,7 @@ impl ValueType {
         matches!(self, Self::Image | Self::Video | Self::Audio | Self::Mesh | Self::Document)
     }
 
-    fn accepts(self, source: Self) -> bool {
+    pub(super) fn accepts(self, source: Self) -> bool {
         self == source || self == Self::Media && source.file()
     }
 }
@@ -224,11 +233,11 @@ impl Graph {
             if !identifier(name)
                 || field.title.trim().is_empty()
                 || field.title.len() > 100
-                || !matches!(field.kind, ValueType::Text | ValueType::Integer)
-                || field
-                    .default
-                    .as_ref()
-                    .is_some_and(|value| !value.matches(field.kind))
+                || field.kind == ValueType::Metadata
+                || field.default.as_ref().is_some_and(|value| {
+                    !matches!(field.kind, ValueType::Text | ValueType::Integer)
+                        || !value.matches(field.kind)
+                })
             {
                 return Err(format!("Invalid request input {name}."));
             }
@@ -262,9 +271,10 @@ impl Graph {
             let mut required = BTreeSet::new();
             if let Some(tool) = &node.tool {
                 for (slot, kind) in &tool.inputs {
-                    let Some(binding @ Binding::Step { .. }) = node.settings.get(slot) else {
-                        return Err(format!("{} needs a media step for {slot}.", node.title));
-                    };
+                    let Some(binding @ (Binding::Step { .. } | Binding::Request { .. })) =
+                        node.settings.get(slot) else {
+                            return Err(format!("{} needs a media step or upload for {slot}.", node.title));
+                        };
                     self.validate_binding(binding, *kind, &nodes, &mut required)
                         .map_err(|error| format!("{} · {slot}. {error}", node.title))?;
                 }
@@ -339,7 +349,7 @@ impl Graph {
         let request = |field: &str| {
             self.inputs
                 .get(field)
-                .filter(|definition| definition.kind == kind)
+                .filter(|definition| kind.accepts(definition.kind))
                 .map(|_| ())
                 .ok_or("Choose a request input of the correct type.")
         };
@@ -357,7 +367,7 @@ impl Graph {
         match binding {
             Binding::Request { field } => request(field),
             Binding::Step { step: source } => step(source, required),
-            Binding::Fixed { value } if value.matches(kind) => Ok(()),
+            Binding::Fixed { value } if !matches!(value, Value::Upload(_)) && value.matches(kind) => Ok(()),
             Binding::Template { text } if kind == ValueType::Text => {
                 template(text, |source| match source {
                     Reference::Input(field) => request(field).map(|_| String::new()),
@@ -533,7 +543,7 @@ impl Node {
                 }
                 .and_then(|value| match value {
                     Value::Text(text) => Some(text),
-                    Value::Integer(_) => None,
+                    Value::Integer(_) | Value::Upload(_) => None,
                 })
                 .ok_or("A template value is unavailable.")
             })?)),

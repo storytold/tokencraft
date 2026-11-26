@@ -181,6 +181,7 @@ fn build_router_inner(
       AUTHORIZATION,
       IF_NONE_MATCH,
       HeaderName::from_static("idempotency-key"),
+      HeaderName::from_static("x-tokencraft-content-sha256"),
       HeaderName::from_static("traceparent"),
       HeaderName::from_static("tracestate"),
       HeaderName::from_static("baggage"),

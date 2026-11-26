@@ -1,4 +1,4 @@
-import { artifactKind, canWire } from "./wiring";
+import { acceptsKind, canWire, isFileInput } from "./wiring";
 import type { Binding, Capabilities, Graph, PrimitiveKind, Setting, Step, ToolBinding, ToolOperation } from "./types";
 
 export const EMPTY: Graph = { schema: 1, title: "Untitled workflow", inputs: {}, nodes: [], outputs: {}, max_usd_nanos: 0 };
@@ -52,7 +52,7 @@ export function setBinding(step: Step, setting: Setting, binding?: Binding): Ste
 
 export function defaultBinding(source: Binding["source"], setting: Setting, graph: Graph, step: Step): Binding {
   if (source === "request") {
-    return { source, field: Object.entries(graph.inputs).find(([, field]) => field.kind === setting.kind)?.[0] ?? "" };
+    return { source, field: Object.entries(graph.inputs).find(([, field]) => acceptsKind(setting.kind, field.kind))?.[0] ?? "" };
   }
   if (source === "step") {
     return { source, step: graph.nodes.find((item) => canWire(graph, { source, step: item.id }, { step, setting }))?.id ?? "" };
@@ -62,7 +62,10 @@ export function defaultBinding(source: Binding["source"], setting: Setting, grap
 }
 
 export function bindingModes(setting: Setting): { value: Binding["source"]; label: string }[] {
-  if (artifactKind(setting.kind) || setting.kind === "media") return [{ value: "step", label: "Connected step" }];
+  if (isFileInput(setting.kind)) return [
+    { value: "step", label: "Connected step" },
+    { value: "request", label: "Uploaded file" },
+  ];
   return [
     { value: "fixed", label: "Fixed value" },
     { value: "request", label: "Request input" },

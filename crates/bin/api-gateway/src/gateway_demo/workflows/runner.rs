@@ -20,7 +20,7 @@ use super::super::requests::{
     self, AdmissionInput, NativeProviderResult, QuoteSelection, RequestStatus,
 };
 use super::graph::{Binding, InputValues, Kind, Node, Output, Value, ValueType};
-use super::{management, tool_execution};
+use super::{management, tool_execution, uploads};
 use super::Security;
 use crate::error::{ApiError, ApiResult};
 
@@ -106,6 +106,9 @@ pub(super) fn spawn(runtime: Runtime) {
                 _ = runtime.readiness.work_tick(&mut maintenance) => {
                     if db::forget_expired_content(&runtime.pool).await.is_err() {
                         tracing::warn!("workflow retention cleanup deferred");
+                    }
+                    if db::forget_expired_uploads(&runtime.pool).await.is_err() {
+                        tracing::warn!("workflow upload cleanup deferred");
                     }
                 }
             }
@@ -381,54 +384,46 @@ async fn submit(
         },
     };
     let mut first_frame = None;
-    if let Some(Binding::Step { step }) = node.settings.get("first_frame") {
-        match progress.outputs.get(step) {
-            Some(Output::Fixture {
-                kind: super::graph::ValueType::Image,
-            }) if fixture => {}
-            Some(output @ (Output::Image { .. } | Output::Tool { kind: ValueType::Image, .. })) if !fixture => {
-                let provider = runtime.providers.as_deref();
-                pin = catalog
-                    .offers
-                    .iter()
-                    .find(|offer| {
-                        public_model_id(&offer.model) == node.model
-                            && provider.is_some_and(|runtime| runtime.accepts_workflow_frame(offer))
-                    })
-                    .map(|offer| offer.id.clone());
-                if pin.is_none() {
-                    return Err(ApiError::BadRequest(
-                        "choose a model binding that accepts a private image".into(),
-                    ));
-                }
-                let (bytes, media_type, _) = match output {
-                    Output::Image { request_id } => artifacts::read_verified(artifacts::ScopedDownload {
+    if let Some(binding) = node.settings.get("first_frame") {
+        let invalid = || ApiError::BadRequest("connect a compatible image for the first frame".into());
+        let provider = runtime.providers.as_deref();
+        let source = match binding {
+            Binding::Step { step } => match progress.outputs.get(step) {
+                Some(Output::Fixture { kind: ValueType::Image }) if fixture => None,
+                Some(Output::Image { request_id }) if !fixture => {
+                    Some(artifacts::read_verified(artifacts::ScopedDownload {
                         pool: &runtime.pool,
                         scope: scope(row),
                         runtime: provider,
                         request: request_id,
                         slot: 0,
-                    }).await?,
-                    Output::Tool { node, .. } => tool_execution::read_artifact(
-                        &runtime.pool, &runtime.security, row, node,
-                    ).await?,
-                    _ => return Err(unavailable()),
-                };
-                if media_type != artifacts::PNG || bytes.len() > artifacts::MAX_BYTES {
-                    return Err(ApiError::BadRequest(
-                        "the first frame must be a bounded PNG".into(),
-                    ));
+                    }).await?)
                 }
-                first_frame = Some(WorkflowFrame {
-                    media_type,
-                    data_base64: STANDARD.encode(bytes),
-                });
+                Some(Output::Tool { node, kind: ValueType::Image }) if !fixture => {
+                    Some(tool_execution::read_artifact(&runtime.pool, &runtime.security, row, node).await?)
+                }
+                _ => return Err(invalid()),
+            },
+            Binding::Request { field } => match progress.inputs.get(field) {
+                Some(Value::Upload(reference)) if !fixture => {
+                    Some(uploads::read(runtime, row, &reference.upload_id).await?)
+                }
+                _ => return Err(invalid()),
+            },
+            _ => return Err(invalid()),
+        };
+        if let Some((bytes, media_type, _)) = source {
+            pin = catalog.offers.iter().find(|offer| {
+                public_model_id(&offer.model) == node.model
+                    && provider.is_some_and(|runtime| runtime.accepts_workflow_frame(offer))
+            }).map(|offer| offer.id.clone());
+            if pin.is_none() {
+                return Err(ApiError::BadRequest("choose a model binding that accepts a private image".into()));
             }
-            _ => {
-                return Err(ApiError::BadRequest(
-                    "connect a compatible image for the first frame".into(),
-                ))
+            if media_type != artifacts::PNG || bytes.len() > artifacts::MAX_BYTES {
+                return Err(ApiError::BadRequest("the first frame must be a bounded PNG".into()));
             }
+            first_frame = Some(WorkflowFrame { media_type, data_base64: STANDARD.encode(bytes) });
         }
     }
     let access = Access::workflow(scope(row), row.id.as_str().to_owned());

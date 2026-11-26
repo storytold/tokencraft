@@ -5,7 +5,7 @@ import { modelName } from "./ComponentLibrary";
 import { errorMessage, gatewayRequest } from "@/lib/gateway";
 import { catalogAdvice, type Advice } from "@/surfaces/models/model-advisor";
 import { bindingModes, defaultBinding, nextId, setBinding, updateStep } from "./editor";
-import { canWire, stepSettings } from "./wiring";
+import { acceptsKind, canWire, isFileInput, stepSettings } from "./wiring";
 import type { Binding, Capabilities, Graph, Scalar, Setting, Step, ToolStep, WorkflowModel } from "./types";
 
 function ModelSearch({ models, step, framesOnly, onSelect }: {
@@ -93,14 +93,14 @@ function BindingEditor(props: {
   const binding = step.settings[setting.name];
   const remembered = useRef<Partial<Record<Binding["source"], Binding>>>({});
   const connected = graph.nodes.filter((node) => canWire(graph, { source: "step", step: node.id }, { step, setting }));
-  const requestInputs = Object.entries(graph.inputs).filter(([, field]) => field.kind === setting.kind);
+  const requestInputs = Object.entries(graph.inputs).filter(([, field]) => acceptsKind(setting.kind, field.kind));
   const assigned = (value?: Binding) => onChange(updateStep(graph, setBinding(step, setting, value)));
   const choices = setting.name === "aspect_ratio" ? model?.aspect_ratios
     : setting.name === "resolution" ? model?.resolutions
     : setting.name === "duration_seconds" ? model?.durations : undefined;
 
   function addInput() {
-    if (setting.kind !== "text" && setting.kind !== "integer") return;
+    if (setting.kind !== "text" && setting.kind !== "integer" && !isFileInput(setting.kind)) return;
     const key = nextId(setting.name, Object.keys(graph.inputs));
     onChange(updateStep({ ...graph, inputs: { ...graph.inputs, [key]: {
       title: setting.label, kind: setting.kind, default: null,

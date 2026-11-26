@@ -20,6 +20,7 @@ mod planner;
 mod runner;
 mod tool_plugins;
 mod tool_execution;
+mod uploads;
 
 pub(super) struct Security {
     payloads: SealedBytes,
@@ -145,6 +146,10 @@ pub(super) fn router(security: Arc<Security>) -> Router<AppState> {
         .route(
             "/v1/projects/:project/workflows/:workflow/keys/:key",
             delete(endpoints::revoke),
+        )
+        .route(
+            "/v1/projects/:project/workflow-endpoints/:workflow/uploads",
+            post(endpoints::upload),
         )
         .route(
             "/v1/projects/:project/workflow-endpoints/:workflow/runs",

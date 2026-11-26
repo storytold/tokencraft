@@ -321,6 +321,13 @@ impl MediaKind {
     }
 }
 
+pub(super) fn upload_kind(content_type: &str) -> Option<ValueType> {
+    [MediaKind::Image, MediaKind::Video, MediaKind::Audio, MediaKind::Mesh, MediaKind::Document]
+        .into_iter()
+        .find(|kind| kind.accepts_type(content_type))
+        .map(MediaKind::value_type)
+}
+
 fn slot_name(value: &str) -> bool {
     (1..=32).contains(&value.len()) && value.as_bytes()[0].is_ascii_lowercase()
         && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')

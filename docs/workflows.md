@@ -25,4 +25,4 @@ Only published application keys with `runs:submit` can invoke that endpoint. Use
 
 Workflow versions pin the graph. The backend checkpoints runs under database leases and replays child admission using a stable step key. Each generation step passes the current project allocation and provider policy checks. Each tool step pins a reviewed project binding and an operation revision. Media results are accessed under the workflow's existing project and app scope.
 
-For opt-in binding setup and the typed tool standard, see [Media tool plugins](media-tools.md).
+Use the uploaded-file source in the step inspector when a workflow starts from existing media. For opt-in binding setup, upload API examples, and the typed tool standard, see [Media tool plugins](media-tools.md).

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -16,7 +16,7 @@ use super::super::{
 };
 use super::graph::{Graph, InputValues, Output, ValueType, MAX_INPUT_BYTES};
 use super::management::{self, ConsoleQuery, Project};
-use super::{execution, planner, runner, Security};
+use super::{execution, planner, runner, uploads, Security};
 use crate::{
     error::{ApiError, ApiResult},
     middleware::AuthContext,
@@ -345,6 +345,7 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     let inputs = graph.resolve_inputs(inputs).map_err(ApiError::BadRequest)?;
     graph.compile().map_err(ApiError::BadRequest)?;
     args.security.tools.validate(&graph, args.scope.account, args.scope.project)?;
+    uploads::validate(&mut tx, args.scope, actor, &graph, &inputs).await?;
     planner::validate_models(&graph, &args.catalog.current(), args.providers)
         .map_err(ApiError::BadRequest)?;
     if db::count_active_runs(&mut *tx, args.scope).await? >= 10 {
@@ -369,6 +370,53 @@ async fn admit(args: Admit<'_>, inputs: InputValues) -> ApiResult<Response> {
     .await?;
     tx.commit().await?;
     receipt(&args, id, version, false)
+}
+
+pub(super) async fn upload(
+    State(state): State<AppState>,
+    auth: Option<AuthContext>,
+    Query(query): Query<ReadQuery>,
+    Path(path): Path<WorkflowPath>,
+    Extension(security): Extension<Arc<Security>>,
+    request: Request,
+) -> ApiResult<(StatusCode, Json<uploads::Receipt>)> {
+    let (parts, body) = request.into_parts();
+    let access = AccessInput {
+        pool: &state.pool, security: &security, headers: &parts.headers,
+        project: &path.project, workflow: &path.workflow,
+    };
+    let app = if parts.headers.contains_key(header::AUTHORIZATION) {
+        Some(access.app(Permission::Submit).await?)
+    } else {
+        None
+    };
+    let (account, actor) = if let Some(app) = &app {
+        (app.account.clone(), app.principal.as_str())
+    } else {
+        let reader = access.reader(auth.as_ref(), query, Permission::Submit).await?;
+        let actor = auth.as_ref().ok_or_else(runner::unavailable)?.user.id.as_str();
+        (reader.account, actor)
+    };
+    let scope = access.scope(&account);
+    let pending = uploads::receive(&parts.headers, body).await?;
+    let mut tx = state.pool.begin().await?;
+    let workflow = db::lock_workflow(&mut *tx, scope).await?.ok_or_else(management::missing)?;
+    let definition = if let Some(app) = &app {
+        db::find_credential(&mut *tx, &app.digest).await?
+            .filter(|key| key.app_id == app.principal)
+            .ok_or_else(|| ApiError::Unauthorized("invalid workflow credential".into()))?;
+        let version = workflow.active_version.filter(|_| !workflow.paused)
+            .ok_or_else(|| ApiError::Conflict("the workflow endpoint is unavailable".into()))?;
+        db::find_version(&mut *tx, scope, version).await?.ok_or_else(management::missing)?.graph
+    } else {
+        workflow.draft
+    };
+    if !pending.compatible(&management::decode(definition)?) {
+        return Err(ApiError::BadRequest("the workflow has no request input for this media type".into()));
+    }
+    let receipt = pending.store(&mut tx, &security, scope, actor).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(receipt)))
 }
 
 pub(super) async fn invoke(
@@ -731,27 +779,29 @@ pub(super) async fn contract(
             .ok_or_else(management::missing)?
             .graph,
     )?;
-    let mut fields = serde_json::Map::new();
+    let mut fields = BTreeMap::new();
     let mut required = Vec::new();
-    let mut example = InputValues::new();
+    let mut example = BTreeMap::new();
+    let mut upload_inputs = BTreeMap::new();
     for (name, field) in &graph.inputs {
-        let mut schema = if field.kind == ValueType::Text {
-            serde_json::json!({"type":"string","minLength":1,"maxLength":MAX_INPUT_BYTES})
-        } else {
-            serde_json::json!({"type":"integer","minimum":1,"maximum":32000})
+        let (mut schema, sample) = match field.kind {
+            ValueType::Text => (serde_json::json!({"type":"string","minLength":1,"maxLength":MAX_INPUT_BYTES}), serde_json::json!("Example value")),
+            ValueType::Integer => (serde_json::json!({"type":"integer","minimum":1,"maximum":32000}), serde_json::json!(1)),
+            kind => {
+                upload_inputs.insert(name, kind);
+                (serde_json::json!({
+                    "type":"object","required":["upload_id"],"additionalProperties":false,
+                    "properties":{"upload_id":{"type":"string","description":"ID returned by the authenticated upload endpoint"}}
+                }), serde_json::json!({"upload_id":"REPLACE_WITH_UPLOAD_ID"}))
+            }
         };
         if let Some(default) = &field.default {
             schema["default"] = serde_json::to_value(default).map_err(|_| runner::unavailable())?;
         } else {
             required.push(name);
-            let value = if field.kind == ValueType::Text {
-                super::graph::Value::Text("Example value".into())
-            } else {
-                super::graph::Value::Integer(1)
-            };
-            example.insert(name.clone(), value);
+            example.insert(name, sample);
         }
-        fields.insert(name.clone(), schema);
+        fields.insert(name, schema);
     }
     let output_types: BTreeMap<_, _> = graph
         .outputs
@@ -762,7 +812,7 @@ pub(super) async fn contract(
         "/v1/projects/{}/workflow-endpoints/{}/runs",
         path.project, path.workflow
     );
-    let contract = serde_json::json!({
+    let mut contract = serde_json::json!({
         "openapi": "3.1.0", "info": { "title": graph.title, "version": version.to_string() },
         "components": { "securitySchemes": { "workflowKey": { "type": "http", "scheme": "bearer" } } },
         "security": [{ "workflowKey": [] }],
@@ -798,6 +848,22 @@ pub(super) async fn contract(
         "x-workflow-example-inputs": example,
         "x-workflow-output-types": output_types,
     });
+    if !upload_inputs.is_empty() {
+        let uploads = base.trim_end_matches("/runs").to_owned() + "/uploads";
+        contract["paths"][&uploads] = serde_json::json!({
+            "post": {
+                "operationId":"uploadWorkflowInput",
+                "description":"Upload a file in a media type accepted by the workflow with the runs:submit scope.",
+                "parameters":[
+                    {"in":"header","name":"X-TokenCraft-Content-Sha256","required":true,"schema":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
+                ],
+                "requestBody":{"required":true,"content":{"*/*":{"schema":{"type":"string","format":"binary"}}}},
+                "responses":{"201":{"description":"Scoped upload ID and expiration"}}
+            }
+        });
+        contract["x-workflow-upload-inputs"] = serde_json::to_value(upload_inputs)
+            .map_err(|_| runner::unavailable())?;
+    }
     Ok((
         [(header::CONTENT_TYPE, "application/json")],
         contract.to_string(),

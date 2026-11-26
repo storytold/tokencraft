@@ -84,7 +84,7 @@ function Editor({ scope, initial, capabilities, admin, onBack }: {
       setWorkflow(next);
       if (!dirty) setGraph(next.draft);
     }} />}
-    {modal === "test" && <TestDialog graph={workflow.draft} onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
+    {modal === "test" && <TestDialog graph={workflow.draft} onUpload={(file, type, digest) => workflowApi.upload(scope, workflow.id, file, type, digest)} onClose={() => setModal(undefined)} onRun={async (inputs, key) => {
       const launched = await workflowApi.test(scope, workflow, inputs, key);
       setRun(launched.id); setView("runs"); setModal(undefined);
     }} />}
