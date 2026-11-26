@@ -28,6 +28,8 @@ From a child request trace, open its workflow run to return to the saved timelin
 
 Send an optional top-level `client_ref` with the published workflow's `inputs`. For example, send `{"inputs":{},"client_ref":"studio-customer-42"}` for a workflow without required inputs. Use a stable opaque identifier. The run status echoes a supplied reference, and child requests use it in normal request history and usage filters. An invocation without it keeps the app ID as the child request reference.
 
+A signed terminal webhook includes the same reference in `data.client_ref`, so a shared app receiver can route notifications to the associated customer. Runs submitted without a reference omit the field. Existing webhook deliveries retain their original payload.
+
 An app key can submit for multiple customers. The application budget still covers all of that app's runs. A configured client budget also covers the tagged customer's runs and native requests. The idempotency key stays scoped to the app and workflow. Reusing it with a different client reference for the same invocation returns HTTP 409.
 
 ## Review and export a contract change

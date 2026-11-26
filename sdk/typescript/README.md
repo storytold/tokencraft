@@ -70,4 +70,4 @@ A cold object can return a `TokenCraftError` with status `409` and code `archive
 
 ## Verify a terminal webhook
 
-Call `verifyWebhook(rawBody, headers, signingSecret)` for request events and `verifyWorkflowWebhook(rawBody, headers, signingSecret)` for [workflow events](../../docs/workflows.md#receive-terminal-events). Pass the original bytes before parsing the body. Both helpers enforce a five-minute timestamp window by default and accept overlapping keys during rotation. Deduplicate by the verified event ID before applying side effects.
+Call `verifyWebhook(rawBody, headers, signingSecret)` for request events and `verifyWorkflowWebhook(rawBody, headers, signingSecret)` for [workflow events](../../docs/workflows.md#receive-terminal-events). Pass the original bytes before parsing the body. Both helpers enforce a five-minute timestamp window by default and accept overlapping keys during rotation. Deduplicate by the verified event ID before applying side effects. A tagged workflow event includes the invocation's customer reference in `event.data.client_ref`.

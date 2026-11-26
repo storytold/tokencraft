@@ -62,6 +62,8 @@ Migration 79 adds the active workflow deadline index and supports overlap with s
 
 Use a coordinated drain and restart when moving to schema 80. Published workflows can supply a customer reference, and workers store it on each child alongside the application budget identity. Upgrade all API servers and workers in the cell before reopening admissions. The migration adds an application spending index to the request table.
 
+Migration 81 adds an optional customer reference to new terminal workflow webhook events. Schema-80 API and worker binaries can overlap with the new fleet. Existing queued deliveries keep their original payload bytes and runtime grants carry forward.
+
 ## Connect existing compute endpoints
 
 In the organization console, open **Providers → Compute → Connect endpoint**. Choose AWS, Firebase / Cloud Run, Render, or Custom endpoint. All four templates use the same OpenAI-compatible chat request and response. Supply the deployed endpoint, target name, placement, and priority. Use HTTPS and the name of a bearer token environment variable for a remote endpoint. Local fixtures can use loopback HTTP. The review step validates configuration without calling the endpoint.

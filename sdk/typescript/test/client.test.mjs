@@ -394,6 +394,14 @@ test("verifies workflow terminal events without changing the request event contr
   const body = Buffer.from(JSON.stringify(event, null, 2));
   assert.deepEqual(await verifyWorkflowWebhook(body, headers(body), secret, { now }), event);
   await assert.rejects(verifyWebhook(body, headers(body), secret, { now }), { code: "payload" });
+
+  const tagged = { ...event, data: { ...event.data, client_ref: "studio:customer-42" } };
+  const taggedBody = Buffer.from(JSON.stringify(tagged));
+  await assert.rejects(verifyWorkflowWebhook(taggedBody, headers(body), secret, { now }), { code: "signature" });
+  assert.deepEqual(await verifyWorkflowWebhook(taggedBody, headers(taggedBody), secret, { now }), tagged);
+  const malformed = Buffer.from(JSON.stringify({ ...event, data: { ...event.data, client_ref: "studio\n" } }));
+  await assert.rejects(verifyWorkflowWebhook(malformed, headers(malformed), secret, { now }), { code: "payload" });
+
   const mismatched = Buffer.from(JSON.stringify({ ...event, data: { ...event.data, fetch_url: "/wrong-run" } }));
   await assert.rejects(verifyWorkflowWebhook(mismatched, headers(mismatched), secret, { now }), { code: "payload" });
 });

@@ -966,6 +966,19 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     call(port, parents + child + query, 401, headers=auth)
     print("PASS a retained request finds its parent only through the matching project session")
 
+    def expect_success_event(admitted, reference=None):
+        data = {
+            "run_id": admitted["id"], "workflow_id": draft["id"], "project_id": project, "workflow_version": 1,
+            "status": "succeeded", "fetch_url": admitted["status_url"],
+        }
+        if reference is not None:
+            data["client_ref"] = reference
+        delivery = verify_signed_delivery(port, listing, query, session, receiver, subscription,
+                                          "workflow.run.succeeded", data)
+        assert delivery["workflow_run_id"] == admitted["id"]
+
+    expect_success_event(receipt)
+
     client_field = spec["paths"][runs]["post"]["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert client_field["client_ref"]["type"] == "string"
     references = ("studio-alpha", "studio-beta")
@@ -1004,6 +1017,7 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
 
     start_worker()
     first, _ = wait_for_run(port, results[winner], auth)
+    expect_success_event(results[winner], references[winner])
     assert budget_for(app["app_id"]) == estimate * 3
     assert budget_for(references[winner]) == estimate
     set_caps(4, None, 20_000_000)
@@ -1013,6 +1027,7 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     client_limit(references[loser], 2, run_cap)
     accepted, _ = call(peer, runs, 202, method="POST", body=bodies[loser], headers=attempts[loser])
     second, _ = wait_for_run(port, accepted, auth)
+    expect_success_event(accepted, references[loser])
     assert budget_for(app["app_id"]) == estimate * 4
 
     requests = [first, second]
@@ -1039,7 +1054,7 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     usage, _ = call(peer, "/v1/usage", 200, headers=credential)
     assert usage["client_ref"] == clients[0] and usage["totals"]["requests"] == 1
     call(peer, f"/v1/usage?client_ref={clients[1]}", 404, headers=credential)
-    print("PASS shared workflow key attributes distinct customers while preserving app budgets and scoped usage")
+    print("PASS shared workflow key attributes customers in signed webhook retries, traces, and usage under app and client budgets")
 
 
 def rehearse(gateway, admin, directory):

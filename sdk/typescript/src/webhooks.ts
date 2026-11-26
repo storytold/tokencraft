@@ -34,6 +34,7 @@ export async function verifyWorkflowWebhook(
   if (!hasIdPrefix(data.run_id, "wfr_") || !hasIdPrefix(data.workflow_id, "wf_") || !hasIdPrefix(data.project_id, "proj_")
       || typeof data.workflow_version !== "number" || !Number.isSafeInteger(data.workflow_version) || data.workflow_version < 1
       || typeof data.status !== "string" || !terminalStates.has(data.status) || type !== `workflow.run.${data.status}`
+      || (data.client_ref != null && !isClientReference(data.client_ref))
       || data.fetch_url !== `/v1/projects/${data.project_id}/workflow-endpoints/${data.workflow_id}/runs/${data.run_id}`) {
     throw invalidPayload();
   }
@@ -115,6 +116,11 @@ function invalidPayload() {
 
 function hasIdPrefix(value: unknown, prefix: string): value is string {
   return typeof value === "string" && value.startsWith(prefix) && /^[0-9a-hjkmnp-tv-z]{26}$/.test(value.slice(prefix.length));
+}
+
+function isClientReference(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64
+    && /^[A-Za-z0-9]/.test(value) && !/[^A-Za-z0-9._:-]/.test(value);
 }
 
 function decodeSha256(value: string) {

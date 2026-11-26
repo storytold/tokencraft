@@ -485,6 +485,8 @@ export interface WorkflowWebhookEvent {
     workflow_version: number;
     status: WorkflowWebhookStatus;
     fetch_url: string;
+    /** The customer reference supplied when the published run was invoked. */
+    client_ref?: string | null;
   };
 }
 

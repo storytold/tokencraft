@@ -97,8 +97,28 @@ fn verifies_workflow_notifications_without_changing_request_events() {
     assert_eq!(verified.kind, WorkflowWebhookKind::Canceled);
     assert_eq!(verified.data.status, WorkflowWebhookStatus::Canceled);
     assert_eq!(verified.data.fetch_url, url);
+    assert_eq!(verified.data.client_ref, None);
     assert_eq!(verify_webhook(&headers, &body, &[&secret], options).unwrap_err(), VerificationError::Payload);
 
+    event["data"]["client_ref"] = "studio:customer-42".into();
+    let tagged = serde_json::to_vec(&event).unwrap();
+    assert_eq!(
+        verify_workflow_webhook(&headers, &tagged, &[&secret], options).unwrap_err(),
+        VerificationError::Signature
+    );
+    headers.insert("webhook-signature", sign(&key, &tagged).parse().unwrap());
+    let tagged = verify_workflow_webhook(&headers, &tagged, &[&secret], options).unwrap();
+    assert_eq!(tagged.data.client_ref.as_deref(), Some("studio:customer-42"));
+
+    event["data"]["client_ref"] = "studio\n".into();
+    let malformed = serde_json::to_vec(&event).unwrap();
+    headers.insert("webhook-signature", sign(&key, &malformed).parse().unwrap());
+    assert_eq!(
+        verify_workflow_webhook(&headers, &malformed, &[&secret], options).unwrap_err(),
+        VerificationError::Payload
+    );
+
+    event["data"].as_object_mut().unwrap().remove("client_ref");
     event["data"]["status"] = "succeeded".into();
     let mismatched = serde_json::to_vec(&event).unwrap();
     headers.insert("webhook-signature", sign(&key, &mismatched).parse().unwrap());

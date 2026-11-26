@@ -94,6 +94,8 @@ pub struct WorkflowWebhookData {
     pub workflow_version: u32,
     pub status: WorkflowWebhookStatus,
     pub fetch_url: String,
+    /// The customer reference supplied when the published run was invoked.
+    pub client_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -154,6 +156,10 @@ pub fn verify_workflow_webhook(
         || !valid_id(&data.project_id, "proj_")
         || data.workflow_version == 0
         || data.status != status
+        || data
+            .client_ref
+            .as_deref()
+            .is_some_and(|value| !valid_client_ref(value))
         || data.fetch_url != format!(
             "/v1/projects/{}/workflow-endpoints/{}/runs/{}",
             data.project_id, data.workflow_id, data.run_id
@@ -162,6 +168,13 @@ pub fn verify_workflow_webhook(
         return Err(VerificationError::Payload);
     }
     Ok(event)
+}
+
+fn valid_client_ref(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    value.len() <= 64
+        && bytes.next().is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
 }
 
 fn verify_signature<'a>(
