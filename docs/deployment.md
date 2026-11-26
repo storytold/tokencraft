@@ -286,6 +286,15 @@ bash scripts/smoke_hosted_console.sh https://console.example.com https://api.exa
 
 The check compares both console copies and the running gateway with the release snapshot and verifies the console catalog bytes. It also sends an unauthenticated request to `/v1/rate-limits` at both origins and expects the gateway's `401` JSON response. This confirms that the route is mounted and that the console forwards it to an API, without needing an account or creating a job. Treat a mismatch as a failed release check even when both `/ready` probes pass.
 
+For deployments with the bundled `example_image` connector, run the authenticated check with a dedicated project key in `TOKENCRAFT_SMOKE_API_KEY`. Grant it `requests:submit`, `requests:read`, and `usage:read`. Supply `--peer` only if that trusted origin serves the same deployment.
+
+```sh
+python3 -B scripts/smoke_authenticated_gateway.py \
+  --api https://api.example.com --peer https://console.example.com
+```
+
+The check submits one synthetic image with a zero-cost cap and replays its receipt. It verifies the PNG digest, connector trace, and one usage record scoped to the run. Inject the scoped project key into the process environment from your secret manager. For a private HTTPS ingress, supply its trusted CA bundle with `--ca`.
+
 To deliver signed customer webhooks, set `TOKENCRAFT_DEMO_WEBHOOK_CONFIG` to an operator-maintained JSON registry such as `{"destinations":{"customer_updates":"https://events.example.com/tokencraft"}}`. Give the API and workers the same independent 32-byte hex `TOKENCRAFT_DEMO_WEBHOOK_KEY`. Hosts use the standard public certificate roots by default. Set `TOKENCRAFT_WEBHOOK_CA_FILE` to an operator-managed PEM bundle to use a private trust store for all webhook destinations. Tenants select a registry entry by ID. Register reviewed HTTPS destinations and set egress policy for the hosts you allow. TLS verifies the destination hostname and the client rejects redirects.
 
 Each worker runs up to four delivery attempts at a time. A worker taking over an expired lease records that attempt and retries with the same event ID and body. Receivers should deduplicate by `webhook-id` because a successful delivery can be retried after a lost response or worker restart. Revocation prevents new attempts and redrives. An attempt already leased when revocation commits may finish.
