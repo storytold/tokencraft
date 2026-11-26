@@ -294,6 +294,54 @@ mod tests {
     }
 
     #[test]
+    fn model_catalog_only_advertises_providers_available_to_scope() {
+        use serde_json::{json, to_value};
+
+        let mut catalog = Catalog::parse(include_bytes!(
+            "../../../../../examples/connector/catalog.json"
+        ))
+        .unwrap();
+        let account = AccountId::generate();
+        let project = GatewayProjectId::generate();
+        let sibling = GatewayProjectId::generate();
+        let scope = RequestScope {
+            account: &account,
+            project: &project,
+            client_ref: None,
+        };
+        let mut private = catalog.offers[0].clone();
+        private.id = "private_image".into();
+        private.model = "private_image".into();
+        private.provider = "private-connector".parse().unwrap();
+        private.local_binding = Some("private".into());
+        let connection = private.connection_id();
+        catalog.offers.push(private);
+        catalog.connection_access.insert(
+            connection.clone(),
+            CatalogAccess { account: account.clone(), projects: Some(BTreeSet::from([project.clone()])) },
+        );
+
+        let public = to_value(catalog.model_catalog(None)).unwrap();
+        assert!(public.get("providers").is_none());
+        assert_eq!(public["models"].as_array().unwrap().len(), 1);
+
+        let mut policies = Policies::default();
+        let providers = |policies: &Policies| to_value(catalog.model_catalog(Some((policies, scope)))).unwrap();
+        assert_eq!(providers(&policies)["providers"], json!(["private-connector", "self_hosted"]));
+        let sibling_scope = RequestScope { project: &sibling, ..scope };
+        let unshared = to_value(catalog.model_catalog(Some((&policies, sibling_scope)))).unwrap();
+        assert_eq!(unshared["providers"], json!(["self_hosted"]));
+        assert_eq!(unshared["models"], public["models"]);
+
+        policies.project.policy.excluded_connections.insert(connection);
+        assert_eq!(providers(&policies)["providers"], json!(["self_hosted"]));
+        policies.project.policy = serde_json::from_value(json!({ "allowed_providers": [] })).unwrap();
+        let denied = providers(&policies);
+        assert_eq!(denied["providers"], json!([]));
+        assert_eq!(denied["models"], json!([]));
+    }
+
+    #[test]
     fn scoped_quotes_remove_an_excluded_connection_from_selection_and_offer_pins() {
         use crate::gateway_demo::{
             availability::RouteAvailability,

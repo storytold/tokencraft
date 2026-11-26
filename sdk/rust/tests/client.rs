@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use serde_json::json;
-use tokencraft_sdk::{Error, Quote, QuoteInput, RequestStatus, TokenCraftClient, WaitOptions, Workload};
+use tokencraft_sdk::{Error, Provider, Quote, QuoteInput, RequestStatus, TokenCraftClient, WaitOptions, Workload};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
@@ -97,19 +97,28 @@ async fn public_requests_omit_keys_and_respect_base_path() {
 
 #[tokio::test]
 async fn model_discovery_routes_public_and_project_calls() {
-    let body = r#"{"revision":"fixture","models":[{"id":"studio_video","image":false,"text":false,"aspect_ratios":[],"video":[{"durations_seconds":[5],"aspect_ratios":["16:9"],"resolution":"720p"}]}]}"#;
-    let (origin, captured) = reply("200 OK", "", body).await;
+    let body = json!({
+        "revision": "fixture",
+        "models": [{
+            "id": "studio_video", "image": false, "text": false, "aspect_ratios": [],
+            "video": [{ "durations_seconds": [5], "aspect_ratios": ["16:9"], "resolution": "720p" }],
+        }]
+    });
+    let mut scoped_body = body.clone();
+    scoped_body["providers"] = json!(["private-connector"]);
+    let (origin, captured) = reply("200 OK", "", &scoped_body.to_string()).await;
     let client = TokenCraftClient::new(&format!("{origin}/api"), Some("fixture")).unwrap();
     let models = client.models().await.unwrap();
+    assert_eq!(models.providers, Some(vec![Provider::Custom("private-connector".into())]));
     assert_eq!(models.models[0].video[0].durations_seconds, [5]);
     assert!(models.models[0].audio.is_empty());
     let (head, _) = captured.await.unwrap();
     assert!(head.starts_with("get /api/v1/catalog/models/scoped "));
     assert!(head.contains("authorization: bearer fixture\r\n"));
 
-    let (origin, captured) = reply("200 OK", "", body).await;
+    let (origin, captured) = reply("200 OK", "", &body.to_string()).await;
     let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
-    client.models_public().await.unwrap();
+    assert_eq!(client.models_public().await.unwrap().providers, None);
     let (head, _) = captured.await.unwrap();
     assert!(head.starts_with("get /v1/catalog/models "));
     assert!(!head.contains("authorization:"));

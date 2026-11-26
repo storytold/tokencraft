@@ -128,6 +128,8 @@ pub struct Catalog {
 pub struct ModelCatalog {
     pub revision: String,
     pub models: Vec<CatalogModel>,
+    /// Provider IDs available to the project. Public catalogs and older gateways omit this list.
+    pub providers: Option<Vec<Provider>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

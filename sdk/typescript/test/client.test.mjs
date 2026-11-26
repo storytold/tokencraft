@@ -44,11 +44,14 @@ test("discovers models with project authentication only on the scoped endpoint",
     video: [{ durations_seconds: [5], aspect_ratios: ["16:9"], resolution: "720p" }] };
   const fetch = async (url, init) => {
     seen.push([url.pathname, init.headers.get("Authorization"), init.cache, init.credentials]);
-    return Response.json({ revision: "fixture", models: [model] });
+    const providers = url.pathname.endsWith("/scoped") ? ["private-connector"] : undefined;
+    return Response.json({ revision: "fixture", models: [model], providers });
   };
   const client = new TokenCraft({ ...options, fetch });
-  assert.deepEqual((await client.models()).models, [model]);
-  await client.models({ scope: "public" });
+  const scoped = await client.models();
+  assert.deepEqual(scoped.models, [model]);
+  assert.deepEqual(scoped.providers, ["private-connector"]);
+  assert.equal((await client.models({ scope: "public" })).providers, undefined);
   const anonymous = new TokenCraft({ baseUrl: options.baseUrl, fetch });
   await anonymous.models();
   await assert.rejects(anonymous.models({ scope: "project" }), { code: "missing_key" });

@@ -55,6 +55,8 @@ export interface Catalog {
 export interface ModelCatalog {
   revision: string;
   models: CatalogModel[];
+  /** Provider IDs available to the project. Public catalogs and older gateways omit this list. */
+  providers?: Provider[];
 }
 
 export interface CatalogModel {

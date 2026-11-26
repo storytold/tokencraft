@@ -1792,7 +1792,7 @@
           "native"
         ],
         "summary": "List models available to a project",
-        "description": "Includes custom models shared with the project and applies provider allowlists and connection exclusions. A project key requires requests:submit. Request a scoped quote for a specific workload and current availability.",
+        "description": "Includes model and provider IDs shared with the project and applies provider allowlists and connection exclusions. A project key requires requests:submit. Request a scoped quote for a specific workload and current availability.",
         "operationId": "listProjectModels",
         "parameters": [
           {
@@ -1816,7 +1816,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Project-visible model IDs and supported workloads.",
+            "description": "Project-visible model and provider IDs and supported workloads.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8315,6 +8315,17 @@
             "items": {
               "$ref": "#/components/schemas/PublicModel"
             }
+          },
+          "providers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "description": "Provider IDs of offers shared with the project and allowed by its routing policies.",
+            "uniqueItems": true
           },
           "revision": {
             "type": "string"

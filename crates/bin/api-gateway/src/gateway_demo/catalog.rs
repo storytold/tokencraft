@@ -1,15 +1,16 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Read;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context};
 use chrono::{DateTime, Utc};
+use db_queries::gateway_requests::RequestScope;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::data_handling::DataHandling;
 use super::quote::{AspectRatio, Quote, QuoteInput, Reason};
-use super::routing_policy::Resolution;
+use super::routing_policy::{Policies, Resolution};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, utoipa::ToSchema)]
 #[serde(try_from = "String", into = "String")]
@@ -184,6 +185,9 @@ pub(super) struct VerifiedRate {
 pub(super) struct ModelCatalog {
     revision: String,
     models: Vec<PublicModel>,
+    /// Provider IDs of offers shared with the project and allowed by its routing policies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    providers: Option<BTreeSet<Provider>>,
 }
 
 #[derive(Serialize, Default, utoipa::ToSchema)]
@@ -274,9 +278,20 @@ impl Catalog {
         catalog
     }
 
-    pub(super) fn model_catalog(&self, include: impl Fn(&Offer) -> bool) -> ModelCatalog {
+    pub(super) fn model_catalog(&self, scope: Option<(&Policies, RequestScope<'_>)>) -> ModelCatalog {
         let mut models = BTreeMap::new();
-        for offer in self.offers.iter().filter(|offer| include(offer)) {
+        let mut providers = scope.map(|_| BTreeSet::new());
+        for offer in &self.offers {
+            let visible = match scope {
+                Some((policies, scope)) => policies.allows_offer(self, offer, scope),
+                None => self.visible_to(offer, None),
+            };
+            if !visible {
+                continue;
+            }
+            if let Some(providers) = &mut providers {
+                providers.insert(offer.provider.clone());
+            }
             let id = public_model_id(&offer.model);
             let entry = models.entry(id).or_insert_with(|| PublicModel {
                 id: id.to_owned(),
@@ -332,6 +347,7 @@ impl Catalog {
         ModelCatalog {
             revision: self.revision.clone(),
             models,
+            providers,
         }
     }
 

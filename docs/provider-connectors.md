@@ -245,7 +245,7 @@ api-gateway catalog apply-provider-patch \
   --bundle /path/to/provider-change.json > /path/to/candidate-catalog.json
 ```
 
-The command verifies the base and proposed file revisions and writes the merged catalog to stdout. Set up the matching connector binding and its environment secret before deploying the candidate. Scoped quotes include connections shared with the project. Organization admins can review sharing in the provider inventory. A project can exclude a shared connection under **Project Settings → Provider exclusions**. Both provider allowlists continue to apply.
+The command verifies the base and proposed file revisions and writes the merged catalog to stdout. Set up the matching connector binding and its environment secret before deploying the candidate. Scoped quotes include connections shared with the project. Submit-authorized callers can also list project-visible model and provider IDs with `GET /v1/catalog/models/scoped`. The Compare page uses that list for request-level provider priority. Organization admins can review sharing in the provider inventory. A project can exclude a shared connection under **Project Settings → Provider exclusions**. Both provider allowlists continue to apply.
 
 ## Accept organization and project keys for chat
 

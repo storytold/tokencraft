@@ -117,6 +117,7 @@ export type RoutePreview = {
 
 export type ModelCatalog = {
   revision: string;
+  providers?: Provider[];
   models: { id: string; image: boolean; text: boolean; aspect_ratios: string[]; video?: VideoCapability[]; audio?: AudioCapability[]; mesh_formats?: string[] }[];
 };
 

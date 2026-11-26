@@ -6,7 +6,7 @@ import { useOrg } from "@/lib/org";
 import { type ProjectScope, withProject } from "@/lib/gateway";
 import { parseDollarCap, parseToleratedPercent } from "@/lib/routing-policy";
 import { ProjectPicker, ProjectStatus, useProject } from "@/surfaces/projects/ProjectScope";
-import { comparisonApi, errorMessage, type ModelCatalog, type ModelQuote, type PromptMode, type Provider, type QuoteInput } from "./api";
+import { comparisonApi, errorMessage, type ModelCatalog, type ModelQuote, type PromptMode, type QuoteInput } from "./api";
 import { OfferComparison } from "./OfferComparison";
 import { ProviderOrder, providerOrderValue } from "./ProviderOrder";
 import { RequestActivity } from "./RequestActivity";
@@ -53,7 +53,6 @@ function ComparisonForm({ scope, clientRef, children }: {
   const [inputTokens, setInputTokens] = useState(1000);
   const [outputTokens, setOutputTokens] = useState(500);
   const [maxUsd, setMaxUsd] = useState("");
-  const [providerOptions, setProviderOptions] = useState<Provider[]>([]);
   const [providerOrder, setProviderOrder] = useState(() => providerOrderValue());
   const [refresh, setRefresh] = useState(0);
   const [evaluation, setEvaluation] = useState<{
@@ -62,22 +61,21 @@ function ComparisonForm({ scope, clientRef, children }: {
 
   useEffect(() => {
     const controller = new AbortController();
-    comparisonApi.models(controller.signal, scope).then((data) => {
-      if (!controller.signal.aborted) setCatalog(data);
+    const { signal } = controller;
+    comparisonApi.models(signal, scope).then((data) => {
+      if (signal.aborted) return;
+      setCatalog(data);
+      if (scope && data.providers === undefined) {
+        // Older gateways only return model capabilities from their scoped catalog.
+        void comparisonApi.catalog(signal).then(({ offers }) => {
+          if (!signal.aborted) setCatalog({ ...data, providers: [...new Set(offers.map((offer) => offer.provider))].sort() });
+        }).catch(() => {});
+      }
     }).catch((error) => {
-      if (!controller.signal.aborted) setCatalogError(errorMessage(error));
+      if (!signal.aborted) setCatalogError(errorMessage(error));
     });
     return () => controller.abort();
   }, [scope, catalogVersion]);
-
-  useEffect(() => {
-    if (!scope) return;
-    const controller = new AbortController();
-    comparisonApi.catalog(controller.signal).then(({ offers }) => {
-      if (!controller.signal.aborted) setProviderOptions([...new Set(offers.map((offer) => offer.provider))].sort());
-    }).catch(() => {});
-    return () => controller.abort();
-  }, [Boolean(scope)]);
 
   const models = useMemo(() => modelChoices(catalog), [catalog]);
   const selected = models.find(([id]) => id === modelChoice) ?? models.find(([, model]) => model.kind === "image") ?? models[0];
@@ -191,7 +189,7 @@ function ComparisonForm({ scope, clientRef, children }: {
             {scope && <details className="rounded-md border border-border p-3">
               <summary className="cursor-pointer text-sm font-medium">Provider priority</summary>
               <div className="mt-3">
-                <ProviderOrder value={providerOrder} providers={providerOptions} onChange={setProviderOrder} inheritLabel="Use project policy" />
+                <ProviderOrder value={providerOrder} providers={catalog?.providers} onChange={setProviderOrder} inheritLabel="Use project policy" />
               </div>
             </details>}
             {providerOrder.mode === "ordered" && !providerOrder.order.length && <p className="text-sm text-muted">Choose a preferred provider to see a quote.</p>}

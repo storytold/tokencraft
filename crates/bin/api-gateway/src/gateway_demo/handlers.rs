@@ -75,17 +75,17 @@ pub async fn catalog(Extension(catalog): Extension<Arc<CatalogStore>>) -> Respon
 )]
 pub(super) async fn models(Extension(catalog): Extension<Arc<CatalogStore>>) -> Json<ModelCatalog> {
     let catalog = catalog.current();
-    Json(catalog.model_catalog(|offer| catalog.visible_to(offer, None)))
+    Json(catalog.model_catalog(None))
 }
 
 #[utoipa::path(
     get, path = "/v1/catalog/models/scoped", operation_id = "listProjectModels", tag = "native",
     summary = "List models available to a project",
-    description = "Includes custom models shared with the project and applies provider allowlists and connection exclusions. A project key requires requests:submit. Request a scoped quote for a specific workload and current availability.",
+    description = "Includes model and provider IDs shared with the project and applies provider allowlists and connection exclusions. A project key requires requests:submit. Request a scoped quote for a specific workload and current availability.",
     security(("project_api_key" = []), ("session_cookie" = []), ("api_key" = [])),
     params(ScopeQuery),
     responses(
-        (status = 200, description = "Project-visible model IDs and supported workloads.", body = ModelCatalog),
+        (status = 200, description = "Project-visible model and provider IDs and supported workloads.", body = ModelCatalog),
         (status = "default", response = super::RequestErrorResponse),
     ),
 )]
@@ -99,7 +99,7 @@ pub(super) async fn scoped_models(
     let scope = access.scope();
     let policies = Policies::load(&state.pool, scope).await?;
     let catalog = catalog.current();
-    Ok(Json(catalog.model_catalog(|offer| policies.allows_offer(&catalog, offer, scope))))
+    Ok(Json(catalog.model_catalog(Some((&policies, scope)))))
 }
 
 #[utoipa::path(
