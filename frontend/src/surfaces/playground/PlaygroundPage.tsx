@@ -231,7 +231,7 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
               <div className="space-y-3">
                 <p role="status" className="text-sm text-muted">{publicModel?.name ?? "This model"} is unavailable in this project.</p>
                 <div className="flex flex-wrap items-center gap-3">
-                  {publicModel && <Link to={`/models/${publicModel.slug}#playground`} className="text-sm font-medium text-brand hover:underline">Open model playground</Link>}
+                  {publicModel && <Link to={`/models/${publicModel.slug}#playground`} className="text-sm font-medium text-brand hover:underline">Back to model preview</Link>}
                   {choices.length > 0 && <Button type="button" variant="outline" size="sm" onClick={() => {
                     const next = new URLSearchParams(params);
                     next.delete("model");

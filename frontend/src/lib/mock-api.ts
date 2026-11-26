@@ -259,23 +259,3 @@ export function playgroundHistory(modelSlug: string): PlayRun[] {
   }
   return runs;
 }
-
-/* ── Endpoint reference (documented on model pages + docs surface) ── */
-export type EndpointDoc = { method: string; path: string; kind: "model" | "modality" | "catalog" | "chat" | "cost"; blurb: string };
-
-/** The public API surface, per the design docs' endpoint split. */
-export function endpointsForModel(model: Model): EndpointDoc[] {
-  const docs: EndpointDoc[] = [];
-  if (model.modality === "chat") {
-    docs.push({ method: "POST", path: "/v1/chat/completions", kind: "chat", blurb: "OpenAI-compatible chat completions. Set model to the catalog slug." });
-    docs.push({ method: "POST", path: "/v1/chat/completions/cost", kind: "cost", blurb: "Estimate cost for a chat request without running it." });
-  } else {
-    const modalityPath = model.modality === "world" ? "world" : model.modality;
-    docs.push({ method: "POST", path: `/v1/models/${model.slug}/generate`, kind: "model", blurb: "Model-specific endpoint. Pins this exact model + version." });
-    docs.push({ method: "POST", path: `/v1/models/${model.slug}/generate/cost`, kind: "cost", blurb: "Cost twin — same payload, returns the price, runs nothing." });
-    docs.push({ method: "POST", path: `/v1/any/${modalityPath}`, kind: "modality", blurb: `Modality endpoint — routes to the best ${model.modality} model, or the one you name.` });
-    docs.push({ method: "POST", path: `/v1/any/${modalityPath}/cost`, kind: "cost", blurb: "Cost twin for the modality endpoint." });
-  }
-  docs.push({ method: "GET", path: `/v1/models/${model.slug}`, kind: "catalog", blurb: "Public catalog read — metadata, pricing, and modalities for this model." });
-  return docs;
-}

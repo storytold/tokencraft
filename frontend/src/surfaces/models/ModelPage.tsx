@@ -11,10 +11,11 @@ import { Gallery, type RemixValues } from "./Gallery";
 import { ModelReviews } from "./ModelReviews";
 import { SharedExamples } from "./SharedExamples";
 import { MODEL_BY_SLUG, MODALITY_LABEL, priceLabel, type Model } from "@/lib/catalog";
-import { modelContract } from "@/lib/generation-contract";
+import { generationEndpoint, modelContract, modelPrimitive, modelRequestExample } from "@/lib/generation-contract";
 import { examplesForModel } from "@/lib/gallery";
 import { suiteForModel } from "@/lib/model-examples";
 import { cn } from "@/lib/cn";
+import { apiReferencePath } from "@/surfaces/marketing/api-reference-path";
 
 const TABS = ["Overview", "Examples", "Playground", "API", "Pricing", "Changelog"] as const;
 type Tab = (typeof TABS)[number];
@@ -243,24 +244,36 @@ function rankingsMediaFor(modality: Model["modality"]): string {
   return modality === "chat" ? "llm" : modality;
 }
 
-/* ── API tab: code samples (cURL / JS / Python) + endpoints + agents CTA ── */
 function ApiTab({ model }: { model: Model }) {
   const schema = modelContract(model.slug);
   const reference = `/docs/models/${model.slug}`;
+  const primitive = schema?.profile.primitive ?? modelPrimitive(model.modality);
+  const endpoint = generationEndpoint(primitive);
+  const example = modelRequestExample(primitive, model.slug);
   return (
     <div className="space-y-6">
       <div>
         <h2 className="font-display text-xl font-bold">API schema</h2>
         <p className="mt-2 max-w-2xl text-muted">
-          {schema ? schema.profile.detail : "See this model’s generation availability and shared request types."}
+          {schema?.profile.detail ?? (endpoint
+            ? "Use the model alias enabled for your project."
+            : "See this model’s generation capabilities. The gateway does not expose a generation endpoint for this modality.")}
         </p>
         <Link className="mt-3 inline-flex items-center gap-2 font-semibold text-brand hover:underline" to={reference}>
           <FileText size={16} aria-hidden /> Read the model API schema
         </Link>
-        {schema && (
+        {endpoint && example && (
           <>
-            <p className="mt-5 break-all font-mono text-sm">POST /v1/models/{model.slug}/generate</p>
-            <CodeTabs className="mt-3" tabs={[{ label: "JSON", lang: "json", code: JSON.stringify(schema.example, null, 2) }]} />
+            <p className="mt-5 text-sm">
+              <Link className="font-mono font-medium text-brand hover:underline" to={apiReferencePath("POST", endpoint)}>
+                POST {endpoint}
+              </Link>
+            </p>
+            <p className="mt-2 text-sm text-muted">Set <code>model</code> to an alias from your{" "}
+              <Link className="text-brand hover:underline" to={apiReferencePath("GET", "/v1/catalog/models/scoped")}>project catalog</Link>.
+              {primitive !== "text" && <> This example previews a quote with <code>dry_run</code>.</>}
+            </p>
+            <CodeTabs className="mt-3" tabs={[{ label: "JSON", lang: "json", code: JSON.stringify(example, null, 2) }]} />
           </>
         )}
       </div>

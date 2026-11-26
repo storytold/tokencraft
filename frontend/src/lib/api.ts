@@ -1,18 +1,13 @@
 /**
  * The real API client (replaces mock-api for auth/account surfaces).
  *
- * ── Which server does the frontend hit? ──────────────────────────────────────
- * Decided ONCE at startup, from Vite env:
- *   npm run dev        → local api-gateway  (http://localhost:4000)
- *   npm run dev:prod   → production server  (https://api.foundation.ai)
- * An explicit VITE_API_BASE_URL overrides both. Set it to "/" when a proxy serves
- * the console and gateway under the same origin.
+ * Development defaults to http://localhost:4000. Set VITE_API_BASE_URL to
+ * connect to a specific gateway or "/" to use the console's same-origin proxy.
  *
  * All requests send credentials (the `foundation_session` HttpOnly cookie);
  * the gateway's CORS layer allows the dev origins.
  */
 
-const PRODUCTION_API_URL = "https://api.foundation.ai";
 const LOCAL_API_URL = "http://localhost:4000";
 
 function resolveApiBaseUrl(): string {
@@ -25,7 +20,7 @@ function resolveApiBaseUrl(): string {
     }
     return `http://localhost:${port}`;
   }
-  return import.meta.env.VITE_API_TARGET === "production" ? PRODUCTION_API_URL : LOCAL_API_URL;
+  return LOCAL_API_URL;
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();
@@ -262,7 +257,7 @@ export type ApiImageQuality = "low" | "medium" | "high" | "auto";
 export type ApiOutputFormat = "png" | "jpeg" | "webp";
 export type ApiInputFidelity = "low" | "high";
 
-/** The params shared by `POST /v1/any/image` and `POST /v1/models/{slug}/generate`. */
+/** Image parameters retained in legacy job history. */
 export type ImageGenerationParams = {
   account_id: string;
   prompt: string;
@@ -283,8 +278,7 @@ export type ImageGenerationParams = {
 export type ApiVideoResolution = "720p" | "1080p" | "4k";
 export type ApiVideoAspectRatio = "16:9" | "9:16";
 
-/** The params shared by `POST /v1/any/video` and `POST /v1/models/{slug}/generate`
- * (video models). */
+/** Video parameters retained in legacy job history. */
 export type VideoGenerationParams = {
   account_id: string;
   prompt: string;
@@ -359,24 +353,6 @@ export type ApiJob = {
 };
 
 export type AdminJob = ApiJob & { account_id: string };
-
-export type ApiCostQuote = {
-  certainty: "exact" | "estimated" | "post_billed";
-  amount_micros: number;
-  max_micros: number | null;
-  display: string;
-  line_items: { label: string; amount_micros: number }[];
-  param_adjustments: { param: string; action: "pruned" | "coerced"; detail: string }[];
-};
-
-export type UploadedFile = {
-  file_id: string;
-  cdn_url: string;
-  mime: string;
-  bytes: number;
-  width: number;
-  height: number;
-};
 
 function pageQuery(before?: string, limit = 25): string {
   const params = new URLSearchParams({ limit: String(limit) });
@@ -589,35 +565,6 @@ export const api = {
 
   /* ── Generation ── */
 
-  /** Enqueue on the Any plane (model as a param). Returns the queued job — poll getJob. */
-  generateAnyImage: (body: ImageGenerationParams & { model: string }) =>
-    request<ApiJob>("POST", "/v1/any/image", body),
-
-  /** Price an Any-plane request without running it. */
-  costAnyImage: (body: ImageGenerationParams & { model: string }) =>
-    request<ApiCostQuote>("POST", "/v1/any/image/cost", body),
-
-  /** Enqueue video on the Any plane (model as a param). Returns the queued job. */
-  generateAnyVideo: (body: VideoGenerationParams & { model: string }) =>
-    request<ApiJob>("POST", "/v1/any/video", body),
-
-  /** Price an Any-plane video request without running it. */
-  costAnyVideo: (body: VideoGenerationParams & { model: string }) =>
-    request<ApiCostQuote>("POST", "/v1/any/video/cost", body),
-
-  /** Enqueue on the model-specific (unified) plane — the model is the path resource;
-   * the body follows the model's media type (image or video params). */
-  generateWithModel: (slug: string, body: ImageGenerationParams | VideoGenerationParams) =>
-    request<ApiJob>("POST", `/v1/models/${slug}/generate`, body),
-
-  /** Price a model-specific request without running it. */
-  costWithModel: (slug: string, body: ImageGenerationParams | VideoGenerationParams) =>
-    request<ApiCostQuote>("POST", `/v1/models/${slug}/generate/cost`, body),
-
-  /** Full job: status, outputs-so-far (CDN URLs), fan-out progress, failure, price. */
-  getJob: (jobId: string, accountId: string) =>
-    request<ApiJob>("GET", `/v1/jobs/${jobId}?account_id=${encodeURIComponent(accountId)}`),
-
   /** The job's originating request, replayable (recreate flows, request inspection). */
   getJobRequest: (jobId: string, accountId: string) =>
     request<ApiJobRequest>("GET", `/v1/jobs/${jobId}/request?account_id=${encodeURIComponent(accountId)}`),
@@ -639,10 +586,6 @@ export const api = {
       "GET",
       `/v1/admin/jobs${after ? `?after=${encodeURIComponent(after)}` : ""}`,
     ),
-
-  /** Upload a generation input image; returns the `file_…` id + CDN URL. */
-  uploadFile: (accountId: string, file: Blob) =>
-    send<UploadedFile>("POST", `/v1/files?account_id=${encodeURIComponent(accountId)}`, { body: file }),
 
   /* ── Sessions ── */
 

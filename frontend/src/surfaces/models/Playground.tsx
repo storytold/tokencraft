@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
-import { Loader2, Play, RotateCcw, Sparkles } from "lucide-react";
+import { ArrowUpRight, Loader2, Play, RotateCcw, Sparkles } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Badge, Button, Card, Input, Label, Select, Slider, Textarea } from "@/components/ui";
 import { AccountModal } from "@/components/AccountModal";
 import { useAuth } from "@/lib/auth";
 import { mockGenerate, playgroundHistory, type GenerateResult, type PlayRun } from "@/lib/mock-api";
 import { MODALITY_LABEL, priceLabel, type Control, type Model } from "@/lib/catalog";
 import { cn } from "@/lib/cn";
-import { LiveImagePlayground } from "./LiveImagePlayground";
-import { LiveVideoPlayground } from "./LiveVideoPlayground";
+import { demoEnabled } from "@/lib/gateway";
+import { generationEndpoint, modelPrimitive } from "@/lib/generation-contract";
 
 type Values = Record<string, unknown>;
 
@@ -26,11 +27,25 @@ function defaults(model: Model, initial?: Values): Values {
 }
 
 export function Playground({ model, initialValues }: { model: Model; initialValues?: Values }) {
-  // Routable models get the REAL playground (live API + uploads + polling), picked by
-  // media type; the rest keep the mock preview until their providers are wired up.
-  if (model.live && model.modality === "video") return <LiveVideoPlayground model={model} />;
-  if (model.live) return <LiveImagePlayground model={model} />;
-  return <MockPlayground model={model} initialValues={initialValues} />;
+  const [current] = useSearchParams();
+  const destination = new URLSearchParams({ model: model.slug });
+  for (const key of ["account_id", "project_id"]) {
+    const value = current.get(key);
+    if (value) destination.set(key, value);
+  }
+  const runnable = demoEnabled && generationEndpoint(modelPrimitive(model.modality));
+  return (
+    <div className="space-y-5">
+      {runnable && <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <p className="text-sm text-muted">Run requests with the model aliases enabled for your project.</p>
+        <Link to={`/playground?${destination}`}
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-brand hover:underline">
+          Open project playground <ArrowUpRight className="h-4 w-4" aria-hidden />
+        </Link>
+      </Card>}
+      <MockPlayground model={model} initialValues={initialValues} />
+    </div>
+  );
 }
 
 function MockPlayground({ model, initialValues }: { model: Model; initialValues?: Values }) {
@@ -99,7 +114,7 @@ function MockPlayground({ model, initialValues }: { model: Model; initialValues?
         <div className="mt-6 flex items-center gap-2">
           <Button onClick={run} disabled={status === "running"} className="flex-1">
             {status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            {status === "running" ? "Generating…" : "Run"}
+            {status === "running" ? "Generating…" : "Preview"}
           </Button>
           <Button variant="outline" onClick={reset} disabled={status === "running"}>
             <RotateCcw className="h-4 w-4" />
@@ -120,7 +135,7 @@ function MockPlayground({ model, initialValues }: { model: Model; initialValues?
           {status === "idle" && (
             <div className="text-center text-muted">
               <Sparkles className="mx-auto mb-3 h-8 w-8 text-brand/60" />
-              <p className="text-sm">Set your inputs and hit Run to preview a generation.</p>
+              <p className="text-sm">Set your inputs and select Preview.</p>
             </div>
           )}
           {status === "running" && (
@@ -158,7 +173,7 @@ function MockPlayground({ model, initialValues }: { model: Model; initialValues?
       open={showAccountModal}
       onClose={() => setShowAccountModal(false)}
       onAuthed={() => void execute()}
-      reason={`Create a free account to run ${model.name} in the playground.`}
+      reason={`Create a free account to preview ${model.name}.`}
     />
     </div>
   );

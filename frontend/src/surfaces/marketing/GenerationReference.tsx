@@ -4,7 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { CodeTabs } from "@/components/CodeBlock";
 import { API_BASE_URL } from "@/lib/api";
 import { MODEL_BY_SLUG } from "@/lib/catalog";
-import { modelContract, modelsFor, primitiveById, primitives, scopedMediaExample, type GenerationField } from "@/lib/generation-contract";
+import { generationEndpoint, modelContract, modelPrimitive, modelsFor, primitiveById, primitives, scopedMediaExample, type GenerationField } from "@/lib/generation-contract";
 import { demoEnabled } from "@/lib/gateway";
 import { apiReferencePath } from "./api-reference-path";
 import "./docs.css";
@@ -13,9 +13,9 @@ export default function GenerationReference() {
   const { primitive, model } = useParams();
   const referenced = model ? modelContract(model) : undefined;
   const catalogModel = model && Object.hasOwn(MODEL_BY_SLUG, model) ? MODEL_BY_SLUG[model] : undefined;
-  const id = referenced?.profile.primitive ?? primitiveById(primitive ?? catalogModel?.modality ?? "");
+  const id = referenced?.profile.primitive ?? (primitive ? primitiveById(primitive) : modelPrimitive(catalogModel?.modality ?? ""));
   const contract = id ? primitives[id] : undefined;
-  const text = primitive === "text" || catalogModel?.modality === "chat";
+  const text = id === "text";
   const title = referenced?.label ?? catalogModel?.name ?? (text ? "Text" : contract?.label) ?? "Schema not found";
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function GenerationReference() {
   const projectExample = !model ? scopedMediaExample(id) : undefined;
   const list = !model && id ? modelsFor(id) : [];
   const rules = referenced?.profile.rules ?? contract?.rules;
-  const wirePath = text ? "/v1/chat/completions" : id && ["image", "video", "audio", "3d"].includes(id) ? "/v1/" + id : undefined;
+  const wirePath = generationEndpoint(id);
 
   return (
     <article className="docs-schema" aria-labelledby="schema-title">
