@@ -35,7 +35,8 @@ pub(super) async fn run(
             let destination = binding.client.worker_origin().unwrap_or_else(|| binding.digest.clone());
             (binding.digest.as_str(), destination)
         }));
-    let mut slots = DestinationSlots::new(destinations);
+    let reserve_chat = !chat.is_empty() && runtime.artifact_storage.is_some();
+    let mut slots = WorkerSlots::new(destinations, reserve_chat);
     let mut tasks = JoinSet::new();
     let mut timer = tokio::time::interval(Duration::from_millis(250));
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -65,8 +66,8 @@ pub(super) async fn run(
             }
             let blocked = slots.blocked_destination();
             let local_chat = slots.eligible(&chat, blocked);
-            let connectors = slots.eligible(&submit_connectors, blocked);
-            let polling = slots.eligible(&poll_connectors, blocked);
+            let connectors = slots.eligible_connectors(&submit_connectors, blocked);
+            let polling = slots.eligible_connectors(&poll_connectors, blocked);
             let submit = SubmitBindings {
                 local_chat: &local_chat,
                 connectors: &connectors,
@@ -78,9 +79,16 @@ pub(super) async fn run(
                 Ok(Some(work)) => {
                     // Give the other queue first choice on the next claim.
                     prefer_poll = matches!(&work, Work::Submit(_));
-                    let destination = slots.bindings[work.binding_digest()].clone();
-                    let task = tasks.spawn(work.execute(pool.clone(), Arc::clone(&runtime), Arc::clone(&catalog)));
-                    slots.active.insert(task.id(), destination);
+                    let active = ActiveTask {
+                        destination: slots.bindings[work.binding_digest()].clone(),
+                        connector: work.uses_connector(),
+                    };
+                    let task = tasks.spawn(work.execute(
+                        pool.clone(),
+                        Arc::clone(&runtime),
+                        Arc::clone(&catalog),
+                    ));
+                    slots.active.insert(task.id(), active);
                     readiness.set_provider_tasks(tasks.len());
                 }
                 Ok(None) => break,
@@ -94,27 +102,65 @@ pub(super) async fn run(
     }
 }
 
-struct DestinationSlots<'a> {
-    bindings: HashMap<&'a str, String>,
-    active: HashMap<Id, String>,
-    limit: usize,
+struct ActiveTask {
+    destination: String,
+    connector: bool,
 }
 
-impl<'a> DestinationSlots<'a> {
-    fn new(destinations: impl Iterator<Item = (&'a str, String)>) -> Self {
+struct WorkerSlots<'a> {
+    bindings: HashMap<&'a str, String>,
+    active: HashMap<Id, ActiveTask>,
+    destination_limit: usize,
+    reserve_chat: bool,
+}
+
+impl<'a> WorkerSlots<'a> {
+    fn new(destinations: impl Iterator<Item = (&'a str, String)>, reserve_chat: bool) -> Self {
         let bindings: HashMap<_, _> = destinations.collect();
-        let multiple = bindings.values().next()
+        let multiple = bindings
+            .values()
+            .next()
             .is_some_and(|first| bindings.values().any(|origin| origin != first));
         // Leave one slot for other destinations. A dedicated worker can use all four.
-        let limit = if multiple { MAX_PROVIDER_TASKS - 1 } else { MAX_PROVIDER_TASKS };
-        Self { bindings, active: HashMap::new(), limit }
+        let destination_limit = if multiple {
+            MAX_PROVIDER_TASKS - 1
+        } else {
+            MAX_PROVIDER_TASKS
+        };
+        Self {
+            bindings,
+            active: HashMap::new(),
+            destination_limit,
+            reserve_chat,
+        }
     }
 
     fn blocked_destination(&self) -> Option<&str> {
         // With four total slots and a limit of three, at most one destination is full.
-        self.active.values().find(|destination| {
-            self.active.values().filter(|active| active == destination).count() >= self.limit
-        }).map(String::as_str)
+        self.active
+            .values()
+            .find(|task| {
+                self.active
+                    .values()
+                    .filter(|active| active.destination == task.destination)
+                    .count()
+                    >= self.destination_limit
+            })
+            .map(|task| task.destination.as_str())
+    }
+
+    fn eligible_connectors<'b>(
+        &self,
+        bindings: &'b [String],
+        blocked: Option<&str>,
+    ) -> Cow<'b, [String]> {
+        // Separate connector origins can share the same slow artifact store.
+        if self.reserve_chat
+            && self.active.values().filter(|task| task.connector).count() >= MAX_PROVIDER_TASKS - 1
+        {
+            return Cow::Borrowed(&[]);
+        }
+        self.eligible(bindings, blocked)
     }
 
     fn eligible<'b>(&self, bindings: &'b [String], blocked: Option<&str>) -> Cow<'b, [String]> {
@@ -165,6 +211,13 @@ impl Work {
         }
     }
 
+    fn uses_connector(&self) -> bool {
+        match self {
+            Self::Submit(run) => run.adapter == "connector_queue",
+            Self::Poll(_) => true,
+        }
+    }
+
     async fn execute(self, pool: db::PgPool, runtime: Arc<ProviderRuntime>, catalog: Arc<CatalogStore>) {
         let span = match &self {
             Self::Submit(run) => work_span(
@@ -197,16 +250,30 @@ mod tests {
     async fn aliases_share_capacity_and_a_dedicated_destination_gets_all_slots() {
         let bindings = ["primary", "previous", "alternate"].map(str::to_owned);
         for multiple_destinations in [true, false] {
-            let alternate = if multiple_destinations { "alternate-origin" } else { "shared-origin" };
-            let mut slots = DestinationSlots::new([
-                ("primary", "shared-origin".to_owned()),
-                ("previous", "shared-origin".to_owned()),
-                ("alternate", alternate.to_owned()),
-            ].into_iter());
+            let alternate = if multiple_destinations {
+                "alternate-origin"
+            } else {
+                "shared-origin"
+            };
+            let mut slots = WorkerSlots::new(
+                [
+                    ("primary", "shared-origin".to_owned()),
+                    ("previous", "shared-origin".to_owned()),
+                    ("alternate", alternate.to_owned()),
+                ]
+                .into_iter(),
+                false,
+            );
             let mut tasks = JoinSet::new();
             for binding in ["primary", "previous", "primary"] {
                 let task = tasks.spawn(std::future::pending::<()>());
-                slots.active.insert(task.id(), slots.bindings[binding].clone());
+                slots.active.insert(
+                    task.id(),
+                    ActiveTask {
+                        destination: slots.bindings[binding].clone(),
+                        connector: true,
+                    },
+                );
             }
             let eligible = slots.eligible(&bindings, slots.blocked_destination());
             if multiple_destinations {
@@ -220,5 +287,42 @@ mod tests {
             slots.active.remove(&interrupted.id());
             assert!(slots.blocked_destination().is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn connectors_share_the_budget_that_protects_chat_from_storage_stalls() {
+        let bindings = ["one", "two", "chat"].map(str::to_owned);
+        let destinations = [
+            ("one", "origin-a".to_owned()),
+            ("two", "origin-b".to_owned()),
+            ("chat", "origin-c".to_owned()),
+        ];
+        let mut tasks = JoinSet::new();
+        let mut slots = WorkerSlots::new(destinations.into_iter(), true);
+        let mut ids = Vec::new();
+        for binding in ["one", "two", "two"] {
+            let task = tasks.spawn(std::future::pending::<()>());
+            slots.active.insert(
+                task.id(),
+                ActiveTask {
+                    destination: slots.bindings[binding].clone(),
+                    connector: true,
+                },
+            );
+            ids.push(task.id());
+        }
+
+        assert!(slots.blocked_destination().is_none());
+        assert!(slots.eligible_connectors(&bindings[..2], None).is_empty());
+        assert_eq!(
+            slots.eligible(&bindings[2..], None).as_ref(),
+            &bindings[2..]
+        );
+
+        slots.active.remove(&ids[0]);
+        assert_eq!(
+            slots.eligible_connectors(&bindings[..2], None).as_ref(),
+            &bindings[..2]
+        );
     }
 }

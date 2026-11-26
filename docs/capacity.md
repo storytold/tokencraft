@@ -88,6 +88,18 @@ When enabling workflow submission metering on an existing cell, move workflow su
 
 The per-organization row provides exact limits across API replicas and survives restart and database failover. Add cells to distribute organizations and their rows. If an organization moves, carry the quota and audit state with its requests and fence the old cell before admitting on the new writer. A hot organization can still contend on its row and surrounding admission work. Measure lock waits and rejected attempts before considering reserved quota leases or another shared limiter. Model-token quotas need a token reservation and reconciliation contract. Cross-cell supplier quotas need a separate pre-dispatch authority keyed to the supplier credential and workload.
 
+### Isolate slow artifact storage
+
+Each worker runs up to four provider tasks. In a worker serving multiple destinations, aliases sharing one origin can use at most three slots. Workers with both chat bindings and external artifact storage also reserve one slot for chat. Slow uploads from multiple media connectors can otherwise fill every slot while using the same storage backend.
+
+Run the local rehearsal with PostgreSQL 17 and HAProxy 3.2 or newer on the path. It starts two API replicas and a worker, stalls a synthetic connector and a signature-checking bucket, and verifies that other tenants complete chat requests while storage is stalled. It reports request and queue delay percentiles, pool acquisition timings, and sampled PostgreSQL lock waits.
+
+```sh
+python3 -B scripts/smoke_cell_faults.py target/debug/api-gateway target/debug/admin-cli
+```
+
+To collect database pool acquisition timings separately, include `sqlx::pool::acquire=debug` in the gateway's `RUST_LOG` filter. The sample includes time spent connecting or checking an acquired connection.
+
 ### Request a higher limit
 
 Organization owners and admins can read `GET /v1/rate-limits?account_id=...` and request the next tier using `POST /v1/rate-limits/increase?account_id=...` with an authenticated console session. Project bearer keys cannot grant increases. Use the currently advertised tier as the precondition.

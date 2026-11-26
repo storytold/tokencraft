@@ -29,6 +29,7 @@ pub fn verify_hosted_url(database_url: &str) -> Result<()> {
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(10)
+        .acquire_time_level(log::LevelFilter::Debug)
         .connect(database_url)
         .await?;
     Ok(pool)
