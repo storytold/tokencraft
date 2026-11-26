@@ -688,9 +688,11 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     assert all(item.get("workflow_run_id") != sibling_run["id"] for item in entries["items"])
     print("PASS restarted worker honors subscription revocation before delivering or redriving a queued event")
     print("PASS published workflow contract, upload, digest, replay, conditional polling, cancellation, and app isolation")
+    return test_path, trial
 
 
-def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, hold_budget, receiver, check_rollout):
+def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, hold_budget, receiver, check_rollout,
+                               hold_worker_slots):
     session, account, project = provision(port)
     query = f"?account_id={account}"
     base = f"/v1/projects/{project}"
@@ -841,6 +843,26 @@ def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, 
     preserved = query_db("SELECT encode(content, 'hex') FROM workflow_runs WHERE id = :'run'", run=unreadable["id"])
     assert preserved == "00"
     print("PASS unreadable checkpoint still expires, releases budget, and produces one signed terminal event")
+
+    stop_worker()
+    overdue = enqueue()
+    query_db("UPDATE workflow_runs SET next_at = now() + interval '1 hour' WHERE id = :'run'", run=overdue["id"])
+    assert_on_hold(estimate * 2 + run_cap, estimate + run_cap)
+    with hold_worker_slots() as (first, second):
+        query_db("UPDATE workflow_runs SET deadline = now() - interval '1 second', "
+                 "next_at = now() - interval '1 second' WHERE id = :'run'", run=overdue["id"])
+        wait_for_db(
+            "SELECT status = 'expired' AND (SELECT count(*) FROM workflow_runs "
+            "WHERE id IN (:'first', :'second') AND status = 'queued' AND lease = 1) = 2 "
+            "FROM workflow_runs WHERE id = :'run'",
+            "The deadline did not release the run while both worker slots were occupied",
+            run=overdue["id"], first=first, second=second,
+        )
+        assert_on_hold(estimate * 2, estimate)
+        assert query_db("SELECT count(*) FROM gateway_webhook_deliveries WHERE workflow_run_id = :'run'",
+                        run=overdue["id"]) == "1"
+    expect_expired(overdue)
+    print("PASS deadline expiration releases the budget and records one signed event with both worker slots occupied")
 
     stop_worker()
     delayed = enqueue()
@@ -1022,14 +1044,40 @@ def rehearse(gateway, admin, directory):
             def submit_trial(path, body):
                 return test_during_tool_pause(api_port, session, path, body, delivery, query_db)
 
-            verify_workflow(api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
-                            check_rollout, submit_trial)
+            test_path, trial = verify_workflow(
+                api_port, peer_port, session, account, project, workers.close, start_worker, receiver,
+                check_rollout, submit_trial)
             verify_project_catalog(api_port, session, account, project)
             def check_generation(step_cap):
                 verify_generation_rollout(gateway, directory, settings, step_cap)
 
+            @contextmanager
+            def hold_worker_slots():
+                delivery.send_signal(signal.SIGSTOP)
+                try:
+                    receipts = []
+                    for _ in range(2):
+                        receipt, _ = call(api_port, test_path, 202, method="POST", body=trial,
+                                          headers={**session, "Idempotency-Key": token_hex(16)})
+                        receipts.append(receipt)
+                    start_worker()
+                    first, second = (receipt["id"] for receipt in receipts)
+                    until = monotonic() + 5
+                    while monotonic() < until:
+                        if query_db("SELECT count(*) FROM workflow_runs WHERE id IN (:'first', :'second') "
+                                    "AND status = 'queued' AND lease = 1", first=first, second=second) == "2":
+                            break
+                        sleep(0.05)
+                    else:
+                        raise AssertionError("Both tool calls failed to occupy worker slots")
+                    yield first, second
+                finally:
+                    delivery.send_signal(signal.SIGCONT)
+                for receipt in receipts:
+                    wait_for_run(api_port, receipt, session)
+
             verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver,
-                                       check_generation)
+                                       check_generation, hold_worker_slots)
 
 
 def main():

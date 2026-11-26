@@ -25,7 +25,7 @@ cargo run --locked -p api_gateway --bin api-gateway
 
 The default process runs the API and workers together. Set `TOKENCRAFT_PROCESS_ROLE=api` or `TOKENCRAFT_PROCESS_ROLE=worker` to run them separately. Both roles need the same database, persistent payload key, catalog, and bindings. Use shared artifact storage when those roles run on separate machines. Check `/ready` and the catalog model list after deploying. Configure [event archives](event-archives.md) for verified filesystem or S3-compatible retention.
 
-Each worker process advances up to two workflow runs at a time and schedules retention cleanup independently. PostgreSQL leases and admission limits continue to apply across all replicas.
+Each worker process advances up to two workflow runs at a time and processes deadlines and retention cleanup independently. PostgreSQL leases and admission limits continue to apply across all replicas.
 
 ## Roll out compatible database changes
 
@@ -57,6 +57,8 @@ The API checks the same database and schema state before handling operational re
 Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
 Use the same drain and restart when moving to schema 78. It adds a separate encrypted attachment for queued workflow first frames. The new worker can still read inline frames queued by earlier versions. Reapply the runtime grants before starting the new fleet.
+
+Migration 79 adds the active workflow deadline index and supports overlap with schema-78 API and worker binaries. The index build pauses writes to the workflow runs table until it commits. On the new worker, deadline processing uses batches of up to 64 overdue runs and works while execution slots are busy. A row held by another transaction is picked up after that transaction releases it.
 
 ## Connect existing compute endpoints
 

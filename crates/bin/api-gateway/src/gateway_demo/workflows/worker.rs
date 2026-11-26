@@ -11,6 +11,7 @@ const MAX_CONCURRENT_ADVANCES: usize = 2;
 
 pub(super) fn spawn(runtime: Runtime) {
     let runtime = Arc::new(runtime);
+    tokio::spawn(expire_due_runs(Arc::clone(&runtime)));
     tokio::spawn(clean_up(Arc::clone(&runtime)));
     tokio::spawn(run(runtime));
 }
@@ -38,17 +39,27 @@ async fn run(runtime: Arc<Runtime>) {
                 break;
             }
             match db::claim_run(&runtime.pool, &tool_pins).await {
-                Ok(Some(row)) if row.status != "expired" => {
+                Ok(Some(row)) => {
                     let runtime = Arc::clone(&runtime);
                     tasks.spawn(async move { runner::advance(&runtime, row).await });
                 }
-                Ok(Some(_)) => {}
                 Ok(None) => break,
                 Err(_) => {
                     tracing::warn!(category = "storage", "workflow worker could not claim a run");
                     break;
                 }
             }
+        }
+    }
+}
+
+async fn expire_due_runs(runtime: Arc<Runtime>) {
+    let mut schedule = tokio::time::interval(Duration::from_millis(500));
+    schedule.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        runtime.readiness.work_tick(&mut schedule).await;
+        if db::expire_runs(&runtime.pool).await.is_err() {
+            tracing::warn!("workflow deadline processing deferred");
         }
     }
 }

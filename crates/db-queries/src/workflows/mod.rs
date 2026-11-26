@@ -140,6 +140,9 @@ pub use find_run::*;
 mod claim_run;
 pub use claim_run::*;
 
+mod expire_runs;
+pub use expire_runs::expire_runs;
+
 mod checkpoint_run;
 pub use checkpoint_run::*;
 
