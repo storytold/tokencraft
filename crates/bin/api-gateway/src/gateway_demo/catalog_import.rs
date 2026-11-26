@@ -396,12 +396,15 @@ fn prepare(
         }
     }
 
-    let mut output = serde_json::to_vec_pretty(&catalog)?;
+    let normalized = Catalog::parse(&serde_json::to_vec(&catalog)?)
+        .context("validate prepared gateway catalog")?
+        .into_file();
+    let mut output = serde_json::to_vec_pretty(&normalized)?;
     if output.len() as u64 >= MAX_CONFIG_BYTES {
-        output = serde_json::to_vec(&catalog)?;
+        output = serde_json::to_vec(&normalized)?;
     }
+    ensure!((output.len() as u64) < MAX_CONFIG_BYTES, "prepared gateway catalog exceeds 64 KiB");
     output.push(b'\n');
-    Catalog::parse(&output).context("validate prepared gateway catalog")?;
     Ok(output)
 }
 
@@ -558,7 +561,9 @@ mod tests {
 
     #[test]
     fn adopts_a_compatible_revision_without_changing_operator_settings() {
-        let original = Reference::parse(SNAPSHOT.to_vec()).unwrap();
+        let mut initial: Value = serde_json::from_slice(SNAPSHOT).unwrap();
+        initial["offers"][0]["capabilities"]["aspect_ratios"] = serde_json::json!(["4:3", "1:1"]);
+        let original = Reference::parse(serde_json::to_vec(&initial).unwrap()).unwrap();
         let mut initial_selection: Value = serde_json::from_slice(SELECTION).unwrap();
         initial_selection["offers"][0]["id"] = "local_image".into();
         initial_selection["offers"][0]["model"] = "studio_image".into();
@@ -573,7 +578,7 @@ mod tests {
         let newer = Reference::parse(serde_json::to_vec(&published).unwrap()).unwrap();
         let selection = serde_json::to_vec(&serde_json::json!({
             "version": 1, "reference_revision": "ref-2", "reference_sha256": digest(&newer.bytes),
-            "offers": [{ "id": "local_image", "reference": "fixture_image", "update_from_sha256": digest(SNAPSHOT) }]
+            "offers": [{ "id": "local_image", "reference": "fixture_image", "update_from_sha256": digest(&original.bytes) }]
         })).unwrap();
 
         let upgraded = prepare(&newer, &selection, Some(Catalog::parse(&base).unwrap())).unwrap();

@@ -63,6 +63,12 @@ jobs:
           done
           cat "$RUNNER_TEMP/gateway.log"
           exit 1
+      - name: Check the public catalog against provider plugins
+        run: |
+          target/debug/api-gateway catalog check-reference --reference catalog/artcraft-v1.json \
+            --plugin-catalog plugins/providers/inference/fal/catalog.example.json \
+            --plugin-catalog plugins/providers/inference/kinovi/catalog.example.json \
+            --plugin-catalog plugins/providers/inference/openrouter/catalog.example.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -100,3 +106,7 @@ jobs:
         env:
           VITE_API_BASE_URL: /
           VITE_TOKENCRAFT_DEMO: "true"
+      - name: Check the published catalog and API contract bytes
+        run: |
+          cmp ../catalog/artcraft-v1.json dist/catalog/artcraft-v1.json
+          cmp ../contracts/openapi.json dist/docs/openapi.json

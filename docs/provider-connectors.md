@@ -227,7 +227,7 @@ api-gateway catalog verify-reference --bundle "$IMMUTABLE_BUNDLE" \
   --public-key artcraft-public.der --emit-catalog > artcraft-v1.next.json
 ```
 
-Copy the verified JSON to `frontend/public/catalog/artcraft-v1.json` for the web build. The built console serves those bytes at `/catalog/artcraft-v1.json`. Publication checks reject extra catalog, offer, and billing fields. The signed bundle and the browser download share one revision and checksum. Use the gateway's quote API to compare active offers and rates for a specific workload.
+Use the verified JSON as the release's `catalog/artcraft-v1.json`. The console build serves that file byte for byte at `/catalog/artcraft-v1.json`. CI checks the catalog's plugin coverage and compares it with the console build's output. Publication checks reject extra catalog, offer, and billing fields. The signed bundle and the browser download share one revision and checksum. Use the gateway's quote API to compare active offers and rates for a specific workload.
 
 ## Apply a provider review bundle
 
