@@ -1,6 +1,6 @@
 //! Data layer: the connection pool and the embedded migrator. The ONLY SQL in the
 //! codebase lives in `queries/` (not yet built out); migrations live in `migrations/`
-//! and are applied via `admin-cli migrate`, never on service boot.
+//! and are applied through administrative commands. The gateway only reads the migration ledger.
 
 use anyhow::Result;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
@@ -8,7 +8,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 pub use sqlx::PgPool;
 
 mod schema;
-pub use schema::migrations_current;
+pub use schema::{initialize_demo, migrations_current};
 
 /// Migrations embedded at compile time from `crates/db/migrations`.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

@@ -241,18 +241,30 @@ def rehearse(gateway, admin, directory):
     with ExitStack() as stack:
         stack.enter_context(service("postgres", [pg / "postgres", "-D", data, "-h", HOST, "-p", str(db_port),
             "-c", "unix_socket_directories="], directory, env, db_ready, shutdown=signal.SIGINT))
-        command(pg / "createdb", "-w", "--maintenance-db=postgres", "tokencraft", cwd=directory, env=pg_env)
-        command(admin, "migrate", cwd=directory, env=dict(env, FOUNDATION_ENV="development",
-            DATABASE_URL=f"postgresql://tokencraft:{password}@{HOST}:{db_port}/tokencraft"))
-        command(pg / "psql", "-Xqw", "-d", "tokencraft", "-v", "runtime_role=tokencraft_runtime",
+        owner = dict(env, FOUNDATION_ENV="development",
+                     DATABASE_URL=f"postgresql://tokencraft:{password}@{HOST}:{db_port}/postgres")
+        psql = (pg / "psql", "-XAtw", "-d", "postgres", "-v", "ON_ERROR_STOP=1")
+        command(*psql, "-c", "CREATE TABLE public.existing_fixture (id integer)", cwd=directory, env=pg_env)
+        rejected = subprocess.run([admin, "initialize-demo"], cwd=directory, env=owner,
+                                  capture_output=True, text=True, timeout=15)
+        assert rejected.returncode != 0 and "requires an empty public schema" in rejected.stderr
+        ledger = command(*psql, "-c", "SELECT to_regclass('public._sqlx_migrations') IS NULL",
+                         cwd=directory, env=pg_env)
+        assert ledger == "t"
+        command(*psql, "-c", "DROP TABLE public.existing_fixture", cwd=directory, env=pg_env)
+        assert command(admin, "initialize-demo", cwd=directory, env=owner) == "initialized empty demo schema"
+        command(pg / "psql", "-Xqw", "-d", "postgres", "-v", "runtime_role=tokencraft_runtime",
                 "-f", FIXTURES / "create-runtime-role.sql", "-f", ROOT / "deploy/postgres/grant-runtime.sql",
                 cwd=directory, env=dict(pg_env, TOKENCRAFT_RUNTIME_APP_PASSWORD=runtime_password))
         api_port = loopback_port()
         settings = dict(env, FOUNDATION_ENV="development", TOKENCRAFT_PROCESS_ROLE="api",
-            DATABASE_URL=f"postgresql://tokencraft_runtime:{runtime_password}@{HOST}:{db_port}/tokencraft",
+            DATABASE_URL=f"postgresql://tokencraft_runtime:{runtime_password}@{HOST}:{db_port}/postgres",
             APP_BASE_URL=f"http://localhost:{api_port}", API_GATEWAY_PORT=str(api_port),
             COOKIE_DOMAIN="localhost", COOKIE_SECURE="false", SESSION_SECRET=token_hex(32),
             TOKENCRAFT_CORE_CATALOG=str(FIXTURES / "runtime-catalog.json"), TOKENCRAFT_WORKFLOW_KEY=token_hex(32))
+        compatible = command(admin, "initialize-demo", cwd=directory, env=settings)
+        assert compatible == "existing demo schema is compatible"
+        print("PASS startup initializes an empty schema and verifies an existing schema with the runtime login")
         with service("setup-api", [gateway], directory, settings, lambda: ready(api_port)):
             session, account, project = provision(api_port)
 

@@ -1,5 +1,5 @@
 //! admin-cli — migrations and ops one-offs (codebase_layout_backend.md §2). Migrations
-//! are applied here (via `admin-cli migrate`), NEVER on service boot.
+//! are applied here. Hosted demo startup can initialize an empty database by explicit opt-in.
 
 use anyhow::{bail, Result};
 
@@ -17,6 +17,14 @@ async fn main() -> Result<()> {
             let n = db::table_count(&pool).await?;
             println!("migrations applied · {n} application tables in {}", db_name(&cfg.database_url));
         }
+        "initialize-demo" => {
+            let pool = connect(&cfg).await?;
+            if db::initialize_demo(&pool).await? {
+                println!("initialized empty demo schema");
+            } else {
+                println!("existing demo schema is compatible");
+            }
+        }
         "db-info" => {
             let pool = connect(&cfg).await?;
             let up = db::ping(&pool).await;
@@ -26,7 +34,9 @@ async fn main() -> Result<()> {
             println!("application tables: {n}");
         }
         "" | "help" | "-h" | "--help" => {
-            eprintln!("admin-cli <command>\n  migrate   apply pending migrations\n  db-info   show db name, reachability, table count");
+            eprintln!(
+                "admin-cli <command>\n  migrate          apply pending migrations\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count"
+            );
         }
         other => bail!("unknown command: {other} (try `help`)"),
     }

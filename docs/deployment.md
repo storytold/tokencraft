@@ -324,7 +324,9 @@ psql -X "service=tokencraft_migration" -v runtime_role=tokencraft_runtime \
 
 The [grant script](../deploy/postgres/grant-runtime.sql) grants access to the owner's application tables, views, sequences, and invoker functions. It gives the runtime role read-only access to the migration ledger and any schema compatibility declarations. Reapply it after each migration before sending traffic to the new replicas. Configure the API and worker with the runtime login in `DATABASE_URL`. Keep the migration login in the one-off deployment job.
 
-The bundled Render demo migrates during startup by default. For a demo with a separate migration job, apply the matching image's migrations and runtime grants first, then set `TOKENCRAFT_RENDER_MIGRATE_ON_START=false` and configure the service with the runtime login. The gateway opens its listener only after it confirms the matching schema.
+The Render launcher defaults `TOKENCRAFT_RENDER_MIGRATE_ON_START` to `false`. Apply the image's migrations and runtime grants in a separate step, then start the service with the runtime login. The gateway opens its listener after confirming schema compatibility. Use `/ready` as the Render health check.
+
+For a new disposable Render demo, set `TOKENCRAFT_RENDER_MIGRATE_ON_START=true`. Startup can initialize an empty `public` schema and can verify an already compatible schema. Upgrading an existing database uses `admin-cli migrate` during the [deployment cutover](#cut-over-without-schema-overlap).
 
 ## Shared artifact storage
 

@@ -20,8 +20,8 @@ bundle_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export TOKENCRAFT_CORE_CATALOG="$bundle_dir/catalog.json"
 export TOKENCRAFT_CONNECTORS="$bundle_dir/bindings.json"
 
-case "${TOKENCRAFT_RENDER_MIGRATE_ON_START:-true}" in
-    true) admin-cli migrate ;;
+case "${TOKENCRAFT_RENDER_MIGRATE_ON_START:-false}" in
+    true) admin-cli initialize-demo ;;
     false) ;;
     *) echo "Set TOKENCRAFT_RENDER_MIGRATE_ON_START to true or false" >&2; exit 2 ;;
 esac

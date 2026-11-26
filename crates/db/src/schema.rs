@@ -1,6 +1,45 @@
-use sqlx::{Connection, PgConnection};
+use anyhow::{ensure, Result};
+use sqlx::{migrate::Migrate, Connection, PgConnection, PgPool};
 
 use super::MIGRATOR;
+
+/// Initialize a new demo schema, or verify an existing schema without changing it.
+/// Returns true only when this command installed the migrations.
+pub async fn initialize_demo(pool: &PgPool) -> Result<bool> {
+    // Use SQLx's session lock across both the inspection and migration. Detaching
+    // guarantees the connection closes and releases the lock on every exit path.
+    let mut conn = pool.acquire().await?.detach();
+    sqlx::query("SET search_path TO public").execute(&mut conn).await?;
+    conn.lock().await?;
+
+    let has_ledger: bool = sqlx::query_scalar(
+        "SELECT pg_catalog.to_regclass('public._sqlx_migrations') IS NOT NULL",
+    )
+    .fetch_one(&mut conn)
+    .await?;
+    if has_ledger {
+        ensure!(
+            migrations_current(&mut conn).await?,
+            "existing demo schema is incompatible; use the deployment cutover procedure and run admin-cli migrate separately",
+        );
+        return Ok(false);
+    }
+
+    let public_is_empty: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (
+             SELECT 1 FROM pg_catalog.pg_class WHERE relnamespace = 'public'::regnamespace
+             UNION ALL
+             SELECT 1 FROM pg_catalog.pg_proc WHERE pronamespace = 'public'::regnamespace
+             UNION ALL
+             SELECT 1 FROM pg_catalog.pg_type WHERE typnamespace = 'public'::regnamespace
+         )",
+    )
+    .fetch_one(&mut conn)
+    .await?;
+    ensure!(public_is_empty, "demo initialization requires an empty public schema");
+    MIGRATOR.run(&mut conn).await?;
+    Ok(true)
+}
 
 /// Match the embedded migration prefix and explicitly approved forward migrations.
 pub async fn migrations_current(conn: &mut PgConnection) -> sqlx::Result<bool> {
