@@ -1,7 +1,8 @@
 """Pull a TokenCraft export into a customer-owned PostgreSQL database."""
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import hmac
 import http.client
@@ -17,9 +18,10 @@ import urllib.request
 
 
 class SyncError(Exception):
-    def __init__(self, message, *, retryable=False):
+    def __init__(self, message, *, retryable=False, retry_after=0):
         super().__init__(message)
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -28,6 +30,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 EVENT_ID = re.compile(r"evt_[a-f0-9]{32}")
+HTTP_DATE = re.compile(
+    r"(?:[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4}|[A-Z][a-z]+, [0-9]{2}-[A-Z][a-z]{2}-[0-9]{2})"
+    r" [0-9]{2}:[0-9]{2}:[0-9]{2} GMT"
+    r"|[A-Z][a-z]{2} [A-Z][a-z]{2} (?:[0-9]{2}| [0-9]) [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}"
+)
+MAX_RETRY_AFTER = 3600
 PAGE_BYTES = 2 * 1024 * 1024
 SCHEMA_VERSION = 1
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -57,6 +65,28 @@ def settings(*, require_token=True):
     return base, token, {"source": base, "project": project, "client": client}
 
 
+def retry_after_seconds(headers, now):
+    values = headers.get_all("Retry-After", [])
+    if len(values) != 1:
+        return 0
+    value = values[0].strip()
+    if value.isascii() and value.isdecimal():
+        digits = value.lstrip("0") or "0"
+        if len(digits) > len(str(MAX_RETRY_AFTER)):
+            return MAX_RETRY_AFTER
+        return min(int(digits), MAX_RETRY_AFTER)
+    # The mail date parser also accepts forms outside HTTP, including some combined values.
+    if not HTTP_DATE.fullmatch(value):
+        return 0
+    try:
+        when = parsedate_to_datetime(value)
+    except (ValueError, OverflowError):
+        return 0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return min(MAX_RETRY_AFTER, max(0, (when - now).total_seconds()))
+
+
 def gateway(base, token, path, body=None):
     headers = {"Authorization": f"Bearer {token}"}
     encoded = None
@@ -78,15 +108,16 @@ def gateway(base, token, path, body=None):
             return payload, response.headers
     except urllib.error.HTTPError as error:
         with error:
-            if error.code == 409 and is_cold_archive(error):
-                raise SyncError(
+            cold = error.code == 409 and is_cold_archive(error)
+            retryable = cold or error.code in (408, 429) or error.code >= 500
+            message = f"Gateway returned HTTP {error.code}."
+            if cold:
+                message = (
                     "The next page needs an archived object. Ask a project administrator to restore it, "
-                    "then let the sync resume from its checkpoint.", retryable=True
-                ) from None
-        raise SyncError(
-            f"Gateway returned HTTP {error.code}.",
-            retryable=error.code in (408, 429) or error.code >= 500,
-        ) from None
+                    "then let the sync resume from its checkpoint."
+                )
+            retry_after = retry_after_seconds(error.headers, datetime.now(timezone.utc)) if retryable else 0
+            raise SyncError(message, retryable=retryable, retry_after=retry_after) from None
     except (OSError, http.client.HTTPException):
         raise SyncError("Unable to read the gateway.", retryable=True) from None
 
@@ -358,7 +389,7 @@ def watch(interval, setup):
             print(str(error), file=sys.stderr, flush=True)
             checkpoint = None
             previous_status = None
-            time.sleep(delay)
+            time.sleep(max(delay, error.retry_after))
             delay = min(delay * 2, max(interval, 300))
 
 

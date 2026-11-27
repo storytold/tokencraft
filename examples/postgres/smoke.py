@@ -1,6 +1,8 @@
 """Exercise snapshot import and continuous sync using a disposable connector demo."""
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from email.message import Message
 from hashlib import sha256
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,12 +76,11 @@ def execute(token, app):
 
 
 @contextmanager
-def interrupt_live_export(origin):
+def relay_live_export(origin):
     armed = Event()
-    interrupted = Event()
     retry_started = Event()
     release_retry = Event()
-    affected_paths = []
+    attempts = []
 
     class Relay(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -87,6 +88,7 @@ def interrupt_live_export(origin):
 
         def forward(self):
             assert self.path.startswith("/v1/exports")
+            started = time.monotonic()
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             headers = {name: value for name, value in self.headers.items()
                        if name.lower() not in {"host", "connection"}}
@@ -100,13 +102,18 @@ def interrupt_live_export(origin):
             finally:
                 upstream.close()
             size = len(payload)
-            if armed.is_set() and self.path.startswith("/v1/exports/events?") and status == 200 and payload:
-                if not interrupted.is_set():
-                    affected_paths.append(self.path)
+            if (armed.is_set() and self.path.startswith("/v1/exports/events?")
+                    and status == 200 and payload and len(attempts) < 3):
+                attempt = len(attempts)
+                attempts.append((self.path, started if attempt else time.monotonic()))
+                if attempt == 0:
+                    status = 503
+                    payload = b'{"error":{"code":"export_capacity","message":"event exports are busy; retry shortly"}}'
+                    size = len(payload)
+                    response_headers = [("Content-Type", "application/json"), ("Retry-After", "2")]
+                elif attempt == 1:
                     payload = payload[:size // 2]
-                    interrupted.set()
-                elif not retry_started.is_set():
-                    affected_paths.append(self.path)
+                else:
                     retry_started.set()
                     release_retry.wait(timeout=8)
             self.send_response(status)
@@ -125,11 +132,36 @@ def interrupt_live_export(origin):
         thread = Thread(target=server.serve_forever)
         thread.start()
         try:
-            yield f"http://127.0.0.1:{server.server_port}", armed, retry_started, release_retry, affected_paths
+            yield f"http://127.0.0.1:{server.server_port}", armed, retry_started, release_retry, attempts
         finally:
             release_retry.set()
             server.shutdown()
             thread.join(timeout=5)
+
+
+def verify_retry_hints():
+    now = datetime(1994, 11, 6, 8, 49, 37, tzinfo=timezone.utc)
+    cases = [
+        ([], 0),
+        ([" 00002 "], 2),
+        (["2", "5"], 0),
+        (["2, 5"], 0),
+        (["-5"], 0),
+        (["9" * 5000], 3600),
+        (["Sun, 06 Nov 1994 08:49:42 GMT"], 5),
+        (["Sunday, 06-Nov-94 08:49:42 GMT"], 5),
+        (["Sun Nov  6 08:49:42 1994"], 5),
+        (["Sun, 06 Nov 1994 08:49:36 GMT"], 0),
+        (["Sun, 06 Nov 1994 09:59:37 GMT"], 3600),
+        (["Sun, 06 Nov 1994 08:49:42 GMT, 2"], 0),
+        (["Sun, 32 Nov 1994 08:49:42 GMT"], 0),
+    ]
+    for values, expected in cases:
+        headers = Message()
+        for value in values:
+            headers["Retry-After"] = value
+        assert importer.retry_after_seconds(headers, now) == expected, values
+    print("PASS Retry-After accepts seconds and HTTP dates and bounds invalid or excessive hints.", flush=True)
 
 
 def main():
@@ -140,11 +172,12 @@ def main():
     assert importer.postgres(
         "SELECT to_regnamespace('tokencraft_export') IS NULL AND to_regclass('gateway_requests') IS NULL;", {}
     ) == "t", "Point the smoke at a fresh disposable destination database."
-    with interrupt_live_export(origin) as relay:
+    verify_retry_hints()
+    with relay_live_export(origin) as relay:
         verify_import(*relay)
 
 
-def verify_import(source, armed, retry_started, release_retry, affected_paths):
+def verify_import(source, armed, retry_started, release_retry, attempts):
     _, headers = http("/v1/auth/signup", 201, body={
         "email": f"export-{token_hex(8)}@example.test",
         "password": token_urlsafe(24),
@@ -217,11 +250,13 @@ def verify_import(source, armed, retry_started, release_retry, affected_paths):
         settle(art_request, corrected, 1)
 
         def retried():
-            assert watcher.poll() is None, "Watcher exited after the interrupted page"
+            assert watcher.poll() is None, "Watcher exited after a retryable response"
             return retry_started.is_set()
 
         wait_for(retried, "retry of the interrupted event page")
-        assert len(affected_paths) == 2 and affected_paths[0] == affected_paths[1]
+        assert len(attempts) == 3 and len({path for path, _ in attempts}) == 1
+        delay = attempts[1][1] - attempts[0][1]
+        assert delay >= 2, f"Watcher retried in {delay:.2f}s before Retry-After: 2 elapsed"
         assert status()["after_event_id"] == snapshot["after_event_id"]
         assert importer.postgres("SELECT count(*) FROM tokencraft_export.events;", {}) == str(len(local_events))
         release_retry.set()
@@ -251,7 +286,8 @@ def verify_import(source, armed, retry_started, release_retry, affected_paths):
     assert usage["supplier_settled_usd_nanos"] == int(live["supplier_settled_usd_nanos"]) == corrected
     assert usage["estimated_usd_nanos"] == int(live["estimated_usd_nanos"])
     assert usage["completed_outputs"] == live["completed_outputs"] == 1
-    print("PASS Watcher retried the interrupted page from the same cursor and reconciled the correction once.", flush=True)
+    print(f"PASS Watcher waited {delay:.2f}s after backpressure, retried the same cursor after truncation, "
+          "and reconciled the correction once.", flush=True)
 
     binding = {"source": source, "project": project_id, "client": "art-client"}
     cursor = final["after_event_id"]
