@@ -22,6 +22,7 @@ pub(crate) const MONTHLY_BUDGET_MESSAGE: &str = "request would exceed the monthl
 pub(crate) const PROVIDER_CREDENTIAL_MESSAGE: &str = "save an active provider key for this project or organization";
 pub(crate) const ACTIVE_REQUEST_LIMIT_MESSAGE: &str = "active request limit reached. Retry after outstanding work completes";
 pub(crate) const SUBMISSION_RATE_MESSAGE: &str = "organization submission rate limit reached";
+pub(crate) const ADMISSIONS_PAUSED_MESSAGE: &str = "new requests are temporarily paused for maintenance";
 
 pub(crate) const QUOTE_STALE_MESSAGE: &str = "quote expired or changed; request a fresh comparison";
 
@@ -41,6 +42,7 @@ pub enum ApiError {
   BudgetExceeded,
   ActiveRequestLimit,
   SubmissionRateLimit(i64),
+  AdmissionsPaused,
   ProviderCredentialUnavailable,
   ExportCapacity,
   ArtifactDownloadCapacity,
@@ -62,7 +64,8 @@ impl ApiError {
       Self::ActiveRequestLimit | Self::SubmissionRateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
       Self::ProviderCredentialUnavailable => StatusCode::CONFLICT,
       Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
-      Self::ExportCapacity | Self::ArtifactDownloadCapacity | Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+      Self::AdmissionsPaused | Self::ExportCapacity | Self::ArtifactDownloadCapacity
+      | Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
       Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
   }
@@ -79,6 +82,7 @@ impl ApiError {
       Self::BudgetExceeded => "monthly_budget_exceeded",
       Self::ActiveRequestLimit => "active_request_limit",
       Self::SubmissionRateLimit(_) => "submission_rate_limit",
+      Self::AdmissionsPaused => "admissions_paused",
       Self::ProviderCredentialUnavailable => "provider_credential_unavailable",
       Self::ExportCapacity => "export_capacity",
       Self::ArtifactDownloadCapacity => "artifact_download_capacity",
@@ -94,6 +98,7 @@ impl ApiError {
       Self::BudgetExceeded => MONTHLY_BUDGET_MESSAGE,
       Self::ActiveRequestLimit => ACTIVE_REQUEST_LIMIT_MESSAGE,
       Self::SubmissionRateLimit(_) => SUBMISSION_RATE_MESSAGE,
+      Self::AdmissionsPaused => ADMISSIONS_PAUSED_MESSAGE,
       Self::ProviderCredentialUnavailable => PROVIDER_CREDENTIAL_MESSAGE,
       Self::ExportCapacity => EXPORT_CAPACITY_MESSAGE,
       Self::ArtifactDownloadCapacity => ARTIFACT_DOWNLOAD_CAPACITY_MESSAGE,
@@ -112,6 +117,7 @@ impl ApiError {
   pub(crate) fn retry_after(&self) -> Option<HeaderValue> {
     match self {
       Self::SubmissionRateLimit(seconds) => HeaderValue::from_str(&seconds.to_string()).ok(),
+      Self::AdmissionsPaused => Some(HeaderValue::from_static("5")),
       Self::ExportCapacity | Self::ArtifactDownloadCapacity => Some(HeaderValue::from_static("2")),
       _ => None,
     }

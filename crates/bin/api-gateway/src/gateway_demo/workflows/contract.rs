@@ -96,7 +96,9 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 }}},
                 "responses":{"202":accepted,"200":replay,
                     "409":json_response("The workflow is paused, the invocation conflicts with an earlier submission, the reuse source is unavailable or has no matching steps, or the spending reservation exceeds a monthly limit.", "GatewayError"),
-                    "429":throttled,"default":gateway_error}
+                    "429":throttled,
+                    "503":retry_response("New admissions in this cell are paused for maintenance. Retry with the same idempotency key."),
+                    "default":gateway_error}
             }},
             (&run):{
                 "parameters":[run_id],

@@ -748,6 +748,116 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     return test_path, trial
 
 
+def verify_admission_pause(port, peer, stop_worker, start_worker, operator, query_db, hold_budget):
+    session, account, project = provision(port)
+    scope = f"?account_id={account}"
+    project_path = f"/v1/projects/{project}"
+    cap = 5_000_000
+    draft, _ = call(port, project_path + "/workflows" + scope, 201, method="POST", headers=session, body={
+        "schema": 1, "title": "Cell admission pause", "max_usd_nanos": cap, "inputs": {},
+        "nodes": [{"id": "generate", "title": "Generate", "kind": "image", "model": "runtime_image",
+                   "max_usd_nanos": cap, "settings": {"prompt": {"source": "fixed", "value": "Synthetic image"},
+                                                    "aspect_ratio": {"source": "fixed", "value": "4:3"}}}],
+        "outputs": {"image": "generate"},
+    })
+    management = project_path + f"/workflows/{draft['id']}"
+    trial_path = management + "/test-runs" + scope
+    trial_body = {"inputs": {}, "revision": draft["revision"]}
+    start_worker()
+    trial, _ = call(port, trial_path, 202, method="POST", body=trial_body,
+                    headers={**session, "Idempotency-Key": token_hex(16)})
+    wait_for_run(port, trial, session)
+    stop_worker()
+
+    call(port, management + "/versions" + scope, 200, method="POST", headers=session,
+         body={"revision": draft["revision"], "active_version": None})
+    app, _ = call(port, management + "/apps" + scope, 201, method="POST", headers=session,
+                  body={"name": "Pause fixture", "days": 1, "scopes": ["runs:submit", "runs:read"]})
+    runs = project_path + f"/workflow-endpoints/{draft['id']}/runs"
+    run_body = {"inputs": {}}
+    app_key = {"Authorization": f"Bearer {app['secret']}", "Idempotency-Key": token_hex(16)}
+    accepted_run, _ = call(port, runs, 202, method="POST", body=run_body, headers=app_key)
+
+    policy = "/v1/routing-policy" + scope
+    call(port, policy, 200, method="PUT", headers=session, body={
+        "expected_revision": 0, "policy": {"monthly_estimated_budget_usd_nanos": 20_000_000},
+    })
+    principal, _ = call(port, project_path + "/service-principals" + scope, 201, method="POST", headers=session,
+                        body={"name": "Pause fixture", "scopes": ["requests:submit", "requests:read", "usage:read"]})
+    auth = {"Authorization": f"Bearer {principal['token']}"}
+    quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth, body={
+        "model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"},
+    })
+    body = {"quote_id": quote["id"], "input": quote["input"], "app_ref": "pause-fixture"}
+    original_key = {**auth, "Idempotency-Key": token_hex(16)}
+    blocked_key = {**auth, "Idempotency-Key": token_hex(16)}
+
+    def submit(target, key, status):
+        return call(target, "/v1/requests", status, method="POST", body=body, headers=key, timeout=15)
+
+    def expect_pause(response):
+        payload, headers = response
+        assert payload["error"]["code"] == "admissions_paused", payload
+        assert headers.get_all("Retry-After") == ["5"], headers
+        assert_private_response(headers)
+
+    def wait(count_query, expected):
+        until = monotonic() + 6
+        while monotonic() < until:
+            if query_db(count_query) == str(expected):
+                return
+            sleep(0.04)
+        raise AssertionError(f"Expected {expected} blocked transactions for {count_query}")
+
+    waiting_table = ("SELECT count(*) FROM pg_locks WHERE relation = 'public.gateway_admission_control'::regclass "
+                     "AND NOT granted AND mode = ")
+    with ThreadPoolExecutor(max_workers=4) as tasks:
+        with hold_budget(account):
+            admitting = tasks.submit(submit, port, original_key, 202)
+            wait("SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'advisory' "
+                 "AND query LIKE '%gateway_monthly_budget:%'", 1)
+            pausing = tasks.submit(operator, "pause")
+            wait(waiting_table + "'AccessExclusiveLock'", 1)
+            retrying = tasks.submit(submit, peer, original_key, 200)
+            rejecting = tasks.submit(submit, peer, blocked_key, 503)
+            wait(waiting_table + "'AccessShareLock'", 2)
+        accepted, _ = admitting.result(timeout=10)
+        assert pausing.result(timeout=10) == "admissions: paused"
+        assert retrying.result(timeout=10)[0] == accepted
+        expect_pause(rejecting.result(timeout=10))
+
+    assert operator("status") == "admissions: paused"
+    assert operator("pause") == "admissions: paused"
+    usage, _ = call(peer, "/v1/usage?app_ref=pause-fixture", 200, headers=auth)
+    assert usage["totals"]["requests"] == 1
+    call(peer, accepted["status_url"], 200, headers=auth)
+    assert ready(port) and ready(peer)
+
+    replay, _ = call(peer, runs, 200, method="POST", body=run_body, headers=app_key)
+    assert replay == {**accepted_run, "replayed": True}
+    rejected = call(peer, runs, 503, method="POST", body=run_body,
+                    headers={**app_key, "Idempotency-Key": token_hex(16)})
+    expect_pause(rejected)
+    spec, _ = call(peer, runs.removesuffix("/runs") + "/openapi.json", 200, headers=app_key)
+    verify_json_response(spec, spec["paths"][runs]["post"], 503, *rejected)
+    expect_pause(call(port, trial_path, 503, method="POST", body=trial_body,
+                      headers={**session, "Idempotency-Key": token_hex(16)}))
+    expect_pause(call(peer, "/v1/chat/completions", 503, method="POST",
+                      body={"model": "fixture-partner", "messages": [{"role": "user", "content": "Synthetic"}]},
+                      headers={**auth, "Idempotency-Key": token_hex(16)}))
+
+    start_worker()
+    finished, _ = wait_for_run(peer, accepted_run, app_key)
+    assert finished["steps"][0]["request"]
+    wait("SELECT count(*) FROM gateway_requests WHERE app_ref = 'pause-fixture' AND succeeded_at IS NOT NULL", 1)
+    assert call(peer, accepted["status_url"], 200, headers=auth)[0]["status"] == "succeeded"
+
+    assert operator("resume") == "admissions: open"
+    assert submit(port, blocked_key, 202)[0]["id"] != accepted["id"]
+    print("PASS cell pause fenced new admissions across replicas, recovered receipts behind the fence, "
+          "and let admitted workflows create children", flush=True)
+
+
 def verify_budget_reservations(port, peer, stop_worker, start_worker, query_db, hold_budget, receiver, check_rollout,
                                hold_worker_slots):
     session, account, project = provision(port)
@@ -1442,7 +1552,14 @@ def rehearse(gateway, admin, directory, *, verification=None):
                     dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port)),
                     lambda: ready(worker_port)))
 
-            start_worker()
+            def operator(action):
+                return command(admin, "admissions", action, cwd=directory, env=owner)
+
+            assert command(admin, "admissions", "status", cwd=directory, env=settings) == "admissions: open"
+            denied = subprocess.run([admin, "admissions", "pause"], cwd=directory, env=settings,
+                                    capture_output=True, text=True, timeout=10)
+            assert denied.returncode and "permission denied for table gateway_admission_control" in denied.stderr
+            verify_admission_pause(api_port, peer_port, workers.close, start_worker, operator, query_db, hold_budget)
 
             def check_rollout(sibling_project, digest):
                 verify_tool_rollout(gateway, directory, settings, registry, sibling_project, digest)

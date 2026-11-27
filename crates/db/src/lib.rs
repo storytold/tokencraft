@@ -7,6 +7,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
 pub use sqlx::PgPool;
 
+pub mod admission_control;
 mod schema;
 pub use schema::{initialize_demo, migrations_current, schema_status, SchemaState, SchemaStatus};
 

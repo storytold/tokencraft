@@ -347,6 +347,9 @@ async fn admit(
         }
         return receipt(&args, replay.id, replay.version, true);
     }
+    if ::db::admission_control::lock_and_read_pause(&mut tx).await? {
+        return Err(ApiError::AdmissionsPaused);
+    }
 
     let (version, revision, mut definition) = match args.origin.revision() {
         Some(revision) if revision == row.revision => (None, revision, row.draft),

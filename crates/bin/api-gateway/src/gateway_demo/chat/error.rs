@@ -140,6 +140,11 @@ impl From<ApiError> for ChatError {
                 "submission_rate_limit",
                 SUBMISSION_RATE_MESSAGE.into(),
             ),
+            ApiError::AdmissionsPaused => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "admissions_paused",
+                crate::error::ADMISSIONS_PAUSED_MESSAGE.into(),
+            ),
             ApiError::NotImplemented(message) => {
                 (StatusCode::NOT_IMPLEMENTED, "not_implemented", message)
             }

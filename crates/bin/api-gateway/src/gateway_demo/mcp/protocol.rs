@@ -370,6 +370,10 @@ fn tool_result<T: Serialize>(id: ValueId, outcome: ApiResult<T>) -> Response {
                     "{}. Retry after {seconds}s with the same idempotency key.",
                     crate::error::SUBMISSION_RATE_MESSAGE,
                 ),
+                ApiError::AdmissionsPaused => format!(
+                    "{}. Retry after 5s with the same idempotency key.",
+                    crate::error::ADMISSIONS_PAUSED_MESSAGE,
+                ),
                 ApiError::ProviderCredentialUnavailable => crate::error::PROVIDER_CREDENTIAL_MESSAGE.into(),
                 ApiError::ExportCapacity => crate::error::EXPORT_CAPACITY_MESSAGE.into(),
                 ApiError::ArtifactDownloadCapacity => crate::error::ARTIFACT_DOWNLOAD_CAPACITY_MESSAGE.into(),

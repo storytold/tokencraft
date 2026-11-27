@@ -63,12 +63,12 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 
 ### Cut over without schema overlap
 
-1. Pause new submissions at ingress while the old API still serves status and results. Let active provider jobs and deliveries drain, then stop the old API and workers so the backup captures a stable recovery point.
+1. Pause new submissions while the old API still serves status and results. Use the [cell admission control](#pause-new-admissions-in-a-cell) on schema 88 or later. For earlier fleets, apply the pause at ingress. Let active provider jobs and deliveries drain, then stop the old API and workers so the backup captures a stable recovery point.
 2. Retain the old image and deployment configuration. Back up PostgreSQL and record the corresponding recovery points for artifact storage, connector job state, and retained keys. Verify that the backup can be restored to a separate database before depending on it.
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress) against the live deployment before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 87 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 88 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Deploy client-bound quote signing to the API replicas together. Refresh unused quotes issued before the upgrade. Requests already admitted replay with their original quote, payload, and idempotency key.
 
@@ -93,6 +93,22 @@ Migration 85 includes the optional client reference in newly queued native reque
 Migration 86 adds the read-only provider work sampler and supports overlap with schema-85 binaries. Reapply the Operations SQL after migration. Start the updated collectors after the probed workers report binding digests for all three provider lanes.
 
 Migration 87 adds a receipt digest for recoverable webhook key rotations. Schema-86 workers can overlap with the new fleet, and queued event bytes remain intact. Workers use the active signing key and the overlapping key when applicable. Upgrade the API replicas before enabling the new rotation action in the console.
+
+### Pause new admissions in a cell
+
+Schema 88 adds a pause shared by every API replica using the cell database. Stop earlier gateway binaries before applying migration 88, then reapply runtime grants and start the matching fleet. A newly migrated cell starts with admissions open. When installing the gate during a cutover, maintain the ingress pause until the database pause is active.
+
+Run the command from the matching release with `DATABASE_URL` pointing to the target cell. The migration owner can change the pause. The restricted runtime role can read it.
+
+```sh
+admin-cli admissions pause
+admin-cli admissions status
+admin-cli admissions resume
+```
+
+The pause command waits for the admissions already inside their transactions. After it succeeds, new inference submissions, workflow invocations, and draft test runs return `503 admissions_paused` with `Retry-After: 5`. Retry with the same intent and idempotency key. MCP submit tools return a tool error with the same retry guidance.
+
+Matching receipt retries, scoped reads, quotes, provider polling, signed webhook delivery, and generation steps of admitted workflows remain available. Stop API and worker writers at the snapshot boundary for a coordinated backup. Resume admissions after verifying the release with a saved receipt.
 
 ### Rehearse the cutover before release
 

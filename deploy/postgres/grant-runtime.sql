@@ -43,7 +43,7 @@ BEGIN
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relowner = migration_owner
           AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
-          AND c.relname NOT IN ('_sqlx_migrations', 'gateway_schema_compatibility')
+          AND c.relname NOT IN ('_sqlx_migrations', 'gateway_schema_compatibility', 'gateway_admission_control')
     LOOP
         CASE relation.relkind
             WHEN 'S' THEN
@@ -65,7 +65,7 @@ BEGIN
         EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I', routine.signature, runtime_name);
     END LOOP;
 
-    FOREACH metadata_name IN ARRAY ARRAY['_sqlx_migrations', 'gateway_schema_compatibility']
+    FOREACH metadata_name IN ARRAY ARRAY['_sqlx_migrations', 'gateway_schema_compatibility', 'gateway_admission_control']
     LOOP
         metadata := to_regclass(format('public.%I', metadata_name));
         CONTINUE WHEN metadata IS NULL;

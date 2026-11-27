@@ -358,6 +358,7 @@ def rehearse(args, folder, stack):
     blocked = subprocess.run([args.baseline_gateway], cwd=folder, env=old_settings, capture_output=True, text=True, timeout=15)
     assert blocked.returncode == 1 and "apply the matching TokenCraft migrations" in blocked.stderr
     print(f"PASS explicit migration and grants reached schema {latest} and preserved the queued native delivery", flush=True)
+    assert run(args.candidate_admin, "admissions", "pause", settings=owner) == "admissions: paused"
 
     def replay(port, receipt, headers, body):
         returned, _ = smoke.call(port, "/v1/requests", 200, method="POST", headers=headers, body=body)
@@ -393,12 +394,7 @@ def rehearse(args, folder, stack):
         assert read_image(api, running, auth) == running_contents
         assert psql(handle_query + "'accepted-before-upgrade'") == running_handle
         queued_contents = read_image(api, queued, auth)
-        upgraded_only, upgrade_headers, upgrade_body = submit(api, "after-upgrade")
-        read_image(api, upgraded_only, auth)
-        upgraded_handle = psql(handle_query + "'after-upgrade'")
-        assert upgraded_handle and upgraded_handle != handle
-        replay(api, upgraded_only, upgrade_headers, upgrade_body)
-        verify_usage(api, "before-upgrade", "accepted-before-upgrade", "pending-upgrade", "after-upgrade")
+        verify_usage(api, "before-upgrade", "accepted-before-upgrade", "pending-upgrade")
         reader, _ = smoke.call(api, base + "/service-principals" + query, 201, method="POST", headers=session,
                                body={"name": "Read-only release smoke", "scopes": ["requests:read", "usage:read"]})
         print(run(
@@ -408,6 +404,13 @@ def rehearse(args, folder, stack):
         ), flush=True)
         verify_legacy_delivery(api)
         assert psql(payload) == legacy_hex
+        assert run(args.candidate_admin, "admissions", "resume", settings=owner) == "admissions: open"
+        upgraded_only, upgrade_headers, upgrade_body = submit(api, "after-upgrade")
+        read_image(api, upgraded_only, auth)
+        upgraded_handle = psql(handle_query + "'after-upgrade'")
+        assert upgraded_handle and upgraded_handle != handle
+        replay(api, upgraded_only, upgrade_headers, upgrade_body)
+        verify_usage(api, "after-upgrade")
     relay.assert_submissions(completed, running, queued, upgraded_only)
     upgraded_artifact, = artifact_files(artifacts, upgraded_only)
     assert not artifact_files(saved_artifacts, upgraded_only)

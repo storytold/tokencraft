@@ -6,7 +6,8 @@ use db::SchemaState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cmd = std::env::args().nth(1).unwrap_or_default();
+    let mut args = std::env::args().skip(1);
+    let cmd = args.next().unwrap_or_default();
     if cmd == "--version" {
         println!(
             "admin-cli {} ({})",
@@ -66,9 +67,27 @@ async fn main() -> Result<()> {
             println!("reachable: {up}");
             println!("application tables: {n}");
         }
+        "admissions" => {
+            let change = match args.next().as_deref() {
+                Some("status") => None,
+                Some("pause") => Some(true),
+                Some("resume") => Some(false),
+                _ => bail!("Usage: admin-cli admissions <status|pause|resume>"),
+            };
+            ensure!(args.next().is_none(), "Usage: admin-cli admissions <status|pause|resume>");
+            let pool = connect(&cfg).await?;
+            let paused = match change {
+                Some(paused) => {
+                    db::admission_control::set_paused(&pool, paused).await?;
+                    paused
+                }
+                None => db::admission_control::paused(&pool).await?,
+            };
+            println!("admissions: {}", if paused { "paused" } else { "open" });
+        }
         "" | "help" | "-h" | "--help" => {
             eprintln!(
-                "admin-cli <command>\n  --version        show the version and source revision\n  migrate          apply pending migrations\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count"
+                "admin-cli <command>\n  --version        show the version and source revision\n  migrate          apply pending migrations\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count\n  admissions       status, pause, or resume new admissions in this cell"
             );
         }
         other => bail!("unknown command: {other} (try `help`)"),

@@ -411,6 +411,12 @@ async fn submit_inner(
     if let Some(accepted) = replay(&mut *tx, key, &intent).await? {
         return Ok((accepted, true));
     }
+    if workflow.is_none() && db::admission_control::lock_and_read_pause(&mut tx).await? {
+        // The pause can wait behind an earlier admission of this same intent.
+        return replay(&mut *tx, key, &intent).await?
+            .map(|accepted| (accepted, true))
+            .ok_or(ApiError::AdmissionsPaused);
+    }
 
     let snapshot = catalog_store.current();
     let catalog = snapshot.as_ref();
