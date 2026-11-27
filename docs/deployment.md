@@ -68,7 +68,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress) against the live deployment before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 86 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 87 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Deploy client-bound quote signing to the API replicas together. Refresh unused quotes issued before the upgrade. Requests already admitted replay with their original quote, payload, and idempotency key.
 
@@ -91,6 +91,8 @@ Migration 84 aligns the database's WAV limit with the connector's 8 MiB limit. S
 Migration 85 includes the optional client reference in newly queued native request webhooks. Schema-84 binaries can overlap with the new fleet. Existing deliveries keep their original event IDs and payload bytes, and runtime grants carry forward.
 
 Migration 86 adds the read-only provider work sampler and supports overlap with schema-85 binaries. Reapply the Operations SQL after migration. Start the updated collectors after the probed workers report binding digests for all three provider lanes.
+
+Migration 87 adds a receipt digest for recoverable webhook key rotations. Schema-86 workers can overlap with the new fleet, and queued event bytes remain intact. Workers use the active signing key and the overlapping key when applicable. Upgrade the API replicas before enabling the new rotation action in the console.
 
 ### Rehearse the cutover before release
 

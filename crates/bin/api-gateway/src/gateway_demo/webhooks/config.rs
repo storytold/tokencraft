@@ -119,6 +119,21 @@ impl WebhookConfig {
         )
     }
 
+    pub(super) fn rotation_receipt_digest(
+        &self,
+        actor: &str,
+        subscription: &str,
+        expected_version: i32,
+        key: &str,
+    ) -> String {
+        let mut mac = HmacSha256::new_from_slice(&self.root_key).expect("HMAC accepts 32-byte keys");
+        mac.update(b"tokencraft-webhook-rotation-v1/");
+        let intent = serde_json::to_vec(&(actor, subscription, expected_version, key))
+            .expect("rotation intent serializes");
+        mac.update(&intent);
+        hex::encode(mac.finalize().into_bytes())
+    }
+
     fn signing_key(&self, subscription: &str, version: i32) -> [u8; 32] {
         let mut mac =
             HmacSha256::new_from_slice(&self.root_key).expect("HMAC accepts 32-byte keys");

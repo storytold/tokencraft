@@ -3575,6 +3575,92 @@
         ]
       }
     },
+    "/v1/projects/{project}/webhooks/{subscription}/rotations": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "rotateProjectWebhookWithReceipt",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subscription",
+            "in": "path",
+            "description": "Webhook subscription ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "description": "Organization account ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "A fresh random key for this rotation. Repeat it with the original signing version to recover the response.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookRotationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new signing key, or the same key for a matching administrator replay during the 24-hour overlap.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedWebhookSubscription"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The signing version changed, the rotation is in its overlap window, or the matching receipt is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestErrorResponse"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/provider-credentials/{binding}": {
       "get": {
         "tags": [
@@ -12360,6 +12446,22 @@
             "$ref": "#/components/schemas/WebhookDelivery"
           }
         }
+      },
+      "WebhookRotationInput": {
+        "type": "object",
+        "required": [
+          "expected_signing_version"
+        ],
+        "properties": {
+          "expected_signing_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The signing version the caller intends to replace.",
+            "maximum": 2147483646,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
       },
       "WebhookSubscription": {
         "type": "object",

@@ -244,6 +244,7 @@ mod tests {
       ("post", "/v1/projects/{project}/webhooks", "201"),
       ("delete", "/v1/projects/{project}/webhooks/{subscription}", "204"),
       ("post", "/v1/projects/{project}/webhooks/{subscription}/rotate", "200"),
+      ("post", "/v1/projects/{project}/webhooks/{subscription}/rotations", "200"),
       ("get", "/v1/projects/{project}/webhook-deliveries", "200"),
       ("get", "/v1/projects/{project}/webhook-deliveries/{delivery}", "200"),
       ("post", "/v1/projects/{project}/webhook-deliveries/{delivery}/redrive", "204"),

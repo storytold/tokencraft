@@ -1,11 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Button, Card, Input, Select } from "@/components/ui";
+import { ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { errorMessage, isGatewayEndpointUnavailable, withProject, type ProjectScope } from "@/lib/gateway";
 import { OneTimeSecret } from "./OneTimeSecret";
 import {
   webhooksApi, type IssuedWebhook, type WebhookDelivery, type WebhookDetail, type WebhookPage, type WebhookSubscription,
 } from "./api";
+import { clearWebhookRotation, pendingWebhookRotation, rotationStorageKey, stageWebhookRotation } from "./webhookRotation";
 
 type Webhooks = { destinations: string[]; subscriptions: WebhookPage<WebhookSubscription>; deliveries: WebhookPage<WebhookDelivery> };
 type Collection = "subscriptions" | "deliveries";
@@ -15,6 +18,12 @@ const stateLabels: Record<WebhookDelivery["state"], string> = {
 };
 
 export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
+  const { user } = useAuth();
+  return <ProjectWebhookPanel key={`${scope.account_id}/${scope.project_id}/${user?.id ?? ""}`}
+    scope={scope} actorId={user?.id} />;
+}
+
+function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?: string }) {
   const [data, setData] = useState<Webhooks | null>();
   const [before, setBefore] = useState<Partial<Record<Collection, string>>>({});
   const [revision, setRevision] = useState(0);
@@ -61,6 +70,47 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
     }
   }
 
+  function rotationKey(id: string) {
+    return actorId && rotationStorageKey(actorId, scope.account_id, scope.project_id, id);
+  }
+
+  function rotate(subscription: WebhookSubscription) {
+    const storageKey = rotationKey(subscription.id);
+    if (!storageKey || busy || issued) return;
+    const attempt = stageWebhookRotation(storageKey, subscription.signing_version);
+    void change(async () => {
+      try {
+        const result = await webhooksApi.rotate(scope, subscription.id, attempt.key, attempt.expectedVersion);
+        if (!result || result.id !== subscription.id || result.signing_version !== attempt.expectedVersion + 1
+            || typeof result.signing_secret !== "string" || !result.signing_secret.startsWith("whsec_")) {
+          throw new ApiError(0, "rotation_receipt", "The rotation response was incomplete. Retry to recover the signing key.");
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          clearWebhookRotation(storageKey);
+          refresh();
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          throw new ApiError(404, "rotation_unavailable", "This gateway version does not support signing key recovery.");
+        }
+        if (error instanceof SyntaxError || (error instanceof ApiError && error.status === 0)
+            || (error instanceof DOMException && error.name === "TimeoutError")) {
+          throw new ApiError(0, "rotation_receipt", "The rotation response was interrupted. Retry to recover the signing key.");
+        }
+        throw error;
+      }
+    }, "Update the receiver before the signing key overlap ends.");
+  }
+
+  function dismissSecret() {
+    if (issued) {
+      const storageKey = rotationKey(issued.id);
+      if (storageKey) clearWebhookRotation(storageKey);
+    }
+    setIssued(undefined);
+  }
+
   const disabled = busy || Boolean(issued);
   return (
     <Card className="min-w-0 space-y-4 p-4 sm:p-5">
@@ -81,14 +131,16 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
         return true;
       }} />}
       {issued && <OneTimeSecret key={`${issued.id}:${issued.signing_version}`} label="Webhook signing secret" noun="secret"
-        value={issued.signing_secret} dismiss={() => setIssued(undefined)} />}
+        value={issued.signing_secret} dismiss={dismissSecret} />}
       {data && <>
         <section aria-label="Webhook subscriptions" className="space-y-2">
           <h4 className="font-semibold">Subscriptions</h4>
           {data.subscriptions.items.length === 0 && <p className="text-sm text-muted">No subscriptions in this project.</p>}
           <ul className="divide-y divide-border">
-            {data.subscriptions.items.map((subscription) => (
-              <li key={subscription.id} className="flex flex-wrap items-start justify-between gap-2 border-t border-border py-3 text-sm">
+            {data.subscriptions.items.map((subscription) => {
+              const storageKey = rotationKey(subscription.id);
+              const recovery = storageKey && pendingWebhookRotation(storageKey, subscription.signing_version);
+              return <li key={subscription.id} className="flex flex-wrap items-start justify-between gap-2 border-t border-border py-3 text-sm">
                 <div className="min-w-0 break-all">
                   <p className="font-medium">{subscription.name}{subscription.revoked_at && " · Revoked"}</p>
                   <p className="text-muted">
@@ -101,15 +153,15 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
                 {!subscription.revoked_at && <div className="flex flex-wrap items-center gap-2">
                   {!subscription.workflow_app_id && <Link className="font-medium text-brand hover:underline"
                     to={`${withProject("/routing", scope.project_id, scope.account_id)}&webhook_subscription_id=${encodeURIComponent(subscription.id)}`}>Try in comparison</Link>}
-                  <Button variant="outline" size="sm" disabled={disabled} onClick={() => {
-                    void change(() => webhooksApi.rotate(scope, subscription.id), "Both signing keys are valid for 24 hours.");
-                  }}>Rotate signing key</Button>
+                  <Button variant="outline" size="sm" disabled={disabled || !actorId} onClick={() => rotate(subscription)}>
+                    {recovery ? "Retry signing key rotation" : "Rotate signing key"}
+                  </Button>
                   <Button variant="ghost" size="sm" disabled={disabled} onClick={() => {
                     if (window.confirm(`Disable ${subscription.name}?`)) void change(() => webhooksApi.revoke(scope, subscription.id), "Subscription disabled.");
                   }}>Disable subscription</Button>
                 </div>}
-              </li>
-            ))}
+              </li>;
+            })}
           </ul>
           <PageControls label="subscriptions" before={before.subscriptions} next={data.subscriptions.next_before}
             select={(cursor) => setBefore((previous) => ({ ...previous, subscriptions: cursor }))} />

@@ -10,6 +10,9 @@ The [hosted release check](deployment.md#run-behind-an-https-ingress) compares a
 
 ## Manage project webhooks
 
+Rotate using `POST /v1/projects/{project}/webhooks/{subscription}/rotations?account_id=…` with an administrator session, a fresh random `Idempotency-Key` of 32 to 128 allowed characters, and JSON `{"expected_signing_version":1}` using the current version. If the response is lost, the same administrator can repeat that exact request to recover the new signing key during the original 24-hour overlap. Normal subscription reads return metadata. Save the returned key in the receiver's secret store. The console keeps the rotation intent in the current browser tab while recovery is available.
+
+
 When the operator configures webhook destinations, organization owners and administrators use their session cookie and the `account_id` query parameter to manage subscriptions and inspect deliveries. List the project's destination IDs, then create a subscription using one of those IDs. Request subscriptions accept an optional `client_ref`. To receive [workflow events](workflows.md#receive-terminal-events), supply `workflow_app_id` instead and omit `client_ref`. Save the signing secret from creation or rotation in the receiver's secret store. [Webhook deployment](deployment.md#run-behind-an-https-ingress)
 
 The subscription and delivery lists return up to 50 items. Send the returned `next_before` value as `before` until it is null. The detail operation includes the latest 50 delivery attempts. Redrive a failed delivery while its subscription is active to queue the original event again. A project API key can attach an allowed subscription to a request using `delivery.webhook_subscription_id` on `POST /v1/requests`.

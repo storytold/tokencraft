@@ -9,5 +9,5 @@ pub use queue::{claim, finish, Claim, ClaimOutcome, DeliveryResult};
 pub use subscriptions::{
     active_workflow_subscription, authorize_destination, create_subscription, find_subscription,
     revoke_subscription, rotate_subscription, subscriptions, workflow_app_exists, NewSubscription,
-    Subscription,
+    RotationReceipt, Subscription,
 };

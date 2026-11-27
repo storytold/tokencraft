@@ -130,8 +130,12 @@ export const webhooksApi = {
     gatewayRequest<WebhookSubscription>(inProject(scope, `/webhooks/${encodeURIComponent(id)}`), { signal, cache: "no-store" }),
   create: (scope: ProjectScope, input: { name: string; destination_id: string; client_ref: string | null; workflow_app_id?: string }) =>
     gatewayRequest<IssuedWebhook>(inProject(scope, "/webhooks"), write("POST", input)),
-  rotate: (scope: ProjectScope, id: string) =>
-    gatewayRequest<IssuedWebhook>(inProject(scope, `/webhooks/${encodeURIComponent(id)}/rotate`), { method: "POST" }),
+  rotate: (scope: ProjectScope, id: string, key: string, expectedVersion: number) =>
+    gatewayRequest<IssuedWebhook>(inProject(scope, `/webhooks/${encodeURIComponent(id)}/rotations`), {
+      method: "POST", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000),
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify({ expected_signing_version: expectedVersion }),
+    }),
   revoke: (scope: ProjectScope, id: string) =>
     gatewayRequest<void>(inProject(scope, `/webhooks/${encodeURIComponent(id)}`), { method: "DELETE" }),
   deliveries: (scope: ProjectScope, before: string | undefined, signal: AbortSignal) =>

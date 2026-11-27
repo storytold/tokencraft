@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Extension, Json, Router,
 };
 use db_queries::{
     gateway_requests::RequestScope,
-    gateway_webhooks::{self, NewSubscription},
+    gateway_webhooks::{self, NewSubscription, RotationReceipt},
 };
 use enums::AuditEvent;
 use ids::{AccountId, GatewayProjectId, GatewayWebhookDeliveryId, GatewayWebhookSubscriptionId, WorkflowAppId};
@@ -18,7 +18,8 @@ use utoipa::ToSchema;
 use super::super::{
     access::parse_id,
     projects::{audit, managed_project, validate_name, OrganizationQuery},
-    requests::validate_client_ref,
+    handlers::idempotency_key,
+    requests::{valid_idempotency_key, validate_client_ref},
     RequestErrorResponse,
 };
 use super::views::{WebhookDelivery, WebhookDeliveryAttempt, WebhookSubscription};
@@ -48,6 +49,10 @@ pub fn router(config: Arc<WebhookConfig>) -> Router<AppState> {
         .route(
             "/v1/projects/:project/webhooks/:subscription/rotate",
             post(rotate),
+        )
+        .route(
+            "/v1/projects/:project/webhooks/:subscription/rotations",
+            post(rotate_with_receipt),
         )
         .route(
             "/v1/projects/:project/webhook-deliveries",
@@ -341,28 +346,88 @@ pub(in crate::gateway_demo) async fn rotate(
     Extension(config): Extension<Arc<WebhookConfig>>,
 ) -> ApiResult<Json<IssuedWebhookSubscription>> {
     let project = Project::authorized(&state, &auth, &query, &raw).await?;
+    let id = parse_id(&subscription, "subscription_id")?;
+    issue_rotation(&state, &auth, &project, &id, &config, None).await
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(in crate::gateway_demo) struct WebhookRotationInput {
+    /// The signing version the caller intends to replace.
+    #[schema(minimum = 1, maximum = 2147483646)]
+    expected_signing_version: i32,
+}
+
+#[utoipa::path(
+    post, path = "/v1/projects/{project}/webhooks/{subscription}/rotations",
+    operation_id = "rotateProjectWebhookWithReceipt", tag = "webhooks",
+    security(("session_cookie" = [])),
+    params(
+        ("project" = String, Path, description = "Project ID."),
+        ("subscription" = String, Path, description = "Webhook subscription ID."),
+        ("account_id" = String, Query, description = "Organization account ID."),
+        ("Idempotency-Key" = String, Header, description = "A fresh random key for this rotation. Repeat it with the original signing version to recover the response."),
+    ),
+    request_body = WebhookRotationInput,
+    responses(
+        (status = 200, description = "The new signing key, or the same key for a matching administrator replay during the 24-hour overlap.", body = IssuedWebhookSubscription),
+        (status = 409, description = "The signing version changed, the rotation is in its overlap window, or the matching receipt is unavailable.", body = GatewayError),
+        (status = "default", response = RequestErrorResponse),
+    ),
+)]
+pub(in crate::gateway_demo) async fn rotate_with_receipt(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Query(query): Query<OrganizationQuery>,
+    Path((raw, subscription)): Path<(String, String)>,
+    Extension(config): Extension<Arc<WebhookConfig>>,
+    headers: HeaderMap,
+    Json(input): Json<WebhookRotationInput>,
+) -> ApiResult<Json<IssuedWebhookSubscription>> {
+    let project = Project::authorized(&state, &auth, &query, &raw).await?;
     let id: GatewayWebhookSubscriptionId = parse_id(&subscription, "subscription_id")?;
-    let mut tx = state.pool.begin().await?;
-    let subscription = gateway_webhooks::rotate_subscription(&mut *tx, project.scope(), &id)
+    let expected_version = input.expected_signing_version;
+    if !(1..i32::MAX).contains(&expected_version) {
+        return Err(ApiError::BadRequest("expected_signing_version must be a positive version below the maximum".into()));
+    }
+    let key = idempotency_key(&headers)?;
+    if key.len() < 32 || !valid_idempotency_key(key) {
+        return Err(ApiError::BadRequest("use 32 to 128 ASCII letters, numbers or . _ : - in Idempotency-Key".into()));
+    }
+    let digest = config.rotation_receipt_digest(auth.user.id.as_str(), id.as_str(), expected_version, key);
+    let receipt = RotationReceipt { expected_version, digest: &digest };
+    issue_rotation(&state, &auth, &project, &id, &config, Some(receipt)).await
+}
+
+async fn issue_rotation(
+    state: &AppState,
+    auth: &AuthContext,
+    project: &Project,
+    id: &GatewayWebhookSubscriptionId,
+    config: &WebhookConfig,
+    receipt: Option<RotationReceipt<'_>>,
+) -> ApiResult<Json<IssuedWebhookSubscription>> {
+    let mut tx = state.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
+    let result = gateway_webhooks::rotate_subscription(&mut tx, project.scope(), id, receipt)
         .await?
-        .ok_or_else(|| {
-            ApiError::Conflict(
-                "subscription is missing, revoked, or already in the rotation window".into(),
-            )
-        })?;
-    audit(
-        &mut tx,
-        &project.account,
-        &auth.user.id,
-        AuditEvent::GatewayWebhookChanged,
-        "gateway_webhook_subscription",
-        id.as_str(),
-    )
-    .await?;
+        .ok_or_else(|| ApiError::Conflict(
+            "subscription is missing, revoked, or the signing version or rotation window has changed".into(),
+        ))?;
+    if result.changed {
+        audit(
+            &mut tx,
+            &project.account,
+            &auth.user.id,
+            AuditEvent::GatewayWebhookChanged,
+            "gateway_webhook_subscription",
+            id.as_str(),
+        )
+        .await?;
+    }
     tx.commit().await?;
-    let signing_secret = config.signing_secret(id.as_str(), subscription.signing_version);
+    let signing_secret = config.signing_secret(id.as_str(), result.subscription.signing_version);
     Ok(Json(IssuedWebhookSubscription {
-        subscription: subscription.into(),
+        subscription: result.subscription.into(),
         signing_secret,
     }))
 }

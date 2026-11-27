@@ -5,7 +5,7 @@ use sqlx::PgExecutor;
 
 use crate::gateway_requests::RequestScope;
 
-#[derive(Serialize)]
+#[derive(Serialize, sqlx::FromRow)]
 pub struct Subscription {
     pub id: String,
     pub name: String,
@@ -98,23 +98,62 @@ pub async fn find_subscription<'e, E: PgExecutor<'e>>(
     .await
 }
 
-pub async fn rotate_subscription<'e, E: PgExecutor<'e>>(
-    exec: E,
+#[derive(Clone, Copy)]
+pub struct RotationReceipt<'a> {
+    pub expected_version: i32,
+    pub digest: &'a str,
+}
+
+pub struct SigningRotation {
+    pub subscription: Subscription,
+    pub changed: bool,
+}
+
+pub async fn rotate_subscription(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     scope: RequestScope<'_>,
     subscription: &GatewayWebhookSubscriptionId,
-) -> sqlx::Result<Option<Subscription>> {
-    sqlx::query_as!(
-        Subscription,
+    receipt: Option<RotationReceipt<'_>>,
+) -> sqlx::Result<Option<SigningRotation>> {
+    let rotated = sqlx::query_as(
         "UPDATE gateway_webhook_subscriptions
-         SET signing_version = signing_version + 1, signing_rotated_at = clock_timestamp()
+         SET signing_version = signing_version + 1, signing_rotated_at = clock_timestamp(),
+             rotation_receipt_digest = $5
          WHERE id = $1 AND account_id = $2 AND project_id = $3 AND revoked_at IS NULL
+           AND ($4::int IS NULL OR signing_version = $4)
            AND (signing_rotated_at IS NULL OR signing_rotated_at <= clock_timestamp() - interval '24 hours')
          RETURNING id, name, destination_id, client_ref, workflow_app_id, signing_version, signing_rotated_at,
                    created_at, revoked_at",
-        subscription.as_str(), scope.account.as_str(), scope.project.as_str(),
     )
-    .fetch_optional(exec)
-    .await
+    .bind(subscription.as_str())
+    .bind(scope.account.as_str())
+    .bind(scope.project.as_str())
+    .bind(receipt.map(|value| value.expected_version))
+    .bind(receipt.map(|value| value.digest))
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(subscription) = rotated {
+        return Ok(Some(SigningRotation { subscription, changed: true }));
+    }
+    let Some(receipt) = receipt else { return Ok(None) };
+    // A second statement sees the committed receipt after a concurrent UPDATE releases its lock.
+    let current = sqlx::query_as(
+        "SELECT id, name, destination_id, client_ref, workflow_app_id, signing_version, signing_rotated_at,
+                created_at, revoked_at
+         FROM gateway_webhook_subscriptions
+         WHERE id = $1 AND account_id = $2 AND project_id = $3 AND revoked_at IS NULL
+           AND signing_version - 1 = $4 AND rotation_receipt_digest = $5
+           AND signing_rotated_at > clock_timestamp() - interval '24 hours'
+         FOR SHARE",
+    )
+    .bind(subscription.as_str())
+    .bind(scope.account.as_str())
+    .bind(scope.project.as_str())
+    .bind(receipt.expected_version)
+    .bind(receipt.digest)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(current.map(|subscription| SigningRotation { subscription, changed: false }))
 }
 
 pub async fn authorize_destination<'e, E: PgExecutor<'e>>(
