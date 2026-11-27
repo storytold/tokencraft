@@ -241,6 +241,8 @@ api-gateway catalog verify-reference --bundle "$IMMUTABLE_BUNDLE" \
 
 Use the verified JSON as the release's `catalog/artcraft-v1.json`. The console build serves that file byte for byte at `/catalog/artcraft-v1.json`. CI checks the catalog's plugin coverage and compares it with the console build's output. Publication checks reject extra catalog, offer, and billing fields. The signed bundle and the browser download share one revision and checksum. Use the gateway's quote API to compare active offers and rates for a specific workload.
 
+On **Pricing → ArtCraft catalog**, search by model, provider, modality, or offer ID. The price table shows up to 50 rows per page. Large offer lists in **Prepare offers** can be searched before you add a draft. The browser checks the same 4 MiB and 4,096-offer limits as the CLI and uses the full snapshot for the downloaded JSON and selection checksum.
+
 ## Apply a provider review bundle
 
 A gateway administrator can use **Dashboard → Providers** to prepare a plugin or custom connection and choose all or selected projects. For a custom connection, enter a **Provider ID** to group its offers, dispatch settings, requests, and usage under a stable identifier. Use 1–64 lowercase letters, digits, underscores, or hyphens, starting with a letter. Leave the field blank to use `self_hosted`. The console exports a patch with the changed offers and the initial organization and project access. Apply the bundle against the reviewed catalog file.

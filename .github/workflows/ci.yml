@@ -169,6 +169,8 @@ jobs:
         run: node --experimental-strip-types --test ../scripts/console_aspect_ratio.test.mjs
       - name: Verify scoped console artifact downloads
         run: node --experimental-strip-types --test ../scripts/console_artifact_transfer.test.mjs
+      - name: Verify public catalog transfer and offer limits
+        run: node --experimental-strip-types --test ../scripts/console_reference_catalog.test.mjs
       - name: Verify console webhook rotation recovery state
         run: node --experimental-strip-types --test ../scripts/console_webhook_rotation.test.mjs
       - name: Reject a hosted console build without a revision

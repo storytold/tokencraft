@@ -1,9 +1,9 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, Card, Input, Select } from "@/components/ui";
 import { downloadBlob } from "@/lib/download";
 import { providerLabel } from "@/surfaces/comparison/api";
 import type { Modality } from "@/surfaces/requests/modelOptions";
-import { canPrepare, type ReferenceCatalog, type ReferenceOffer } from "./referenceCatalog";
+import { canPrepare, filterReferenceOffers, referenceOfferPageSize, type ReferenceCatalog, type ReferenceOffer } from "./referenceCatalog";
 import { bindingTemplates, catalogIdentifier, referencePlugin } from "./referencePlugins";
 
 const rateFields = {
@@ -59,14 +59,17 @@ function selectionOffers(drafts: Draft[]) {
 
 export function CatalogSelection({ catalog, checksum }: { catalog: ReferenceCatalog; checksum?: string }) {
   const nextRow = useRef(0);
+  const [search, setSearch] = useState("");
   const [chosen, setChosen] = useState("");
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [error, setError] = useState("");
-  const available = catalog.offers.filter(canPrepare);
+  const available = useMemo(() => catalog.offers.filter(canPrepare), [catalog.offers]);
+  const matching = useMemo(() => filterReferenceOffers(available, search), [available, search]);
+  const choices = matching.slice(0, referenceOfferPageSize);
   const protocols = new Set(drafts.map(({ offer }) => referencePlugin(offer.plugin)?.protocol));
 
   function add() {
-    const offer = available.find((item) => item.id === chosen);
+    const offer = choices.find((item) => item.id === chosen);
     if (!offer || drafts.length >= 64) return;
     const row = nextRow.current++;
     setDrafts((items) => [...items, { row, offer, binding: "", id: "", model: "", rates: {} }]);
@@ -112,16 +115,25 @@ export function CatalogSelection({ catalog, checksum }: { catalog: ReferenceCata
         : !available.length ? <p className="text-sm text-muted">This snapshot has no offers with importable presets.</p>
         : <form className="space-y-4" onSubmit={save}>
           <p className="text-sm text-muted">Choose offers, name your local bindings, and enter the USD rates your gateway should use.</p>
+          {available.length > referenceOfferPageSize && <label className={field}>
+            <span>Search importable offers</span>
+            <Input type="search" value={search} onChange={(event) => {
+              setSearch(event.target.value);
+              setChosen("");
+            }} />
+          </label>}
           <div className="flex flex-wrap items-end gap-2">
             <label className={`${field} w-full sm:w-auto sm:max-w-sm sm:flex-1`}>
               <span>Offer to add</span>
-              <Select value={chosen} onChange={(event) => setChosen(event.target.value)}>
-                <option value="">Choose an offer</option>
-                {available.map((offer) => <option key={offer.id} value={offer.id}>{offer.name} · {providerLabel(offer.plugin)}</option>)}
+              <Select value={chosen} disabled={!choices.length} onChange={(event) => setChosen(event.target.value)}>
+                <option value="">{choices.length ? "Choose an offer" : "No matching offers"}</option>
+                {choices.map((offer) => <option key={offer.id} value={offer.id}>{offer.name} · {providerLabel(offer.plugin)}</option>)}
               </Select>
             </label>
             <Button type="button" variant="outline" onClick={add} disabled={!chosen || drafts.length >= 64}>Add offer</Button>
           </div>
+          {matching.length > referenceOfferPageSize &&
+            <p className="text-xs text-muted" role="status">Showing {choices.length} of {matching.length} importable offers. Refine your search to find more.</p>}
           {drafts.length >= 64 && <p className="text-sm text-muted">The selection has reached the gateway's 64-offer limit.</p>}
           {drafts.map((draft) => <fieldset key={draft.row} className="min-w-0 space-y-3 rounded-lg border border-border p-3 sm:p-4">
             <legend className="max-w-full break-words px-2 font-medium">{draft.offer.name}</legend>
