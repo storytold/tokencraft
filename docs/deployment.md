@@ -515,4 +515,10 @@ Each provider worker has four in-flight task slots shared by submissions, pollin
 
 With HAProxy 3.2+ available, run `python3 deploy/haproxy/smoke.py` in a disposable local environment. It checks configuration parsing, two fixture API replicas, readiness withdrawal and recovery, forwarding headers, SSE streaming, and a submission whose upstream disconnected after receiving the body. [HAProxy configuration reference](https://docs.haproxy.org/3.2/configuration.html)
 
-A local integration check with HAProxy 3.4.8 used private DNS SRV records, two TokenCraft API processes, and a worker on shared PostgreSQL 17. The proxy added a replica without restarting. Killing the replica carrying an SSE connection ended that connection. Retrying the same request with the original idempotency key through the surviving replica returned the same request ID, replayed the retained chunk, and delivered the final chunk and `[DONE]`. The synthetic inference endpoint received one call. With both replicas down, readiness and API reads returned HTTP 503. In staging, repeat with the deployment's private resolver and HTTPS ingress, and exercise loss of a proxy or zone under load.
+The gateway CI rehearses live DNS discovery and chat streaming with HAProxy 3.2, two TokenCraft API processes, and a worker on shared PostgreSQL 17. The fixture publishes a new SRV record while a stream is open, then stops the replica carrying it. The surviving replica must replay the same request ID and retained chunk, then deliver the final chunk, usage, and `[DONE]`. The rehearsal also checks sibling-client isolation, one upstream inference call, and removal of the retired replica from discovery. Run the same check locally with HAProxy 3.2 or newer and PostgreSQL 17 on the path.
+
+```sh
+python3 -B scripts/smoke_stream_failover.py target/debug/api-gateway target/debug/admin-cli
+```
+
+Repeat in staging with the deployment's private resolver and HTTPS ingress, and exercise loss of a proxy or zone under load.

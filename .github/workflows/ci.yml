@@ -76,7 +76,7 @@ jobs:
         run: python3 -B scripts/smoke_connector_recovery.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify connector artifact validation and retrieval recovery
         run: python3 -B scripts/smoke_connector_artifact_validation.py target/debug/api-gateway target/debug/admin-cli
-      - name: Verify cell isolation under provider, storage, and replica failures
+      - name: Verify cell isolation and streaming failover
         shell: bash
         run: |
           set -euo pipefail
@@ -90,8 +90,9 @@ jobs:
             | sha256sum --check --strict
           tar -xzf "$archive" -C "$proxy_dir"
           make -s -j 2 -C "$proxy_dir/haproxy-$proxy_version" TARGET=linux-glibc
-          PATH="$proxy_dir/haproxy-$proxy_version:$PATH" \
-            python3 -B scripts/smoke_cell_faults.py target/debug/api-gateway target/debug/admin-cli
+          export PATH="$proxy_dir/haproxy-$proxy_version:$PATH"
+          python3 -B scripts/smoke_cell_faults.py target/debug/api-gateway target/debug/admin-cli
+          python3 -B scripts/smoke_stream_failover.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify queued provider credential rotation and revocation
         run: python3 -B scripts/smoke_provider_credentials.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify rate expiry during budget contention
