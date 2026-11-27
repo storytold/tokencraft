@@ -344,6 +344,17 @@ pub struct Quote {
 }
 
 impl Quote {
+    pub(super) fn selected_candidate(&self) -> Option<&Candidate> {
+        let offer = self.selected_offer_id.as_deref()?;
+        self.candidates.iter().find(|candidate| candidate.offer_id == offer)
+    }
+
+    pub(super) fn selected_model(&self) -> &str {
+        self.selected_candidate()
+            .and_then(|candidate| candidate.model.as_deref())
+            .unwrap_or_else(|| public_model_id(&self.input.model))
+    }
+
     pub(super) fn into_preview(mut self) -> Self {
         self.id.replace_range(..4, "preview_");
         self

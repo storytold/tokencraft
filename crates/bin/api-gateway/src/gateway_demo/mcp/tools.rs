@@ -14,7 +14,7 @@ use super::super::{
     debug_trace,
     handlers,
     providers::ProviderRuntime,
-    quote::{Quote, QuoteInput, Workload},
+    quote::{QuoteInput, Workload},
     quote_seals::{self, QuoteSeals},
     requests::{self, AdmissionInput, NativeProviderResult, QuoteSelection, RequestStatus, RequestView},
     routing_policy::Policies,
@@ -232,7 +232,7 @@ impl Gateway {
             &self.state.pool, access.scope(), &catalog, self.providers.as_deref(), quote,
         ).await?;
         self.quote_seals.seal(&mut quote, access.scope())?;
-        let selected = chosen(&quote).ok_or_else(|| ApiError::BadRequest(
+        let selected = quote.selected_candidate().ok_or_else(|| ApiError::BadRequest(
             "no enabled offer matches this intent and estimate ceiling".into(),
         ))?;
         let estimated = selected.estimated_usd_nanos
@@ -242,7 +242,7 @@ impl Gateway {
             _ => None,
         };
         Ok(Estimate {
-            model: quote.input.model.clone(),
+            model: quote.selected_model().to_owned(),
             catalog_revision: quote.catalog_revision.clone(),
             quote_handle: sign_quote(settings, &access, &input, &quote.id)?,
             expires_at: quote.expires_at,
@@ -356,11 +356,13 @@ impl Gateway {
         Ok(Status {
             dashboard_url: self.dashboard(access, &request.id)?,
             request_id: request.id,
-            model: public_model_id(&request.quote.input.model).to_owned(),
+            model: request.quote.selected_model().to_owned(),
             status: request.status,
             app_ref: request.app_ref,
             poll_after_seconds: poll_after,
-            estimated_usd_nanos: chosen(&request.quote).and_then(|candidate| candidate.estimated_usd_nanos).map(|amount| amount.to_string()),
+            estimated_usd_nanos: request.quote.selected_candidate()
+                .and_then(|candidate| candidate.estimated_usd_nanos)
+                .map(|amount| amount.to_string()),
             provider_reported_usd_nanos: request.upstream.and_then(|provider| provider.reported_usd_nanos),
             supplier_settled_usd_nanos: request.supplier_settlement.map(|cost| cost.amount_usd_nanos),
         })
@@ -374,10 +376,6 @@ impl Gateway {
         url.query_pairs_mut().append_pair("project_id", scope.project.as_str()).append_pair("request_id", id.as_str());
         Ok(url.to_string())
     }
-}
-
-fn chosen(quote: &Quote) -> Option<&super::super::quote::Candidate> {
-    quote.candidates.iter().find(|candidate| quote.selected_offer_id.as_deref() == Some(&candidate.offer_id))
 }
 
 fn sign_quote(settings: &Settings, access: &Access, input: &Generation, id: &str) -> ApiResult<String> {

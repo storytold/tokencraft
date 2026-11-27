@@ -195,6 +195,23 @@ pub struct QuoteInput {
     pub max_total_usd_nanos: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct QuoteOptions<'a> {
+    #[serde(skip)]
+    pub client_ref: Option<&'a str>,
+    #[serde(skip)]
+    pub pinned_offer_id: Option<&'a str>,
+    /// Pass an empty slice to select by the lowest estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_providers: Option<&'a [Provider]>,
+    /// Minimum community rating for automatic model selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_quality: Option<u8>,
+    /// Minimum number of organizations using an automatically selected model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_usage_accounts: Option<u32>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateReason {
@@ -209,6 +226,9 @@ pub enum CandidateReason {
     PriceStale,
     QueueCoolingDown,
     ProviderCredentialUnavailable,
+    InsufficientModelRatings,
+    BelowModelQuality,
+    BelowModelUsage,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -228,6 +248,12 @@ pub enum PolicySource {
 pub struct PolicySetting<T> {
     pub value: T,
     pub source: PolicySource,
+}
+
+impl<T> PolicySetting<T> {
+    pub(crate) fn request_value(&self) -> Option<&T> {
+        (self.source == PolicySource::Request).then_some(&self.value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -252,6 +278,10 @@ pub struct RoutingPolicy {
     pub provider_preference: Option<PolicySetting<Vec<Provider>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route_ranking: Option<PolicySetting<RouteRanking>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_quality: Option<PolicySetting<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_usage_accounts: Option<PolicySetting<u32>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -287,6 +317,8 @@ pub struct PerformanceWindow {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Candidate {
     pub offer_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub provider: Provider,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub self_hosted: bool,

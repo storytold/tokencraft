@@ -27,6 +27,8 @@ The reference renders the checked-in [OpenAPI 3.1 contract](../contracts/openapi
 4. **Read.** Poll request status for asynchronous work and fetch result metadata, artifact bytes, or trace data using the authorized request ID. Artifact URLs appear after publication. Read headers such as `Content-Type` and `X-TokenCraft-Content-Sha256` when validating a download. Request history and traces carry lifecycle evidence. [Request diagnostics](request-diagnostics.md)
 5. **Deliver.** For chat, `stream: true` selects SSE. Chat Completions emits `data:` frames and successful streams end with `[DONE]`. Responses uses named events with `sequence_number`. Replay the original text request and key to recover retained output. The worker owns upstream execution and the API serves retained chunks. For async completion, configure a webhook subscription. Verify the raw signed body and deduplicate on `webhook-id` before committing a side effect. [Content retention](chat-history.md) · [Webhook management](api-contracts.md#manage-project-webhooks)
 
+Automatic quotes retain `input.model: "auto"` for submission and idempotent replay. Match `selected_offer_id` to a candidate to find its resolved `model`. Model request status and usage use the resolved model. [Routing policy precedence](deployment.md#routing-policy-precedence)
+
 ### Read a media receipt
 
 A minimal fixture quote for `POST /v1/quotes/scoped` looks like this.

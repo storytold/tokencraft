@@ -7,7 +7,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use crate::trace::{submit_traceparent, OtlpTrace, RequestTraceSnapshot, TraceBaseline};
 use crate::{
     valid_id, AudioProviderResult, Catalog, ChatOptions, Error, ImageProviderResult, ListOptions,
-    MeshProviderResult, Message, ModelCatalog, PolicySource, Provider, ProviderPath, ProviderResult, Quote, QuoteInput, Receipt, RequestEvents,
+    MeshProviderResult, Message, ModelCatalog, PolicySetting, Provider, ProviderPath, ProviderResult, Quote, QuoteInput, QuoteOptions, Receipt, RequestEvents,
     RequestFilters, RequestPage, RequestStatus, RequestTrace, RoutePreview, RoutePreviewOptions, SubmitOptions, UsageOptions, UsageReport,
     VideoProviderResult, WaitOptions,
 };
@@ -128,13 +128,35 @@ impl TokenCraftClient {
         input: &QuoteInput,
         providers: &[Provider],
     ) -> Result<Quote, Error> {
-        let scoped = self.bearer.is_some();
-        let path = if scoped { "v1/quotes/scoped" } else { "v1/quotes" };
-        let request = self.request(Method::POST, path, scoped)?.json(&PreferredQuoteInput {
+        self.quote_with_options(
             input,
-            preferred_providers: Some(providers),
-        });
-        self.send(request, None).await
+            QuoteOptions {
+                preferred_providers: Some(providers),
+                ..QuoteOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// Quote with request-level provider preferences, model thresholds, or project attribution.
+    pub async fn quote_with_options(
+        &self,
+        input: &QuoteInput,
+        options: QuoteOptions<'_>,
+    ) -> Result<Quote, Error> {
+        let scoped = self.bearer.is_some();
+        if !scoped && (options.client_ref.is_some() || options.pinned_offer_id.is_some()) {
+            return Err(Error::MissingKey);
+        }
+        let path = if scoped { "v1/quotes/scoped" } else { "v1/quotes" };
+        let mut request = self.request(Method::POST, path, scoped)?;
+        if let Some(offer) = options.pinned_offer_id {
+            request = request.query(&[("pinned_offer_id", offer)]);
+        }
+        if let Some(client) = options.client_ref {
+            request = request.query(&[("client_ref", client)]);
+        }
+        self.send(request.json(&QuoteBody { input, options }), None).await
     }
 
     pub async fn quote_public(&self, input: &QuoteInput) -> Result<Quote, Error> {
@@ -155,11 +177,14 @@ impl TokenCraftClient {
         input: &QuoteInput,
         client_ref: &str,
     ) -> Result<Quote, Error> {
-        let request = self
-            .request(Method::POST, "v1/quotes/scoped", true)?
-            .query(&[("client_ref", client_ref)])
-            .json(input);
-        self.send(request, None).await
+        self.quote_with_options(
+            input,
+            QuoteOptions {
+                client_ref: Some(client_ref),
+                ..QuoteOptions::default()
+            },
+        )
+        .await
     }
 
     /// Quote exactly one eligible gateway offer. Submitting the quote preserves the pin.
@@ -169,13 +194,15 @@ impl TokenCraftClient {
         offer_id: &str,
         client_ref: Option<&str>,
     ) -> Result<Quote, Error> {
-        let mut request = self
-            .request(Method::POST, "v1/quotes/scoped", true)?
-            .query(&[("pinned_offer_id", offer_id)]);
-        if let Some(client_ref) = client_ref {
-            request = request.query(&[("client_ref", client_ref)]);
-        }
-        self.send(request.json(input), None).await
+        self.quote_with_options(
+            input,
+            QuoteOptions {
+                client_ref,
+                pinned_offer_id: Some(offer_id),
+                ..QuoteOptions::default()
+            },
+        )
+        .await
     }
 
     /// Set the application reference on submissions made by this client.
@@ -270,15 +297,32 @@ impl TokenCraftClient {
     ) -> Result<Receipt, Error> {
         let key = options.idempotency_key;
         validate_idempotency_key(key)?;
+        let quote_options = quote.routing.as_ref().map_or_else(QuoteOptions::default, |routing| {
+            QuoteOptions {
+                preferred_providers: routing
+                    .provider_preference
+                    .as_ref()
+                    .and_then(PolicySetting::request_value)
+                    .map(Vec::as_slice),
+                min_quality: routing
+                    .min_quality
+                    .as_ref()
+                    .and_then(PolicySetting::request_value)
+                    .copied(),
+                min_usage_accounts: routing
+                    .min_usage_accounts
+                    .as_ref()
+                    .and_then(PolicySetting::request_value)
+                    .copied(),
+                ..QuoteOptions::default()
+            }
+        });
         let body = SubmitBody {
             quote_id: &quote.id,
             pinned_offer_id: quote.pinned_offer_id.as_deref(),
-            input: PreferredQuoteInput {
+            input: QuoteBody {
                 input: &quote.input,
-                preferred_providers: quote.routing.as_ref()
-                    .and_then(|routing| routing.provider_preference.as_ref())
-                    .filter(|setting| setting.source == PolicySource::Request)
-                    .map(|setting| setting.value.as_slice()),
+                options: quote_options,
             },
             client_ref: options.client_ref,
             app_ref: self.app_ref.as_deref(),
@@ -652,11 +696,11 @@ fn validate_duration(value: Duration) -> Result<(), Error> {
 }
 
 #[derive(Serialize)]
-struct PreferredQuoteInput<'a> {
+struct QuoteBody<'a> {
     #[serde(flatten)]
     input: &'a QuoteInput,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    preferred_providers: Option<&'a [Provider]>,
+    #[serde(flatten)]
+    options: QuoteOptions<'a>,
 }
 
 #[derive(Serialize)]
@@ -664,7 +708,7 @@ struct SubmitBody<'a> {
     quote_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pinned_offer_id: Option<&'a str>,
-    input: PreferredQuoteInput<'a>,
+    input: QuoteBody<'a>,
     client_ref: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     app_ref: Option<&'a str>,

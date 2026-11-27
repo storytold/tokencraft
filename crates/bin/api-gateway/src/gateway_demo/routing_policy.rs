@@ -223,8 +223,8 @@ impl Policies {
             organization_revision: self.organization.revision,
             project_revision: self.project.revision,
             provider_limits: self.provider_limits(),
-            provider_preference: (!input.is_auto()).then(|| self.provider_preference(input)).flatten(),
-            route_ranking: (!input.is_auto()).then(|| self.route_ranking(input)).flatten(),
+            provider_preference: self.provider_preference(input),
+            route_ranking: self.route_ranking(input),
             min_quality: self.model_floor(input, input.min_quality, |policy| policy.min_quality),
             min_usage_accounts: self.model_floor(input, input.min_usage_accounts, |policy| policy.min_usage_accounts),
             cost_cap: self.resolve_field(input.max_total_usd_nanos, None, |bounds| {

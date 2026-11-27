@@ -982,12 +982,7 @@ impl From<RequestView> for ModelRequestView {
     fn from(request: RequestView) -> Self {
         let created_at = request.accepted_at();
         let quote = request.quote;
-        let estimate = quote
-            .candidates
-            .iter()
-            .find(|candidate| {
-                quote.selected_offer_id.as_deref() == Some(candidate.offer_id.as_str())
-            })
+        let estimate = quote.selected_candidate()
             .and_then(|candidate| candidate.estimated_usd_nanos);
         Self {
             id: request.id,
@@ -1003,7 +998,7 @@ impl From<RequestView> for ModelRequestView {
             recheck: request.recheck,
             correlation: request.correlation,
             client_budget: request.client_budget,
-            model: super::catalog::public_model_id(&quote.input.model).to_owned(),
+            model: quote.selected_model().to_owned(),
             estimated_usd_nanos: estimate,
             routing: quote.routing,
             chat_options: quote.chat_options,

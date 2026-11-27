@@ -459,6 +459,12 @@ fn route_step(quote: &Quote, at: DateTime<Utc>) -> Step {
     step.field("Quote ID", &quote.id);
     step.field("Catalog revision", &quote.catalog_revision);
     step.field("Requested model", &quote.input.model);
+    if quote.input.is_auto() {
+        step.optional(
+            "Selected model",
+            quote.selected_candidate().and_then(|candidate| candidate.model.as_deref()),
+        );
+    }
     step.optional("Pinned offer", quote.pinned_offer_id.as_deref());
     step.field("Organization policy revision", quote.routing.as_ref().map_or(0, |routing| routing.organization_revision));
     step.field("Project policy revision", quote.routing.as_ref().map_or(0, |routing| routing.project_revision));

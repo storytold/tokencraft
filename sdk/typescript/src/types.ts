@@ -82,6 +82,8 @@ export type Workload =
 
 export interface QuoteInput {
   model: string;
+  min_quality?: number;
+  min_usage_accounts?: number;
   workload: Workload;
   provider?: Provider | null;
   preferred_providers?: Provider[] | null;
@@ -119,6 +121,7 @@ export interface PerformanceWindow {
 
 export interface Candidate {
   offer_id: string;
+  model?: string;
   provider: Provider;
   self_hosted?: boolean;
   output_size?: { width: number; height: number };
@@ -126,7 +129,8 @@ export interface Candidate {
   artcraft_reference?: ArtCraftReference;
   reason: "eligible" | "provider_excluded" | "provider_policy_excluded"
     | "provider_region_unmet" | "provider_retention_unmet" | "workload_unsupported"
-    | "aspect_ratio_unsupported" | "above_cost_cap" | "price_stale" | "queue_cooling_down" | "provider_credential_unavailable";
+    | "aspect_ratio_unsupported" | "above_cost_cap" | "price_stale" | "queue_cooling_down" | "provider_credential_unavailable"
+    | "insufficient_model_ratings" | "below_model_quality" | "below_model_usage";
   estimated_usd_nanos: number | null;
   applied_aspect_ratio: string | null;
   offer_tolerance?: PolicySetting;
@@ -162,6 +166,8 @@ export interface Quote {
     provider_limits?: { organization: boolean; project: boolean };
     provider_preference?: PolicySetting<Provider[]>;
     route_ranking?: PolicySetting<RouteRanking>;
+    min_quality?: PolicySetting;
+    min_usage_accounts?: PolicySetting;
   };
 }
 

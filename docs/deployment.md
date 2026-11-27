@@ -439,7 +439,7 @@ The migration history keeps the original SQL files and checksums. The core worke
 
 ## Routing policy precedence
 
-For automatic routing, preferences and minimum model quality or usage take the first configured value from the request, project, organization, or gateway default, where available. For example, a project policy can set minimum community quality to 6 out of 10, equivalent to 3 out of 5 stars. Hard budgets, provider allowlists, and data-handling requirements apply across scopes.
+Provider preferences take the first configured value from the request, project, or organization. They apply to named models and to `model: "auto"`. Eligible offers are ranked by provider preference first and then by the configured ranking within that group. Send `preferred_providers: []` to rank by the lowest estimate. Automatic model selection also resolves minimum community quality and recent usage from the request, project, or organization. Hard budgets, provider allowlists, and data-handling requirements still apply.
 
 ## Balance API replicas within a cell
 

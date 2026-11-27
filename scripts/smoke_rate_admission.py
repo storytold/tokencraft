@@ -1,4 +1,4 @@
-"""Verify price expiry at quote and admission time with a disposable feed and connector."""
+"""Verify price expiry and routing policy with a disposable rate feed and connector."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +34,58 @@ def hold_budget(psql, directory, env, account):
             holder.wait(timeout=5)
 
 
+def verify_automatic_routing(port, policy, project, session, auth, workload, connector):
+    def quote(offer_id, **overrides):
+        result, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
+                         body={"model": "auto", "workload": workload, **overrides})
+        assert result["selected_offer_id"] == offer_id, result["selected_offer_id"]
+        return result
+
+    quote("primary")
+    alternate = ["fixture_alt"]
+    call(port, policy, 200, method="PUT", headers=session, body={
+        "expected_revision": 1, "policy": {"preferred_providers": alternate},
+    })
+    inherited = quote("alternate_model")
+    assert inherited["routing"]["provider_preference"] == {"source": "organization_default", "value": alternate}
+    call(port, f"{policy}&project_id={project}", 200, method="PUT", headers=session, body={
+        "expected_revision": 0, "policy": {
+            "preferred_providers": ["self_hosted"], "route_ranking": "recent_reliability",
+        },
+    })
+    project_quote = quote("primary")
+    assert project_quote["routing"]["provider_preference"]["source"] == "project_default"
+    assert project_quote["routing"]["route_ranking"]["value"] == "recent_reliability"
+    price = quote("primary", preferred_providers=[])
+    assert price["routing"]["route_ranking"] == {"source": "request", "value": "price"}
+    quote("primary", preferred_providers=alternate, max_total_usd_nanos=4_000_000)
+    threshold = quote(None, min_usage_accounts=5)
+    assert {candidate["reason"] for candidate in threshold["candidates"]} == {"below_model_usage"}
+
+    selected = quote("alternate_model", preferred_providers=alternate)
+    assert selected["routing"]["provider_preference"] == {"source": "request", "value": alternate}
+    body = {"quote_id": selected["id"], "input": selected["input"], "image_prompt": "Automatic routing fixture"}
+    attempt = {**auth, "Idempotency-Key": token_hex(16)}
+    receipt, _ = call(port, "/v1/requests", 202, method="POST", headers=attempt, body=body)
+    stored = wait_for_status(port, receipt, auth, "succeeded", 18)["quote"]
+    assert stored["input"]["model"] == "auto" and stored["candidates"][0]["model"] == "alternate_image"
+    model_view, _ = call(port, f"/v1/model-requests/{receipt['id']}", 200, headers=auth)
+    assert model_view["model"] == "alternate_image"
+    usage, _ = call(port, "/v1/usage?model=alternate_image", 200, headers=auth)
+    assert usage["totals"]["requests"] == 1 and usage["totals"]["estimated_usd_nanos"] == "4500000"
+
+    call(port, policy, 200, method="PUT", headers=session, body={
+        "expected_revision": 2, "policy": {"allowed_providers": ["self_hosted"]},
+    })
+    quote("primary", preferred_providers=alternate)
+    replay, _ = call(port, "/v1/requests", 200, method="POST", headers=attempt, body=body)
+    assert replay == receipt and connector.jobs[receipt["id"]] == 1
+    rejected, _ = call(port, "/v1/requests", 409, method="POST", body=body,
+                       headers={**auth, "Idempotency-Key": token_hex(16)})
+    assert rejected["error"]["code"] == "quote_stale"
+    print("PASS automatic model routing honors preference precedence, hard limits, and recorded model identity")
+
+
 def verify(gateway, directory, settings, session, account, project):
     port = int(settings["API_GATEWAY_PORT"])
     principal = f"/v1/projects/{project}/service-principals?account_id={account}"
@@ -54,8 +106,11 @@ def verify(gateway, directory, settings, session, account, project):
         primary = {**offer, "id": "primary", "pricing": {**offer["pricing"], "usd_nanos_per_image": 3_000_000}}
         backup = {**offer, "id": "backup", "provider": "fixture_alt",
                   "pricing": {**offer["pricing"], "usd_nanos_per_image": 5_000_000}}
+        alternate = {**backup, "id": "alternate_model", "model": "alternate_image",
+                     "pricing": {**offer["pricing"], "usd_nanos_per_image": 4_500_000}}
         catalog = directory / "reviewed-rates.json"
-        catalog.write_text(json.dumps({"version": 1, "rate_feed_offers": ["primary"], "offers": [primary, backup]}))
+        catalog.write_text(json.dumps({"version": 1, "rate_feed_offers": ["primary"],
+                                       "offers": [primary, backup, alternate]}))
         settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(catalog), TOKENCRAFT_CONNECTORS=str(bindings),
                         TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE=connector.token)
         settings.pop("TOKENCRAFT_LOCAL_CHAT_BINDINGS", None)
@@ -161,6 +216,7 @@ def verify(gateway, directory, settings, session, account, project):
         usage, _ = call(port, "/v1/usage", 200, headers=auth)
         assert usage["totals"]["requests"] == 3 and usage["totals"]["estimated_usd_nanos"] == "11000000"
         print("PASS an atomic rate refresh selected the cheaper reviewed offer and invalidated the old quote")
+        verify_automatic_routing(port, policy, project, session, auth, workload, connector)
 
 
 def main():

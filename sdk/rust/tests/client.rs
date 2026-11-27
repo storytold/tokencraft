@@ -246,34 +246,54 @@ async fn reads_trace_evidence_and_downloads_scoped_otlp() {
 
 #[tokio::test]
 async fn preferred_order_reaches_quotes_and_preserves_request_overrides_on_submit() {
-    use tokencraft_sdk::{Provider, SubmitOptions};
+    use tokencraft_sdk::{CandidateReason, Provider, QuoteOptions, SubmitOptions};
 
+    let auto = QuoteInput { model: "auto".into(), ..input() };
     let order = json!(["openrouter", "fal"]);
     let document = |source: &str| {
         json!({
             "id": "quo_fixture",
             "catalog_revision": "fixture",
-            "input": input(),
+            "input": auto,
             "currency": "USD",
             "selected_offer_id": "openrouter_image",
-            "candidates": [],
+            "candidates": [{
+                "offer_id": "openrouter_image", "model": "selected_image", "provider": "openrouter",
+                "reason": "eligible", "estimated_usd_nanos": 10,
+            }, {
+                "offer_id": "fal_image", "model": "excluded_image", "provider": "fal",
+                "reason": "below_model_usage",
+            }],
             "routing": {
                 "organization_revision": 0,
                 "project_revision": 0,
                 "provider_preference": { "source": source, "value": order },
+                "min_quality": { "source": source, "value": 6 },
+                "min_usage_accounts": { "source": source, "value": 5 },
             },
         })
     };
     let (origin, captured) = reply("200 OK", "", &document("request").to_string()).await;
     let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
     let explicit = client
-        .quote_with_preferred_providers(&input(), &[Provider::OpenRouter, Provider::Fal])
+        .quote_with_options(&auto, QuoteOptions {
+            preferred_providers: Some(&[Provider::OpenRouter, Provider::Fal]),
+            min_quality: Some(6),
+            min_usage_accounts: Some(5),
+            client_ref: Some("fixture-client"),
+            ..QuoteOptions::default()
+        })
         .await
         .unwrap();
+    assert_eq!(explicit.candidates[0].model.as_deref(), Some("selected_image"));
+    assert_eq!(explicit.candidates[1].reason, CandidateReason::BelowModelUsage);
     let (head, body) = captured.await.unwrap();
-    assert!(head.starts_with("post /v1/quotes/scoped"));
+    assert!(head.starts_with("post /v1/quotes/scoped?client_ref=fixture-client "));
     let body: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body["preferred_providers"], order);
+    assert_eq!(body["min_quality"], 6);
+    assert_eq!(body["min_usage_accounts"], 5);
+    assert!(body.get("client_ref").is_none());
 
     let inherited = serde_json::from_value(document("organization_default")).unwrap();
     for (quote, expected) in [(explicit, Some(&order)), (inherited, None)] {
@@ -284,13 +304,19 @@ async fn preferred_order_reaches_quotes_and_preserves_request_overrides_on_submi
         )
         .await;
         let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        let mut submission = SubmitOptions::new("fixture-order");
+        submission.client_ref = Some("fixture-client");
         assert!(client
-            .submit(&quote, SubmitOptions::new("fixture-order"))
+            .submit(&quote, submission)
             .await
             .is_err());
         let (_, body) = captured.await.unwrap();
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["client_ref"], "fixture-client");
+        assert_eq!(body["input"]["model"], "auto");
         assert_eq!(body["input"].get("preferred_providers"), expected);
+        assert_eq!(body["input"]["min_quality"].as_u64(), expected.map(|_| 6));
+        assert_eq!(body["input"]["min_usage_accounts"].as_u64(), expected.map(|_| 5));
     }
 }
 
