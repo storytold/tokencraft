@@ -18,6 +18,8 @@ Retrieve one subscription with `GET /v1/projects/{project}/webhooks/{subscriptio
 
 Delivery records identify their subject with `request_id` or `workflow_run_id`. App subscriptions only receive terminal events for the assigned app.
 
+New native request events include `data.client_ref` when the admitted request has a client reference. This applies to successful, failed, and canceled requests. Use the optional signed field to route events for a shared receiver. Unattributed requests omit it. Retry and redrive keep the original event ID and body, including deliveries created before this field was available.
+
 ## Inspect a workflow run
 
 The gateway console uses the saved run graph for the timeline. A project developer or administrator can request that timeline by adding `include_execution=true` and `account_id` to the run status URL with a session cookie. Application keys continue to receive the published workflow status contract.

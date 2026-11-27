@@ -475,7 +475,7 @@ export interface WebhookEvent {
   type: "request.succeeded" | "request.canceled" | "request.failed";
   occurred_at: string;
   sequence: number;
-  data: Record<string, unknown> & { request_id: string };
+  data: Record<string, unknown> & { request_id: string; client_ref?: string | null };
 }
 
 export type WorkflowWebhookStatus = "succeeded" | "failed" | "canceled" | "expired";

@@ -501,6 +501,11 @@ test("verifies exact webhook bytes during signing-key overlap and rejects tamper
   };
   assert.deepEqual(await verifyWebhook(body, headers, secret(first), { now }), event);
   assert.deepEqual(await verifyWebhook(body, headers, [secret(second), secret(first)], { now }), event);
+  const tagged = { ...event, data: { ...event.data, client_ref: "studio:customer-42" } };
+  const taggedBody = Buffer.from(JSON.stringify(tagged));
+  assert.deepEqual(await verifyWebhook(taggedBody, { ...headers, "Webhook-Signature": sign(first, taggedBody) }, secret(first), { now }), tagged);
+  const malformed = Buffer.from(JSON.stringify({ ...event, data: { ...event.data, client_ref: 42 } }));
+  await assert.rejects(verifyWebhook(malformed, { ...headers, "Webhook-Signature": sign(first, malformed) }, secret(first), { now }), { code: "payload" });
   await assert.rejects(verifyWebhook(Buffer.from(JSON.stringify(event)), headers, secret(first), { now }), { code: "signature" });
   await assert.rejects(verifyWebhook(body, headers, secret(first), { now: now + 301 }), { code: "timestamp" });
   await assert.rejects(verifyWebhook(body, headers, secret(Buffer.alloc(32)), { now }), { code: "signature" });

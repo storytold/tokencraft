@@ -54,6 +54,16 @@ pub struct WebhookData {
     pub attributes: serde_json::Map<String, serde_json::Value>,
 }
 
+impl WebhookData {
+    /// The optional client reference recorded when the request was admitted.
+    pub fn client_ref(&self) -> Option<&str> {
+        self.attributes
+            .get("client_ref")?
+            .as_str()
+            .filter(|value| valid_client_ref(value))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct VerifiedWebhook {
     pub id: String,
@@ -124,6 +134,9 @@ pub fn verify_webhook(
         || event.sequence == 0
         || event.occurred_at.is_empty()
         || !valid_id(&event.data.request_id, "req_")
+        || event.data.attributes.get("client_ref").is_some_and(|value| {
+            !value.is_null() && event.data.client_ref().is_none()
+        })
     {
         return Err(VerificationError::Payload);
     }

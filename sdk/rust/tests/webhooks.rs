@@ -51,7 +51,26 @@ fn verifies_raw_bytes_with_both_keys_and_enforces_envelope_and_time() {
         assert_eq!(verified.kind, WebhookKind::Succeeded);
         assert_eq!(verified.data.request_id, REQUEST);
         assert_eq!(verified.data.attributes["provider"], "kinovi");
+        assert_eq!(verified.data.client_ref(), None);
     }
+
+    let mut tagged = event.clone();
+    tagged["data"]["client_ref"] = "studio:customer-42".into();
+    let tagged = serde_json::to_vec(&tagged).unwrap();
+    let mut tagged_headers = headers.clone();
+    tagged_headers.insert("webhook-signature", sign(&new, &tagged).parse().unwrap());
+    let verified = verify_webhook(&tagged_headers, &tagged, &[&new_secret], options).unwrap();
+    assert_eq!(verified.data.client_ref(), Some("studio:customer-42"));
+    assert_eq!(verified.data.attributes["client_ref"], "studio:customer-42");
+
+    let mut invalid = event.clone();
+    invalid["data"]["client_ref"] = 42.into();
+    let invalid = serde_json::to_vec(&invalid).unwrap();
+    tagged_headers.insert("webhook-signature", sign(&new, &invalid).parse().unwrap());
+    assert_eq!(
+        verify_webhook(&tagged_headers, &invalid, &[&new_secret], options).unwrap_err(),
+        VerificationError::Payload
+    );
 
     let normalized = serde_json::to_vec(&event).unwrap();
     assert_eq!(

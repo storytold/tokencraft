@@ -96,6 +96,8 @@ let event = verify_webhook(&headers, &raw_body, &[&signing_secret], WebhookOptio
 handle_event_once(&event.id, &event)?;
 ```
 
+Use `event.data.client_ref()` to read the optional client reference on native request events.
+
 For [workflow terminal events](../../docs/workflows.md#receive-terminal-events), use `verify_workflow_webhook` with the same arguments. Its verified data contains the workflow run ID, terminal state, relative status URL, and the optional `data.client_ref` supplied at invocation.
 
 `cargo test --locked -p tokencraft_sdk` runs the loopback HTTP and webhook tests from a source checkout. The restart example uses the disposable gateway described in the [setup guide](../../docs/setup.md).

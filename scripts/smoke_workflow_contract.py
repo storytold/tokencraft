@@ -342,7 +342,8 @@ def verify_signed_delivery(
 
 
 def verify_request_webhook(port, session, project_path, sibling_project, query, receiver, workflow_subscription):
-    registration = {"name": "Native receipt fixture", "destination_id": "fixture"}
+    client = "native.customer-42"
+    registration = {"name": "Native receipt fixture", "destination_id": "fixture", "client_ref": client}
     native, _ = call(port, project_path + "/webhooks" + query, 201, method="POST", headers=session, body=registration)
     principal, _ = call(port, project_path + "/service-principals" + query, 201, method="POST", headers=session,
                         body={"name": "Native webhook receipt", "scopes": ["requests:submit", "requests:read"]})
@@ -354,9 +355,9 @@ def verify_request_webhook(port, session, project_path, sibling_project, query, 
     call(port, native_path, 401, headers=auth)
     _, hidden = call(port, f"/v1/projects/{sibling_project}/webhooks/{native['id']}" + query, 404, headers=session)
     assert_private_response(hidden)
-    quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
+    quote, _ = call(port, f"/v1/quotes/scoped?client_ref={client}", 200, method="POST", headers=auth,
                     body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
-    body = {"quote_id": quote["id"], "input": quote["input"],
+    body = {"quote_id": quote["id"], "input": quote["input"], "client_ref": client,
             "delivery": {"webhook_subscription_id": workflow_subscription["id"]}}
     invoke = {**auth, "Idempotency-Key": token_hex(16)}
     call(port, "/v1/requests", 404, method="POST", body=body, headers=invoke)
@@ -365,9 +366,9 @@ def verify_request_webhook(port, session, project_path, sibling_project, query, 
     delivery = verify_signed_delivery(port, project_path + "/webhook-deliveries", query, session, receiver,
         native, "request.succeeded",
         {"request_id": accepted["id"], "project_id": project_path.rsplit("/", 1)[1],
-         "status": "succeeded", "fetch_url": accepted["status_url"]})
+         "status": "succeeded", "fetch_url": accepted["status_url"], "client_ref": client})
     assert delivery["request_id"] == accepted["id"] and "workflow_run_id" not in delivery
-    print("PASS ordinary request webhooks retain their signed payload and cannot use an app-only subscription")
+    print("PASS native request webhooks sign the client reference and cannot use an app-only subscription")
 
 
 def verify_tool_rollout(gateway, directory, settings, registry, sibling_project, digest):

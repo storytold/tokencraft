@@ -20,7 +20,10 @@ export async function verifyWebhook(
   options: VerifyWebhookOptions = {},
 ): Promise<WebhookEvent> {
   const { event, type, data } = await verifyEnvelope(body, headers, signingSecrets, options);
-  if (!eventTypes.has(type) || !isRequestId(data.request_id)) throw invalidPayload();
+  if (!eventTypes.has(type) || !isRequestId(data.request_id)
+      || (data.client_ref != null && !isClientReference(data.client_ref))) {
+    throw invalidPayload();
+  }
   return event as unknown as WebhookEvent;
 }
 
