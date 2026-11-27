@@ -1,6 +1,6 @@
 # TokenCraft
 
-TokenCraft is a Rust gateway for routing AI requests across providers. It handles accounts, project keys, quotes, budgets, asynchronous requests, and artifact delivery. Providers connect through versioned HTTP bindings and operator-reviewed catalog entries.
+TokenCraft is ArtCraft’s open-source gateway for securing and routing AI requests across providers. The Rust gateway handles accounts, project keys, quotes, budgets, asynchronous requests, and artifact delivery. Providers connect through versioned HTTP bindings and operator-reviewed catalog entries.
 
 The [ArtCraft reference catalog](catalog/artcraft-v1.json) describes supported provider plugins, model capabilities, and supplier list prices for each snapshot. A self-hosted gateway loads the operator's own catalog. Start with your own models or import selected ArtCraft presets with local bindings and rates. [Catalog setup](docs/provider-connectors.md#curate-your-own-catalog)
 

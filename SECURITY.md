@@ -14,4 +14,6 @@ Use the repository’s private vulnerability reporting option where available, o
 
 ## Daybreak
 
-ArtCraft’s approach pairs open-source controls and release checks with Daybreak Defense Factory for defensive review and triage on connected repositories. Record the reviewed revision, the maintainer’s disposition, and the commit and checks that verify each fix. Keep detailed findings in the private review channel until coordinated disclosure. The repository’s tests and self-hosted runtime run independently. [OpenAI Codex Security documentation](https://help.openai.com/en/articles/20001107-codex-security)
+ArtCraft uses Daybreak Defense Factory for defensive review and triage on connected repositories. Track TokenCraft review against the ArtCraft repository and the exact revision reviewed. Record any outstanding review status in the release evidence.
+
+For a confirmed finding, record the maintainer’s disposition, the fix commit, and the checks that verify it. Keep detailed findings in the private review channel until coordinated disclosure. Self-hosters can run the repository’s tests and gateway directly. [OpenAI Codex Security documentation](https://help.openai.com/en/articles/20001107-codex-security)

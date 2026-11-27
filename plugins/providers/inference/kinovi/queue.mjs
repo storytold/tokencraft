@@ -1,9 +1,9 @@
 import { logRequestTrace, monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { delegatedKey, keyTag, matchesKey } from './tenant-keys.mjs';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 
@@ -67,13 +67,18 @@ export function required(name) {
 
 // Store the submit intent before the paid call. A crash at the acknowledgement
 // boundary leaves an unresolved intent, which suppresses another vendor POST.
-export async function queueServer({ state, token, provider, tenantKeys = false,
+export async function queueServer({ state: statePath, token, provider, tenantKeys = false,
   previousToken, previousTokenExpiresAt, monitoringToken, traceLogs = false }) {
   const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact', 'lookup']);
   const authorize = serviceAuthorization(token, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 24,
   });
+  const state = resolve(statePath);
   await mkdir(state, { mode: 0o700, recursive: true });
+  const directory = await lstat(state);
+  if (!directory.isDirectory() || (directory.mode & 0o077) !== 0) {
+    throw new Error('plugin state must be a private directory');
+  }
   const recordPath = (id) => join(state, `${id}.json`);
   const activeWrites = new Map();
 

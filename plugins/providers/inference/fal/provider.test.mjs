@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +38,18 @@ async function close(server) {
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 }
+
+test('validates the state path with a trailing separator', async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), 'tokencraft-fal-state-'));
+  t.after(() => rm(parent, { recursive: true }));
+  const state = join(parent, 'state');
+  const start = (path) => queueServer({ state: path, token: 'test-gateway-key', provider: {} });
+
+  await start(`${state}/`);
+  const alias = join(parent, 'alias');
+  await symlink(state, alias, 'dir');
+  await assert.rejects(start(`${alias}/`), /plugin state must be a private directory/);
+});
 
 test('retries a confirmed throttle once across a restart', async () => {
   const state = await mkdtemp(join(tmpdir(), 'tokencraft-plugin-retry-'));

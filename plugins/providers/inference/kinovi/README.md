@@ -11,7 +11,7 @@ npm test
 npm start
 ```
 
-The listener defaults to `127.0.0.1:4023`. Set `PORT` to override it. Keep `.state/` or set `TOKENCRAFT_PLUGIN_STATE` to a persistent private directory. Run one process with its own state directory per binding.
+The listener defaults to `127.0.0.1:4023`. Set `PORT` to override it. Keep `.state/` or set `TOKENCRAFT_PLUGIN_STATE` to a persistent directory with mode `0700`. Point to the directory itself. Run one process with its own state directory per binding.
 
 Copy the [example binding](bindings.example.json) and [catalog offer](catalog.example.json) into your [TokenCraft profile](../README.md#start-a-plugin). Set the same gateway token in the gateway environment and fill in reviewed rates before serving live traffic. The sample catalog uses zero as its placeholder price. Keep `KINOVI_KEY` in the plugin environment.
 
