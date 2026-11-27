@@ -25,6 +25,8 @@ KINDS = {"gateway", "worker", "combined", "plugin", "compute", "upstream", "gpu"
 REPLICA_ROLES = {"gateway": "api", "worker": "worker", "combined": "combined"}
 CHECKS = {"database", "migrations", "worker", "provider_worker", "artifact_storage"}
 CHECK_STATES = {"checking", "ready", "unavailable", "not_configured", "external"}
+DRAIN_COUNTS = ("unresolved_requests", "active_workflows", "pending_webhooks")
+DRAIN_LIMIT = 5001
 GPU_FIELDS = {
     "DCGM_FI_DEV_GPU_UTIL": ("gpu_utilization_percent", max, 0, 100),
     "DCGM_FI_DEV_GPU_TEMP": ("gpu_temperature_celsius", max, 0, 150),
@@ -447,4 +449,15 @@ def sample_database(psql, cell, targets, bindings, scope):
     sample = json.loads(result.stdout)
     if not isinstance(sample, dict) or sample.get("window_seconds") != 900:
         raise ValueError("unexpected database sampler response")
+    maintenance = sample.get("maintenance")
+    if maintenance is not None:
+        if scope or not isinstance(maintenance, dict) or type(maintenance.get("paused")) is not bool:
+            raise ValueError("invalid cell admission observation")
+        drain = maintenance.get("drain")
+        if maintenance["paused"]:
+            if not isinstance(drain, dict) or any(type(drain.get(key)) is not int
+                    or not 0 <= drain[key] <= DRAIN_LIMIT for key in DRAIN_COUNTS):
+                raise ValueError("invalid cell drain counts")
+        elif drain is not None:
+            raise ValueError("unexpected cell drain counts")
     return {"status": "up", "latency_ms": round((time.monotonic() - started) * 1000), "sample": sample}

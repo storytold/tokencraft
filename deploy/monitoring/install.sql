@@ -7,6 +7,42 @@ SELECT set_config('tokencraft.monitor_role', :'monitor_role', true) AS monitor_r
 CREATE SCHEMA IF NOT EXISTS tokencraft_monitor;
 REVOKE ALL ON SCHEMA tokencraft_monitor FROM PUBLIC;
 
+CREATE OR REPLACE FUNCTION tokencraft_monitor.maintenance() RETURNS jsonb
+LANGUAGE plpgsql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $maintenance$
+DECLARE
+    is_paused boolean;
+BEGIN
+    IF to_regclass('public.gateway_admission_control') IS NULL THEN
+        RETURN NULL;
+    END IF;
+    SELECT paused INTO is_paused FROM public.gateway_admission_control WHERE singleton;
+    IF is_paused IS NULL THEN
+        RETURN NULL;
+    END IF;
+    RETURN jsonb_build_object(
+        'paused', is_paused,
+        'drain', CASE WHEN is_paused THEN jsonb_build_object(
+            'unresolved_requests', (SELECT count(*) FROM (
+                SELECT 1 FROM public.gateway_requests
+                WHERE num_nonnulls(succeeded_at, failed_at, canceled_at) = 0 LIMIT 5001
+            ) AS requests),
+            'active_workflows', (SELECT count(*) FROM (
+                SELECT 1 FROM public.workflow_runs
+                WHERE status IN ('queued', 'running', 'reconciling') LIMIT 5001
+            ) AS workflows),
+            'pending_webhooks', (SELECT count(*) FROM (
+                SELECT 1 FROM public.gateway_webhook_deliveries
+                WHERE state IN ('pending', 'sending') LIMIT 5001
+            ) AS webhooks)
+        ) END
+    );
+END;
+$maintenance$;
+
+REVOKE ALL ON FUNCTION tokencraft_monitor.maintenance() FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION tokencraft_monitor.sample(
     providers jsonb, targets jsonb, capacity jsonb, reserve integer, scope_account text, scope_project text
 ) RETURNS jsonb
@@ -182,6 +218,7 @@ provider_work AS MATERIALIZED (
 )
 SELECT jsonb_build_object(
     'window_seconds', 900,
+    'maintenance', CASE WHEN scope_account IS NULL THEN tokencraft_monitor.maintenance() END,
     'truncated', (SELECT count(*) = 10001 AND min(created_at) >= n.sampled_at - interval '15 minutes' FROM newest),
     'provider', coalesce((SELECT jsonb_object_agg(provider, metrics) FROM provider_summary), '{}'::jsonb),
     'compute', coalesce((SELECT jsonb_object_agg(id, metrics) FROM target_summary), '{}'::jsonb),
@@ -220,7 +257,7 @@ BEGIN
                        'public.gateway_dispatch_controls'::regclass, 'public.gateway_queue_cooldowns'::regclass,
                        'public.gateway_connector_completions'::regclass,
                        'public.workflow_runs'::regclass, 'public.gateway_webhook_deliveries'::regclass,
-                       'public.gateway_export_events'::regclass
+                       'public.gateway_export_events'::regclass, to_regclass('public.gateway_admission_control')
                    ]) AS relation(ref)
                    WHERE has_any_column_privilege(oid, relation.ref, 'SELECT,INSERT,UPDATE')
                       OR has_table_privilege(oid, relation.ref, 'DELETE,TRUNCATE,TRIGGER')

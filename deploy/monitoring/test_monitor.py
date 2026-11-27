@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 from autoscaling_snapshot import snapshot as scaling_snapshot
 from history import History
 from monitor import Collector, Handler, evaluate, metrics
-from sources import gpu_sample, load_config, observe_target, probe_url, replica_sample
+from sources import gpu_sample, load_config, observe_target, probe_url, replica_sample, sample_database
 
 HERE = Path(__file__).parent
 CAPACITY_TOKEN = "a" * 64
@@ -43,6 +43,28 @@ def sample():
 
 
 class Sources(unittest.TestCase):
+    def test_cell_drain_observation_requires_bounded_unscoped_counts(self):
+        cell = {"providers": ["fal"], "pg_service": "fixture", "reserved_connections": 0}
+        data = sample()
+        drain = {"unresolved_requests": 5001, "active_workflows": 2, "pending_webhooks": 0}
+        with patch("sources.subprocess.run") as psql:
+            psql.return_value.returncode = 0
+
+            def read(scope=None):
+                psql.return_value.stdout = json.dumps(data)
+                return sample_database("psql", cell, [], {}, scope or {})["sample"]
+
+            self.assertNotIn("maintenance", read())
+            data["maintenance"] = {"paused": True, "drain": drain}
+            self.assertEqual(read()["maintenance"]["drain"], drain)
+            with self.assertRaisesRegex(ValueError, "invalid cell admission"):
+                read({"account": "acct_fixture"})
+            drain["unresolved_requests"] = 5002
+            with self.assertRaisesRegex(ValueError, "invalid cell drain"):
+                read()
+            data["maintenance"] = {"paused": False, "drain": None}
+            self.assertIs(read()["maintenance"]["paused"], False)
+
     def test_example_parses_without_reading_private_sources(self):
         with patch.dict(os.environ, TOKENCRAFT_CAPACITY_TOKEN=CAPACITY_TOKEN, TOKENCRAFT_MONITOR_FAL=PLUGIN_TOKEN):
             config = load_config(HERE / "settings.example.json")

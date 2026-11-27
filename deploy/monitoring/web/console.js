@@ -8,6 +8,8 @@ const text = (input) => String(input).replaceAll("_", " ");
 let snapshot;
 let incidentList = [];
 let timer;
+let maintenanceTimer;
+let maintenanceFresh = false;
 let historyReload;
 let historyData;
 let lastView;
@@ -180,10 +182,42 @@ function displayAttention(targets) {
   el("nav-incidents").textContent = value(open.length);
 }
 
+function displayMaintenance() {
+  const cell = snapshot?.cells[el("cell").value];
+  const maintenance = maintenanceFresh ? cell?.sample?.maintenance : null;
+  const badge = el("admission-status");
+  const paused = maintenance?.paused;
+  const label = paused === true ? "Admissions paused" : paused === false ? "Admissions open" : "Admissions unknown";
+  badge.hidden = !cell;
+  badge.dataset.state = paused === true ? "paused" : paused === false ? "live" : "waiting";
+  if (badge.textContent !== label) badge.textContent = label;
+  const drain = paused === true ? maintenance.drain : null;
+  el("maintenance-drain").hidden = !drain;
+  if (!drain) return;
+  const count = (number) => number === 5001 ? "≥" + value(number) : value(number);
+  tiles("drain-metrics", [
+    ["Unresolved requests", count(drain.unresolved_requests)],
+    ["Active workflows", count(drain.active_workflows)],
+    ["Pending webhooks", count(drain.pending_webhooks)],
+  ]);
+}
+
+function trackMaintenanceFreshness(seconds) {
+  clearTimeout(maintenanceTimer);
+  maintenanceFresh = Number.isFinite(seconds) && seconds > 0;
+  if (maintenanceFresh) {
+    maintenanceTimer = setTimeout(() => {
+      maintenanceFresh = false;
+      displayMaintenance();
+    }, seconds * 1000);
+  }
+}
+
 function display() {
   const cell = el("cell").value;
   const state = snapshot.cells[cell];
   if (!state) return;
+  displayMaintenance();
   const targets = Object.values(snapshot.targets).filter(item => item.cell === cell)
     .sort((a, b) => a.id.localeCompare(b.id));
   const scopeNames = Object.keys(state.scopes).sort();
@@ -324,6 +358,7 @@ async function refresh() {
   try {
     const latest = await api("/api/overview");
     currentInterval = latest.interval_seconds;
+    trackMaintenanceFreshness(latest.stale ? 0 : latest.fresh_for_seconds);
     const observedAt = latest.snapshot?.observed_at;
     collectorStatus(observedAt == null ? "waiting" : latest.stale ? "stale" : "live",
       observedAt == null ? "Waiting for first sample" : latest.stale ? "Stale sample" : "Collector live",
@@ -335,8 +370,12 @@ async function refresh() {
       el("cell").disabled = false;
       setOptions(el("cell"), ids.map(name => [name, name]), ids[0]);
       display();
+    } else {
+      displayMaintenance();
     }
   } catch (failure) {
+    trackMaintenanceFreshness(0);
+    displayMaintenance();
     collectorStatus("error", "Refresh failed", snapshot?.observed_at);
     el("freshness").title = failure.message;
   } finally {

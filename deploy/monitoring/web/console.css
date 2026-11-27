@@ -107,7 +107,7 @@ select { max-width: 100%; }
 .collector-status { display: inline-flex; align-items: center; gap: .42rem; border-radius: 99px; padding: .28rem .6rem; color: var(--muted); background: var(--subtle); font-size: .79rem; font-weight: 650; }
 .collector-status::before, .status::before, .health-dot { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .collector-status[data-state="live"] { color: var(--healthy); background: var(--healthy-wash); }
-.collector-status[data-state="stale"] { color: var(--warning); background: var(--warning-wash); }
+.collector-status[data-state="stale"], .collector-status[data-state="paused"] { color: var(--warning); background: var(--warning-wash); }
 .collector-status[data-state="error"] { color: var(--danger); background: var(--danger-wash); }
 .notice { margin: -.45rem 0 1rem; padding: .6rem .86rem; color: var(--warning); background: var(--warning-wash); border-radius: 8px; }
 .view { display: grid; gap: 1rem; }
@@ -117,6 +117,8 @@ select { max-width: 100%; }
 }
 
 .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .65rem; }
+.maintenance-drain { display: grid; gap: .55rem; margin-bottom: 1rem; }
+#drain-metrics { grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr)); }
 #workflow-outcomes { grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr)); }
 .tile, .panel { min-width: 0; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); }
 .tile { padding: .88rem 1rem; display: grid; align-content: start; row-gap: .15rem; }

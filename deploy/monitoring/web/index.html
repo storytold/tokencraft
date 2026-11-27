@@ -46,11 +46,19 @@
             <h1 id="page-title" tabindex="-1">Compute overview</h1>
           </div>
           <div class="sample">
+            <span id="admission-status" class="collector-status" role="status" hidden></span>
             <span id="freshness" class="collector-status" role="status" data-state="waiting">Waiting for collector</span>
             <time id="sample-time" hidden></time>
           </div>
         </div>
         <p id="notice" class="notice" role="status" hidden></p>
+        <section id="maintenance-drain" class="maintenance-drain" aria-labelledby="drain-title" hidden>
+          <div>
+            <h2 id="drain-title">Cell drain</h2>
+            <p class="caption">Whole-cell counts across all providers and projects</p>
+          </div>
+          <div id="drain-metrics" class="summary"></div>
+        </section>
 
         <section id="compute" class="view" aria-label="Compute overview">
           <div class="summary" id="summary" aria-label="Cell summary">

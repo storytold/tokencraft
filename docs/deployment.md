@@ -110,6 +110,8 @@ The pause command waits for the admissions already inside their transactions. Af
 
 Matching receipt retries, scoped reads, quotes, provider polling, signed webhook delivery, and generation steps of admitted workflows remain available. Stop API and worker writers at the snapshot boundary for a coordinated backup. Resume admissions after verifying the release with a saved receipt.
 
+The [Operations console](../deploy/monitoring/README.md#read-the-operational-views) shows the observed pause state and whole-cell request, workflow, and webhook backlog counts.
+
 ### Rehearse the cutover before release
 
 The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.

@@ -1307,7 +1307,7 @@ def compute_profile(directory):
 
 
 def verify_operations(directory, env, psql, pg_env, api_port, worker_port, account, project, capacity_token,
-                      session, profile, servers):
+                      session, profile, servers, stop_worker, operator, test_path, trial):
     probe = {"Authorization": "Bearer " + capacity_token}
     instances = set()
     for port, role in ((api_port, "api"), (worker_port, "worker")):
@@ -1323,7 +1323,7 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
 
     project_path = f"/v1/projects/{project}/service-principals?account_id={account}"
     principal, _ = call(api_port, project_path, 201, method="POST", headers=session, body={
-        "name": "Operations compute smoke", "scopes": ["requests:submit", "requests:read"],
+        "name": "Operations compute smoke", "scopes": ["requests:submit", "requests:read", "requests:cancel"],
     })
     bearer = {"Authorization": "Bearer " + principal["token"]}
     chat_ids = {}
@@ -1363,6 +1363,8 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
     rights = command(*psql, "-c", """
         SELECT NOT has_table_privilege('tokencraft_monitor_smoke', 'public.gateway_requests', 'SELECT')
            AND NOT has_any_column_privilege('tokencraft_monitor_smoke', 'public.gateway_provider_runs', 'SELECT')
+           AND NOT has_table_privilege('tokencraft_monitor_smoke', 'public.gateway_admission_control', 'SELECT,UPDATE')
+           AND NOT has_function_privilege('tokencraft_monitor_smoke', 'tokencraft_monitor.maintenance()', 'EXECUTE')
            AND has_function_privilege('tokencraft_monitor_smoke',
                'tokencraft_monitor.sample(jsonb,jsonb,jsonb,integer,text,text)', 'EXECUTE')
     """, cwd=directory, env=pg_env)
@@ -1399,6 +1401,8 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
         assert snapshot["targets"]["fixture-primary"]["signals"]["missing_models"] == 1
         assert all(snapshot["targets"]["fixture-" + name]["status"] == "up" for name in ("standby", "partner"))
         cell = snapshot["cells"]["fixture"]
+        assert cell["sample"]["maintenance"] == {"paused": False, "drain": None}
+        assert b'tokencraft_monitor_admissions_paused{cell="fixture"} 0' in exported
         scopes = cell["scopes"]
         measured = scopes["workflow-project"]["sample"]
         assert measured["compute"]["fixture-primary"]["rate_limited"] == 1
@@ -1413,7 +1417,69 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
         points, _ = call(port, "/api/history?metric=workflow_p95&id=fixture&scope=workflow-project",
                          200, headers=auth)
         assert any(point["value"] is not None for point in points["points"])
+        stop_worker()
+        call(api_port, test_path, 202, method="POST", body=trial,
+             headers={**session, "Idempotency-Key": token_hex(16)})
+        subscription, _ = call(api_port, f"/v1/projects/{project}/webhooks?account_id={account}", 201,
+                               method="POST", headers=session,
+                               body={"name": "Cell drain fixture", "destination_id": "fixture"})
+        verify_operations_pause(port, api_port, auth, bearer, subscription["id"], operator)
     print("PASS private Operations console, scoped PostgreSQL history, model availability, and compute fallback across providers")
+
+
+def verify_operations_pause(port, api_port, monitor_auth, request_auth, subscription, operator):
+    quote, _ = call(api_port, "/v1/quotes/scoped", 200, method="POST", headers=request_auth, body={
+        "model": "a_private_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"},
+    })
+    assert quote["selected_offer_id"] == "a_private_image"
+    contract = {"quote_id": quote["id"], "input": quote["input"]}
+    receipt, _ = call(api_port, "/v1/requests", 202, method="POST", body=contract,
+                      headers={**request_auth, "Idempotency-Key": token_hex(16)})
+    assert call(api_port, receipt["status_url"], 200, headers=request_auth)[0]["status"] == "queued"
+    canceled, _ = call(api_port, "/v1/requests", 202, method="POST",
+                       body={**contract, "delivery": {"webhook_subscription_id": subscription}},
+                       headers={**request_auth, "Idempotency-Key": token_hex(16)})
+    result, _ = call(api_port, canceled["status_url"] + "/cancel", 200,
+                     method="POST", body={}, headers=request_auth)
+    assert result["status"] == "canceled"
+
+    def observe(paused):
+        deadline = monotonic() + 22
+        while monotonic() < deadline:
+            overview, _ = call(port, "/api/overview", 200, headers=monitor_auth)
+            observation = overview["snapshot"]
+            cell = observation["cells"]["fixture"]
+            maintenance = cell.get("sample", {}).get("maintenance")
+            if maintenance is not None and maintenance["paused"] is paused:
+                assert not overview["stale"] and overview["fresh_for_seconds"] > 0
+                assert observation["targets"]["fixture-api"]["status"] == "up"
+                return cell
+            sleep(0.25)
+        raise AssertionError(f"Collector did not observe paused={paused}")
+
+    assert operator("pause") == "admissions: paused"
+    try:
+        cell = observe(True)
+        sample = cell["sample"]
+        drain = sample["maintenance"]["drain"]
+        assert drain["unresolved_requests"] >= 1
+        assert drain["active_workflows"] >= 1
+        assert drain["pending_webhooks"] >= 1
+        assert all(row["provider"] != "fixture_private" for row in sample["request_queues"])
+        assert cell["scopes"]["workflow-project"]["sample"]["maintenance"] is None
+        exported, _ = call(port, "/metrics", 200, headers=monitor_auth)
+        assert b'tokencraft_monitor_admissions_paused{cell="fixture"} 1' in exported
+        for kind, count in drain.items():
+            assert f'tokencraft_monitor_drain_backlog{{cell="fixture",kind="{kind}"}} {count}'.encode() in exported
+    finally:
+        assert operator("resume") == "admissions: open"
+    cell = observe(False)
+    assert cell["sample"]["maintenance"]["drain"] is None
+    exported, _ = call(port, "/metrics", 200, headers=monitor_auth)
+    assert b'tokencraft_monitor_admissions_paused{cell="fixture"} 0' in exported
+    assert b'tokencraft_monitor_drain_backlog{' not in exported
+    print("PASS Operations observed pause and resume, counted work outside the provider filter, "
+          "and kept the API healthy", flush=True)
 
 
 def rehearse(gateway, admin, directory, *, verification=None):
@@ -1605,7 +1671,7 @@ def rehearse(gateway, admin, directory, *, verification=None):
             verify_budget_reservations(api_port, peer_port, workers.close, start_worker, query_db, hold_budget, receiver,
                                        check_generation, hold_worker_slots)
             verify_operations(directory, env, psql, pg_env, api_port, worker_port, account, project, capacity_token,
-                              session, profile, compute)
+                              session, profile, compute, workers.close, operator, test_path, trial)
 
 
 def main():

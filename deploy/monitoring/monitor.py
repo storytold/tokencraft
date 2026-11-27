@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from history import HISTORY_FIELDS, History
 import plugin_traffic
-from sources import BINDING_KINDS, ID, load_config, observe_target, sample_database, token_from
+from sources import BINDING_KINDS, DRAIN_COUNTS, ID, load_config, observe_target, sample_database, token_from
 
 ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -167,6 +167,8 @@ def metrics(snapshot, incidents, stale):
     yield f"tokencraft_monitor_up {0 if stale else 1}"
     if stale:
         return
+    yield "# TYPE tokencraft_monitor_admissions_paused gauge"
+    yield "# TYPE tokencraft_monitor_drain_backlog gauge"
     yield f"tokencraft_monitor_sample_timestamp_seconds {snapshot['observed_at']}"
     for name, target in snapshot["targets"].items():
         labels = f'cell="{target["cell"]}",target="{name}",kind="{target["kind"]}"'
@@ -183,6 +185,12 @@ def metrics(snapshot, incidents, stale):
             yield f'tokencraft_monitor_database_sample_up{{cell="{name}"}} {int(sample is not None)}'
         if not sample:
             continue
+        maintenance = sample.get("maintenance")
+        if maintenance is not None:
+            yield f'tokencraft_monitor_admissions_paused{{cell="{name}"}} {int(maintenance["paused"])}'
+            if maintenance["paused"]:
+                for key in DRAIN_COUNTS:
+                    yield f'tokencraft_monitor_drain_backlog{{cell="{name}",kind="{key}"}} {maintenance["drain"][key]}'
         for key in ("database_connections_available", "oldest_eligible_seconds", "eligible"):
             val = sample[key]
             if val is not None:
@@ -282,15 +290,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404)
         snapshot, incidents = self.server.history.overview()
         now = int(time.time())
-        stale = snapshot is None or not 0 <= now - snapshot["observed_at"] <= self.server.interval * 3
+        max_age = self.server.interval * 3
+        age = now - snapshot["observed_at"] if snapshot is not None else None
+        stale = age is None or not 0 <= age <= max_age
         if url.path == "/metrics":
             active = [] if stale else self.server.history.active_incidents()
             return self.reply(200, ("\n".join(metrics(snapshot, active, stale)) + "\n").encode(),
                               "text/plain; version=0.0.4; charset=utf-8")
         if url.path == "/healthz":
             return self.json_reply(503 if stale else 200, {"collector_fresh": not stale})
-        self.json_reply(200, {"snapshot": snapshot, "incidents": incidents,
-                              "stale": stale, "interval_seconds": self.server.interval})
+        self.json_reply(200, {"snapshot": snapshot, "incidents": incidents, "stale": stale,
+                              "fresh_for_seconds": 0 if stale else max_age - age,
+                              "interval_seconds": self.server.interval})
 
     def history(self, query):
         parameters = parse_qs(query, strict_parsing=True, max_num_fields=5)
