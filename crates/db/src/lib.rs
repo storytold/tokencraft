@@ -3,7 +3,7 @@
 //! and are applied through administrative commands. The gateway only reads the migration ledger.
 
 use anyhow::Result;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
 
 pub use sqlx::PgPool;
 
@@ -48,6 +48,15 @@ pub async fn ping(pool: &PgPool) -> bool {
         .fetch_one(pool)
         .await
         .is_ok()
+}
+
+/// Check whether this session can serve work on the PostgreSQL writer.
+pub async fn is_writable_primary(connection: &mut PgConnection) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT NOT pg_is_in_recovery() AND current_setting('transaction_read_only') = 'off'",
+    )
+    .fetch_one(connection)
+    .await
 }
 
 /// Identify the cluster before an operator tool applies migrations to a local listener.

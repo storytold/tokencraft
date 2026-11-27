@@ -48,12 +48,18 @@ pub async fn run(mut cfg: config::Config) -> anyhow::Result<()> {
   }
   let pool = db::connect(&cfg.database_url).await?;
   tracing::info!("connected to database");
-  if is_hosted || role != gateway_demo::ProcessRole::Combined {
+  if demo.is_some() {
     let mut connection = pool.acquire().await?;
     anyhow::ensure!(
-      db::migrations_current(&mut connection).await?,
-      "apply the matching TokenCraft migrations before starting this gateway profile"
+      db::is_writable_primary(&mut connection).await?,
+      "the scoped gateway requires a writable PostgreSQL primary"
     );
+    if is_hosted || role != gateway_demo::ProcessRole::Combined {
+      anyhow::ensure!(
+        db::migrations_current(&mut connection).await?,
+        "apply the matching TokenCraft migrations before starting this gateway profile"
+      );
+    }
   }
 
   let addr = SocketAddr::from((listen_ip, cfg.api_gateway_port));

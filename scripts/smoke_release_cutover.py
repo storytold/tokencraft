@@ -21,7 +21,7 @@ from time import monotonic, sleep
 from urllib.parse import quote
 
 import smoke_workflow_contract as smoke
-from smoke_cell_faults import serve
+from smoke_cell_faults import eventually, serve
 
 BASELINE_SCHEMA = 70
 EXAMPLE_CONNECTOR_PORT = 4019
@@ -389,6 +389,12 @@ def rehearse(args, folder, stack):
         assert psql("SELECT pg_is_in_recovery() AND paused FROM public.gateway_admission_control WHERE singleton",
                     port=standby_port) == "t"
         standby_runtime = cli("tokencraft_runtime", runtime_password, port=standby_port)
+        for role in ("api", "worker"):
+            settings = gateway_config(role, smoke.loopback_port(), "postgres", False)
+            settings["DATABASE_URL"] = standby_runtime["DATABASE_URL"]
+            denied = subprocess.run([args.candidate_gateway], cwd=folder, env=settings,
+                                    capture_output=True, text=True, timeout=15)
+            assert denied.returncode == 1 and "requires a writable PostgreSQL primary" in denied.stderr
         assertion = subprocess.run([args.candidate_admin, "admissions", "status", "--expect", "paused"],
                                    cwd=folder, env=standby_runtime, capture_output=True, text=True, timeout=15)
         assert assertion.returncode == 1 and not assertion.stdout
@@ -401,6 +407,30 @@ def rehearse(args, folder, stack):
     assert writer_sample["database_primary"] is writer_monitor["database_primary"] is True
     assert writer_sample["admissions_paused"] is True
     print("PASS both capacity samplers identify the PostgreSQL writer and withhold admission state on a standby",
+          flush=True)
+    print("PASS the API and worker refused to start against the physical standby", flush=True)
+
+    def reconnect_runtime():
+        psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'tokencraft_runtime'")
+
+    with ExitStack() as probes:
+        api = gateway(args.candidate_gateway, "api", probes, delivery=False)
+        psql("ALTER ROLE tokencraft_runtime SET default_transaction_read_only = on")
+        try:
+            reconnect_runtime()
+            eventually(lambda: smoke.call(api, "/ready", (200, 503))[0]["ready"] is False,
+                       "the gateway to withdraw readiness on read-only connections")
+            smoke.call(api, "/ready", 503)
+            _, headers = smoke.call(api, completed["status_url"], 503, headers=auth)
+            assert headers.get_all("Retry-After") == ["5"]
+            smoke.call(api, "/openapi.json", 200)
+        finally:
+            psql("ALTER ROLE tokencraft_runtime RESET default_transaction_read_only")
+            reconnect_runtime()
+        eventually(lambda: smoke.call(api, "/ready", (200, 503))[0]["ready"] is True,
+                   "the gateway to observe a writable connection")
+        assert read_image(api, completed, auth) == contents
+    print("PASS the running API withdrew readiness on read-only connections and recovered the original result",
           flush=True)
 
     versions = psql(

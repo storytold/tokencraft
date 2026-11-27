@@ -136,13 +136,13 @@ impl Readiness {
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 timer.tick().await;
-                let conn = tokio::time::timeout(DB_TIMEOUT, async {
+                let checked = tokio::time::timeout(DB_TIMEOUT, async {
                     let mut conn = pool.acquire().await?;
-                    sqlx::query("SELECT 1").execute(&mut *conn).await?;
-                    Ok::<_, sqlx::Error>(conn)
+                    let writable = db::is_writable_primary(&mut conn).await?;
+                    Ok::<_, sqlx::Error>((conn, writable))
                 })
                 .await;
-                let Ok(Ok(mut conn)) = conn else {
+                let Ok(Ok((mut conn, true))) = checked else {
                     self.database.record(false);
                     self.schema.record(false);
                     continue;
