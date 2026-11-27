@@ -208,7 +208,12 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
         if webhooks:
             binding["completion_webhooks"] = True
         bindings.write_text(json.dumps({"version": 1, "bindings": [binding]}))
-        settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(ROOT / "examples/connector/catalog.json"),
+        price = 1_250_000
+        catalog = directory / "priced-recovery.json"
+        config = json.loads((ROOT / "examples/connector/catalog.json").read_bytes())
+        config["offers"][0]["pricing"]["usd_nanos_per_image"] = price
+        catalog.write_text(json.dumps(config))
+        settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(catalog),
                         TOKENCRAFT_CONNECTORS=str(bindings), TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE=token)
         settings.pop("TOKENCRAFT_LOCAL_CHAT_BINDINGS", None)
         apps.enter_context(service("recovery-api", [gateway], directory, settings, lambda: ready(port)))
@@ -243,6 +248,21 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
                               "count": 1, "aspect_ratio": "1:1"})[0]
 
         first_client, second_client = application("first"), application("second")
+        project_budget = "/v1/routing-policy?" + urlencode({"account_id": account, "project_id": project})
+        client_budget = f"/v1/projects/{project}/client-budgets/second?account_id={account}"
+        call(port, project_budget, 200, method="PUT", headers=session, body={
+            "expected_revision": 0, "policy": {"monthly_estimated_budget_usd_nanos": price * 2},
+        })
+        call(port, client_budget, 200, method="PUT", headers=session, body={
+            "expected_revision": 0, "limit_usd_nanos": price,
+        })
+
+        def prove_reservations():
+            project_view, _ = call(peer, project_budget, 200, headers=session)
+            client_view, _ = call(peer, client_budget, 200, headers=session)
+            assert project_view["monthly_budget"]["reserved_usd_nanos"] == str(price * 2)
+            assert client_view["reserved_usd_nanos"] == str(price)
+
         with worker("first-worker"):
             first = submit(port, first_client, "first")
             wait_for_status(peer, first, first_client, "succeeded", 12)
@@ -257,6 +277,12 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
             usage, _ = call(peer, "/v1/usage", 200, headers=second_client)
             assert usage["totals"]["awaiting_reconciliation"] == 1
             assert usage["totals"].get("provider_charges", []) == []
+            prove_reservations()
+            blocked, _ = call(peer, "/v1/image", 409, method="POST",
+                              headers={**second_client, "Idempotency-Key": "fixture-extra-spend"},
+                              body={"model": "example_image", "task": "text_to_image",
+                                    "prompt": "Budget check", "count": 1, "aspect_ratio": "1:1"})
+            assert blocked["error"]["code"] == "monthly_budget_exceeded"
             assert connector.fetches == {"first": 1}
 
             if webhooks:
@@ -285,6 +311,8 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
             }]
         assert connector.submissions == {first["id"]: 1, second["id"]: 1}
         assert connector.fetches == {"first": 1, "second": 1}
+        prove_reservations()
+        print("PASS an unconfirmed paid request held its project and client estimates through recovery")
         expected = {}
         for label, receipt, auth in (("first", first, first_client), ("second", second, second_client)):
             parent = provider_traceparent(port, receipt["id"], auth)
