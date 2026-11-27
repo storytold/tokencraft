@@ -356,6 +356,13 @@ def verify(gateway, directory, settings, session, account, project):
             call(reader_port, new_data, 404, headers=clients[1])
         call(port, new_data, 500, headers=clients[0])
         print("PASS staged archive rotation preserved retired history and scoped reads across both key assignments")
+        for setting in (write_key, read_keys):
+            invalid = {**settings, setting: b"fixture-secret-marker\xff", "API_GATEWAY_PORT": str(loopback_port())}
+            rejected = subprocess.run([gateway], cwd=directory, env=invalid, stdin=subprocess.DEVNULL,
+                                      capture_output=True, timeout=10)
+            assert rejected.returncode != 0 and setting.encode() in rejected.stderr
+            assert b"fixture-secret-marker" not in rejected.stdout + rejected.stderr
+        print("PASS malformed archive keys failed startup without exposing the supplied bytes")
         verify_archive_download_capacity(port, old_data, project_reader, clients[0], project, archive_data, first_page)
         verify_export_backpressure(port, directory, psql, pg_env, project, clients[0])
 

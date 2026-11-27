@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, anyhow, ensure};
 
 use super::super::sealed::SealedBytes;
 
@@ -15,7 +15,7 @@ pub(super) struct ArchiveKeys {
 impl ArchiveKeys {
     pub(super) fn load() -> Result<Self> {
         let write = std::env::var(WRITE_KEY)
-            .context("set TOKENCRAFT_DEMO_ARCHIVE_KEY to a persistent 32-byte hex key")?;
+            .map_err(|_| anyhow!("set {WRITE_KEY} to a persistent 32-byte hex key"))?;
         let read = match std::env::var(READ_KEYS) {
             Ok(keys) => Some(keys),
             Err(std::env::VarError::NotPresent) => None,
@@ -60,7 +60,7 @@ impl ArchiveKeys {
 fn decode(setting: &str, value: &str) -> Result<[u8; 32]> {
     let mut root = [0; 32];
     hex::decode_to_slice(value, &mut root)
-        .map_err(|_| anyhow::anyhow!("{setting} requires 32-byte hex keys"))?;
+        .map_err(|_| anyhow!("{setting} requires 32-byte hex keys"))?;
     Ok(root)
 }
 
