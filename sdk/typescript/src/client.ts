@@ -1,4 +1,4 @@
-import { readArtifact, readVerifiedContent, sha256, validContentType, validateArtifactRef } from "./content.js";
+import { ArtifactTransferError, readArtifact, readVerifiedContent, sha256, validContentType, validateArtifactRef } from "./content.js";
 import type { ContentMetadata, DownloadOptions, RetainedContent, VerifiedArtifact } from "./content.js";
 import {
   deadline, gatewayError, hasIdPrefix, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError,
@@ -350,11 +350,13 @@ export class TokenCraft {
     try {
       for (let attempt = 1; ; attempt++) {
         request.signal.throwIfAborted();
+        let receivedHeaders = false;
         try {
           const response = await this.#fetch(new URL(path, this.#base), {
             method, headers: new Headers(headers), body: encoded,
             signal: request.signal, credentials: "omit", redirect: "error", cache,
           });
+          receivedHeaders = true;
           const observedId = ["tokencraft-request-id", "x-request-id"]
             .map((name) => response.headers.get(name)).find(isRequestId);
           if (observedId) id = observedId;
@@ -378,14 +380,18 @@ export class TokenCraft {
           request.signal.throwIfAborted();
           return { value, headers: response.headers };
         } catch (error) {
-          if (retry !== "submission" || !(error instanceof TypeError) || attempt >= maxAttempts) throw error;
+          const submissionInterrupted = retry === "submission" && error instanceof TypeError;
+          const downloadInterrupted = retry === "download"
+            && (receivedHeaders ? error instanceof ArtifactTransferError : error instanceof TypeError);
+          if (attempt >= maxAttempts || !(submissionInterrupted || downloadInterrupted)) throw error;
           await pause(Math.min(100 * 2 ** (attempt - 1), 1000), request.signal);
         }
       }
     } catch (error) {
       request.signal.throwIfAborted();
       if (error instanceof TokenCraftError) throw error;
-      throw new TokenCraftError(0, "transport_error", "Could not reach the TokenCraft gateway.", id, { cause: error });
+      const cause = error instanceof ArtifactTransferError ? error.cause : error;
+      throw new TokenCraftError(0, "transport_error", "Could not reach the TokenCraft gateway.", id, { cause });
     } finally {
       request.close();
     }

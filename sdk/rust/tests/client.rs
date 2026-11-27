@@ -941,6 +941,7 @@ async fn artifact_download_checks_slot_size_digest_and_scoped_gateway_errors() {
                      body("Content-Length: 2\r\n", "ab")] {
         let (origin, capture) = reply_wire(response).await;
         let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        let client = client.with_download_max_attempts(2).unwrap();
         let error = client.download_artifact(REQUEST, &reference, ArtifactLocation::Archived).await.err().unwrap();
         assert!(matches!(error, Error::Gateway { ref code, .. } if code == "invalid_artifact"));
         assert_eq!(error.request_id(), Some(REQUEST));
@@ -1006,6 +1007,103 @@ async fn downloads_retry_backpressure_on_the_same_scoped_route_and_verify_the_by
     let endpoint = client.workflow(&project, &workflow).unwrap();
     assert_eq!(endpoint.download_output(&run, "captions").await.unwrap().bytes, b"abc");
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn downloads_recover_interrupted_transfers_on_the_same_scoped_route() {
+    use tokencraft_sdk::{ArtifactLocation, ArtifactRef};
+
+    const SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let project = REQUEST.replace("req_", "proj_");
+    let workflow = REQUEST.replace("req_", "wf_");
+    let run = REQUEST.replace("req_", "wfr_");
+    let warm = format!("/v1/requests/{REQUEST}/artifacts/1");
+    let archived = format!("/v1/requests/{REQUEST}/content/artifacts/1");
+    let output = format!("/v1/projects/{project}/workflow-endpoints/{workflow}/runs/{run}/outputs/captions");
+    let server = tokio::spawn(async move {
+        for (path, mime, starts_without_headers) in [
+            (warm, "image/png", false),
+            (archived, "image/png", true),
+            (output, "text/vtt", false),
+        ] {
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: 3\r\nX-TokenCraft-Content-Sha256: {SHA}\r\nConnection: close\r\n\r\n"
+            );
+            let partial = format!("{headers}a");
+            let complete = format!("{headers}abc");
+            let missing_headers = starts_without_headers.then_some("");
+            for response in missing_headers.into_iter().chain([partial.as_str(), complete.as_str()]) {
+                let (head, body) = capture_and_reply(&listener, response).await;
+                assert!(head.starts_with(&format!("get {path} ")));
+                assert!(head.contains("authorization: bearer fixture\r\n"));
+                assert!(head.contains("accept: application/octet-stream\r\n"));
+                assert!(head.contains("cache-control: no-store\r\n"));
+                assert!(body.is_empty());
+            }
+        }
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_secs(3))
+        .unwrap()
+        .with_download_max_attempts(3)
+        .unwrap();
+    let reference = ArtifactRef { slot: 1, byte_length: 3, sha256: SHA.into() };
+    for location in [ArtifactLocation::Warm, ArtifactLocation::Archived] {
+        let artifact = client.download_artifact(REQUEST, &reference, location).await.unwrap();
+        assert_eq!(artifact.content_type, "image/png");
+        assert_eq!(artifact.bytes, b"abc");
+    }
+    let endpoint = client.workflow(&project, &workflow).unwrap();
+    let output = endpoint.download_output(&run, "captions").await.unwrap();
+    assert_eq!(output.content_type, "text/vtt");
+    assert_eq!(output.bytes, b"abc");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_downloads_share_the_deadline_and_keep_the_observed_id() {
+    use tokencraft_sdk::{ArtifactLocation, ArtifactRef};
+
+    let observed = "req_01m881w0c8np13xfvetqsbk8m1";
+    let reference = ArtifactRef { slot: 0, byte_length: 3, sha256: "a".repeat(64) };
+    for (retry, limit, expected_attempts) in [
+        (false, Duration::from_secs(2), 1),
+        (true, Duration::from_secs(2), 2),
+        (true, Duration::from_millis(70), 1),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 3\r\n\
+             X-TokenCraft-Content-Sha256: {}\r\nTokenCraft-Request-Id: {observed}\r\n\
+             Connection: close\r\n\r\na",
+            reference.sha256,
+        );
+        let server = tokio::spawn(async move {
+            capture_and_reply(&listener, &response).await;
+            if expected_attempts == 2 {
+                timeout(Duration::from_secs(1), capture_and_reply(&listener, ""))
+                    .await
+                    .expect("the client should make one retry");
+            }
+            assert!(timeout(Duration::from_millis(150), listener.accept()).await.is_err());
+        });
+        let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), limit).unwrap();
+        let client = if retry { client.with_download_max_attempts(2).unwrap() } else { client };
+        let error = client
+            .download_artifact(REQUEST, &reference, ArtifactLocation::Warm)
+            .await
+            .err()
+            .expect("interrupted download should fail");
+        if retry && expected_attempts == 1 {
+            assert!(matches!(error, Error::Timeout { .. }));
+        } else {
+            assert!(matches!(error, Error::Transport { .. }));
+        }
+        assert_eq!(error.request_id(), Some(observed));
+        server.await.unwrap();
+    }
 }
 
 #[tokio::test]

@@ -181,7 +181,10 @@ export interface ClientOptions {
   timeoutMs?: number;
   /** Total attempts for native submissions and workflow invocations, including the first. Defaults to 1. */
   submitMaxAttempts?: number;
-  /** Total attempts for artifact and workflow output downloads, including the first. Defaults to 1. */
+  /**
+   * Total attempts for artifact and workflow output downloads, including the first. Defaults to 1.
+   * Retries cover interrupted transfers and HTTP 429 or 503 with a valid Retry-After.
+   */
   downloadMaxAttempts?: number;
   fetch?: typeof fetch;
 }

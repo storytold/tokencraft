@@ -866,6 +866,56 @@ test("opted-in downloads retry scoped backpressure and verify the returned bytes
   assert.deepEqual(seen, routes.flatMap((route) => [route, route]));
 });
 
+test("downloads recover interrupted transfers on the same scoped route", { timeout: 5_000 }, async (t) => {
+  const bytes = new TextEncoder().encode("abc");
+  const reference = { slot: 1, byte_length: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  const project = requestId.replace("req_", "proj_");
+  const workflow = requestId.replace("req_", "wf_");
+  const run = requestId.replace("req_", "wfr_");
+  const warm = `/edge/v1/requests/${requestId}/artifacts/1`;
+  const archived = `/edge/v1/requests/${requestId}/content/artifacts/1`;
+  const output = `/edge/v1/projects/${project}/workflow-endpoints/${workflow}/runs/${run}/outputs/captions`;
+  const counts = new Map();
+  const seen = [];
+  const server = createServer((request, response) => {
+    seen.push({ path: request.url, method: request.method, authorization: request.headers.authorization,
+      accept: request.headers.accept });
+    request.resume();
+    const attempt = (counts.get(request.url) ?? 0) + 1;
+    counts.set(request.url, attempt);
+    if (request.url === archived && attempt === 1) {
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": request.url === output ? "text/vtt" : "image/png",
+      "Content-Length": "3",
+      "X-TokenCraft-Content-Sha256": reference.sha256,
+      Connection: "close",
+    });
+    if (attempt === (request.url === archived ? 2 : 1)) {
+      response.write("a", () => response.destroy());
+      return;
+    }
+    response.end(bytes);
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  await once(server, "listening");
+  const client = new TokenCraft({
+    ...options, baseUrl: `http://127.0.0.1:${server.address().port}/edge/`, downloadMaxAttempts: 3,
+  });
+  assert.deepEqual(await client.downloadArtifact(requestId, reference), { contentType: "image/png", bytes });
+  assert.deepEqual(await client.downloadArtifact(requestId, reference, { location: "archived" }), { contentType: "image/png", bytes });
+  assert.deepEqual(await client.workflow(project, workflow).downloadOutput(run, "captions"), { contentType: "text/vtt", bytes });
+  assert.deepEqual(seen, [warm, warm, archived, archived, archived, output, output].map((path) => ({
+    path, method: "GET", authorization: "Bearer fixture_key", accept: "application/octet-stream",
+  })));
+});
+
 test("downloads honor attempt limits, valid retry hints, and cancellation", async () => {
   const reference = { slot: 0, byte_length: 3, sha256: "a".repeat(64) };
   for (const [downloadMaxAttempts, status, hint, expectedCalls] of [
@@ -882,13 +932,33 @@ test("downloads honor attempt limits, valid retry hints, and cancellation", asyn
   }
   assert.throws(() => new TokenCraft({ ...options, downloadMaxAttempts: 9 }), RangeError);
 
-  let transportCalls = 0;
-  const transport = new TokenCraft({ ...options, downloadMaxAttempts: 2, fetch: async () => {
-    transportCalls++;
+  for (const downloadMaxAttempts of [undefined, 2]) {
+    let transportCalls = 0;
+    const transport = new TokenCraft({ ...options, downloadMaxAttempts, fetch: async () => {
+      transportCalls++;
+      throw new TypeError("fixture connection closed");
+    } });
+    await assert.rejects(transport.downloadArtifact(requestId, reference), { code: "transport_error", requestId });
+    assert.equal(transportCalls, downloadMaxAttempts ?? 1);
+  }
+
+  let interruptedCalls = 0;
+  const interrupted = new TokenCraft({ ...options, downloadMaxAttempts: 2, timeoutMs: 50, fetch: async () => {
+    interruptedCalls++;
     throw new TypeError("fixture connection closed");
   } });
-  await assert.rejects(transport.downloadArtifact(requestId, reference), { code: "transport_error", requestId });
-  assert.equal(transportCalls, 1);
+  await assert.rejects(interrupted.downloadArtifact(requestId, reference), { name: "TokenCraftTimeoutError", requestId });
+  assert.equal(interruptedCalls, 1);
+
+  let corruptCalls = 0;
+  const corrupt = new TokenCraft({ ...options, downloadMaxAttempts: 2, fetch: async () => {
+    corruptCalls++;
+    return new Response("abc", { headers: {
+      "Content-Type": "image/png", "Content-Length": "3", "X-TokenCraft-Content-Sha256": reference.sha256,
+    } });
+  } });
+  await assert.rejects(corrupt.downloadArtifact(requestId, reference), { code: "invalid_artifact", requestId });
+  assert.equal(corruptCalls, 1);
 
   const controller = new AbortController();
   const reason = new Error("stop waiting for output");

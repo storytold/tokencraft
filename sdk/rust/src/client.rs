@@ -237,8 +237,9 @@ impl TokenCraftClient {
 
     /// Allow up to 8 attempts for artifact and workflow output downloads, including the first.
     ///
-    /// Retries follow HTTP 429 or 503 with a valid Retry-After. All attempts and the final
-    /// verified transfer share the client's timeout. The default is one attempt.
+    /// Retries cover interrupted transfers and HTTP 429 or 503 with a valid Retry-After.
+    /// All attempts and the final verified transfer share the client's timeout.
+    /// The default is one attempt.
     pub fn with_download_max_attempts(mut self, attempts: u8) -> Result<Self, Error> {
         if !(1..=8).contains(&attempts) {
             return Err(Error::InvalidInput("supply 1 to 8 download attempts"));
@@ -394,7 +395,7 @@ impl TokenCraftClient {
                 let response = match self.http.execute(attempt).await {
                     Ok(response) => response,
                     Err(source) if may_retry && source.is_request() && !source.is_timeout() => {
-                        tokio::time::sleep(submission_backoff(attempt_number)).await;
+                        tokio::time::sleep(transport_backoff(attempt_number)).await;
                         continue;
                     }
                     Err(source) => return Err(Error::from_http(source, request_id.clone())),
@@ -412,7 +413,7 @@ impl TokenCraftClient {
                 let successful = response.status().is_success();
                 match Self::decode(response, request_id.as_deref()).await {
                     Err(Error::Transport { .. }) if successful && may_retry => {
-                        tokio::time::sleep(submission_backoff(attempt_number)).await;
+                        tokio::time::sleep(transport_backoff(attempt_number)).await;
                     }
                     result => return result,
                 }
@@ -659,35 +660,47 @@ impl TokenCraftClient {
         let request = request.headers(headers);
 
         let deadline = tokio::time::Instant::now() + self.timeout;
-        let timeout = || Error::Timeout {
-            request_id: Some(id.to_owned()),
-        };
+        let mut request_id = id.to_owned();
         let mut remaining = self.download_max_attempts;
-        tokio::time::timeout_at(deadline, async {
+        let result = tokio::time::timeout_at(deadline, async {
             loop {
                 if tokio::time::Instant::now() >= deadline {
-                    return Err(timeout());
+                    return Err(Error::Timeout { request_id: Some(request_id.clone()) });
                 }
+                remaining -= 1;
+                let may_retry = remaining > 0;
+                let attempt_number = self.download_max_attempts - remaining;
                 let attempt = request
                     .try_clone()
                     .ok_or(Error::InvalidInput("download request cannot be replayed"))?;
-                let response = attempt
-                    .send()
-                    .await
-                    .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
-                remaining -= 1;
-                if remaining > 0 && retryable(response.status()) {
+                let response = match attempt.send().await {
+                    Ok(response) => response,
+                    Err(source) if may_retry && source.is_request() && !source.is_timeout() => {
+                        tokio::time::sleep(transport_backoff(attempt_number)).await;
+                        continue;
+                    }
+                    Err(source) => return Err(Error::from_http(source, Some(request_id.clone()))),
+                };
+                if let Some(id) = response_request_id(&response) {
+                    request_id = id.to_owned();
+                }
+                if may_retry && retryable(response.status()) {
                     if let Some(delay) = retry_after(&response) {
                         drop(response);
                         tokio::time::sleep(delay.min(self.timeout)).await;
                         continue;
                     }
                 }
-                return verify_download(response, id, reference, max_bytes).await;
+                match verify_download(response, &request_id, reference, max_bytes).await {
+                    Err(Error::Transport { .. }) if may_retry => {
+                        tokio::time::sleep(transport_backoff(attempt_number)).await;
+                    }
+                    result => return result,
+                }
             }
         })
-        .await
-        .map_err(|_| timeout())?
+        .await;
+        result.map_err(|_| Error::Timeout { request_id: Some(request_id) })?
     }
 
     async fn decode<T: DeserializeOwned>(
@@ -735,7 +748,7 @@ fn retryable(status: StatusCode) -> bool {
     matches!(status, StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE)
 }
 
-fn submission_backoff(attempt_number: u8) -> Duration {
+fn transport_backoff(attempt_number: u8) -> Duration {
     Duration::from_millis((100 << (attempt_number - 1)).min(1_000))
 }
 

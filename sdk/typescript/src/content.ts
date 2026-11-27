@@ -40,6 +40,12 @@ export interface VerifiedArtifact {
   bytes: Uint8Array;
 }
 
+export class ArtifactTransferError extends Error {
+  constructor(cause: unknown) {
+    super("The artifact transfer was interrupted.", { cause });
+  }
+}
+
 const maxArtifactBytes = 8 * 1024 * 1024;
 const mediaTypes = new Set(["image/png", "video/mp4", "audio/wav", "model/gltf-binary"]);
 
@@ -94,7 +100,9 @@ export async function readVerifiedContent(
   let length = 0;
   try {
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await reader.read().catch((error: unknown) => {
+        throw new ArtifactTransferError(error);
+      });
       if (done) break;
       if (value.byteLength > limit - length) {
         void reader.cancel().catch(() => undefined);

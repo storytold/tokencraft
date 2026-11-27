@@ -31,7 +31,7 @@ Persist the quote and stable job key before submitting. After an interrupted sub
 
 Native submissions and published workflow invocations make one attempt by default. Add `.with_submit_max_attempts(3)?` when creating the client to enable retries after a connection error, an interrupted success response, or a `429` or `503` with a valid `Retry-After` in seconds or as an HTTP date. The limit includes the first attempt. Every retry uses the same serialized body and idempotency key within the original client timeout. During polling, `wait` follows the same HTTP hints within its own deadline and retains the last request validator.
 
-Artifact and workflow-output downloads also make one attempt by default. Add `.with_download_max_attempts(3)?` to retry a `429` or `503` with a valid `Retry-After`. The same timeout covers the wait, repeat requests, and final verified transfer.
+Artifact and workflow-output downloads also make one attempt by default. Add `.with_download_max_attempts(3)?` to retry an interrupted transfer or a `429` or `503` with a valid `Retry-After`. Each attempt starts the download again and verifies the final file. A response that fails integrity validation returns an error. The same timeout covers the full operation.
 
 The SDK gives an HTTP error body up to one second and 64 KiB within the operation deadline. If it cannot decode the error details, `Error::Gateway` reports `http_error` with the HTTP status and any available request ID.
 
