@@ -37,17 +37,17 @@ pub(crate) const EXPORT_PROJECT_HEADER: &str = "x-tokencraft-project";
 pub(crate) const EXPORT_CLIENT_HEADER: &str = "x-tokencraft-client-ref";
 pub(crate) const EXPORT_VERSION_HEADER: &str = "x-tokencraft-schema-version";
 pub(super) const SCHEMA_VERSION: u8 = 1;
-const MAX_IN_FLIGHT: usize = 4;
+pub(super) const MAX_EXPORTS_IN_FLIGHT: usize = 4;
 
 #[derive(Clone)]
 pub(super) struct Capacity(Arc<Semaphore>);
 
 impl Capacity {
-    pub(super) fn new() -> Self {
-        Self(Arc::new(Semaphore::new(MAX_IN_FLIGHT)))
+    pub(super) fn new(limit: usize) -> Self {
+        Self(Arc::new(Semaphore::new(limit)))
     }
 
-    fn acquire(&self) -> ApiResult<OwnedSemaphorePermit> {
+    pub(super) fn acquire(&self) -> ApiResult<OwnedSemaphorePermit> {
         Arc::clone(&self.0).try_acquire_owned().map_err(|_| ApiError::ExportCapacity)
     }
 }
@@ -61,6 +61,14 @@ impl AsRef<[u8]> for ExportBytes {
     fn as_ref(&self) -> &[u8] {
         &self.body
     }
+}
+
+pub(super) fn response_bytes(body: Vec<u8>, permit: OwnedSemaphorePermit) -> Bytes {
+    // Retain the slot as long as the transport owns any view of the buffer.
+    Bytes::from_owner(ExportBytes {
+        body,
+        _permit: permit,
+    })
 }
 
 #[derive(Deserialize)]
@@ -347,12 +355,7 @@ async fn encode_page(
     let (body, checksum) = tokio::task::spawn_blocking(move || {
         let body = encode_events(events)?;
         let checksum = digest(&body);
-        // Keep the slot through encoding and while the transport owns the buffer.
-        let body = Bytes::from_owner(ExportBytes {
-            body,
-            _permit: permit,
-        });
-        Ok::<_, ApiError>((body, checksum))
+        Ok::<_, ApiError>((response_bytes(body, permit), checksum))
     })
     .await
     .map_err(|_| ApiError::Internal("could not encode export page".into()))??;
@@ -414,11 +417,8 @@ mod tests {
 
     #[test]
     fn response_bytes_retain_the_export_slot_until_the_last_view_is_released() {
-        let capacity = Capacity(Arc::new(Semaphore::new(1)));
-        let bytes = Bytes::from_owner(ExportBytes {
-            body: b"event".to_vec(),
-            _permit: capacity.acquire().unwrap(),
-        });
+        let capacity = Capacity::new(1);
+        let bytes = response_bytes(b"event".to_vec(), capacity.acquire().unwrap());
         let slice = bytes.slice(..1);
         drop(bytes);
         assert!(matches!(capacity.acquire(), Err(ApiError::ExportCapacity)));

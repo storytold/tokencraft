@@ -18,6 +18,8 @@ Run `bash examples/connector/smoke.sh` against a disposable dev state. It genera
 
 For scoped reads and restore, sessions supply `account_id` and `project_id` in the query. A project key needs `exports:read`. A client-bound key can access archives sealed for that client. Automatic project-wide partitions require project-wide access to the archive itself. If a seal receipt has `has_more: true`, queue the next seal from the same export with `after` set to that receipt’s `last_event_id`. Restoring a partition makes its events available for export without dispatching historical requests.
 
+Each API replica reserves two slots for restored archive downloads and holds a slot while it is serving the response bytes. If both slots are busy, the download returns `503 export_capacity` with `Retry-After: 2`. Retry the same archive during its restore window. The live feed and snapshot pages use their own export slots.
+
 ## Configure a deployment
 
 For a filesystem deployment, prepare an operator-owned private directory with mode `0700` and set `TOKENCRAFT_DEMO_ARCHIVE_DIR` to its path. For either backend, set `TOKENCRAFT_DEMO_ARCHIVE_KEY` to the same persistent 32-byte hex key across the processes that read and write archives. Generate it separately from the session and request payload keys.

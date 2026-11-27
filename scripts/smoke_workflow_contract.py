@@ -52,7 +52,7 @@ def command(*args, cwd, env):
     return result.stdout.strip()
 
 
-def call(port, path, expected, *, method="GET", body=None, headers=None):
+def call(port, path, expected, *, method="GET", body=None, headers=None, max_bytes=2 * 1024 * 1024):
     statuses = (expected,) if isinstance(expected, int) else expected
     fields = {"Origin": f"http://localhost:{port}", **(headers or {})}
     if body is not None and not isinstance(body, bytes):
@@ -64,8 +64,8 @@ def call(port, path, expected, *, method="GET", body=None, headers=None):
         result = connection.getresponse()
         if result.status not in statuses:
             raise RuntimeError(f"{method} {path.split('?')[0]} returned {result.status}, expected {expected}")
-        data = result.read(2 * 1024 * 1024 + 1)
-        if len(data) > 2 * 1024 * 1024:
+        data = result.read(max_bytes + 1)
+        if len(data) > max_bytes:
             raise RuntimeError("The fixture response exceeded the expected size")
         if result.headers.get_content_type() == "application/json":
             data = json.loads(data)

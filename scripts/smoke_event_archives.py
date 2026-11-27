@@ -2,11 +2,13 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from hashlib import sha256
+from http.client import HTTPConnection
 import json
 from pathlib import Path
 from secrets import token_hex
+import socket
 import subprocess
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -16,6 +18,9 @@ from postgres_tools import postgres_bin
 from smoke_cell_faults import BucketHandler, Connector, HeldBucket, eventually, serve
 from smoke_connector_recovery import wait_for_status
 from smoke_workflow_contract import HOST, ROOT, call, command, loopback_port, ready, rehearse, service
+
+
+MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
 
 
 class ColdArchiveHandler(BucketHandler):
@@ -46,6 +51,55 @@ class ColdArchiveHandler(BucketHandler):
                 return
             self.server.restore_requests.append(request.path)
         self.reply(202)
+
+
+@contextmanager
+def slow_download(port, path, auth):
+    with socket.socket() as connection:
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024)
+        connection.settimeout(5)
+        connection.connect((HOST, port))
+        client = HTTPConnection(HOST, port)
+        client.sock = connection
+        try:
+            client.request("GET", path, headers={"Origin": f"http://localhost:{port}", **auth})
+            with client.getresponse() as response:
+                assert response.status == 200
+                assert int(response.headers["Content-Length"]) >= 5 * 1024 * 1024
+                yield
+        finally:
+            client.close()
+
+
+def verify_archive_download_capacity(port, path, reader, client, project, expected_archive, first_event):
+    def retry_download():
+        body, headers = call(port, path, (200, 503), headers=reader, max_bytes=MAX_ARCHIVE_BYTES)
+        if isinstance(body, dict):
+            return False
+        assert body == expected_archive
+        assert headers["X-TokenCraft-Content-Sha256"] == sha256(body).hexdigest()
+        return True
+
+    with slow_download(port, path, reader):
+        with slow_download(port, path, reader):
+            busy, headers = call(port, path, (200, 503), headers=reader, max_bytes=MAX_ARCHIVE_BYTES)
+            assert isinstance(busy, dict), "A third archive download succeeded while two responses were stalled"
+            assert busy["error"]["code"] == "export_capacity"
+            assert headers["Retry-After"] == "2"
+            assert headers["Cache-Control"] == "private, no-store"
+            call(port, path, 401)
+            call(port, path, 404, headers=client)
+            feed = f"/v1/exports/events?project_id={project}&limit=1"
+            assert call(port, feed, 200, headers=client)[0] == first_event
+            receipt, _ = call(port, "/v1/image", 202, method="POST",
+                              headers={**client, "Idempotency-Key": token_hex(16)},
+                              body={"model": "example_image", "task": "text_to_image",
+                                    "prompt": "Archive contention fixture", "count": 1, "aspect_ratio": "1:1"})
+            call(port, receipt["status_url"], 200, headers=client)
+        eventually(retry_download, "archive download after one disconnect", timeout=5)
+
+    wait_for_status(port, receipt, client, "succeeded", 18)
+    print("PASS stalled archive downloads applied backpressure and left scoped exports and admission available")
 
 
 def verify_export_backpressure(port, directory, psql, pg_env, project, auth):
@@ -165,7 +219,8 @@ def verify(gateway, directory, settings, session, account, project):
             receipts.append(receipt["id"])
 
         def read_feed(auth, **query):
-            return call(port, feed + "?" + urlencode({"project_id": project, **query}), 200, headers=auth)
+            return call(port, feed + "?" + urlencode({"project_id": project, **query}),
+                        200, headers=auth, max_bytes=MAX_ARCHIVE_BYTES)
 
         def published():
             body, _ = read_feed(project_reader)
@@ -174,6 +229,10 @@ def verify(gateway, directory, settings, session, account, project):
             return completed == set(receipts)
 
         eventually(published, "event publication")
+        advance_fixture_clock("UPDATE gateway_export_events "
+                              "SET data = data || jsonb_build_object('fixture_padding', repeat('t', 5 * 1024 * 1024)) "
+                              "WHERE request_id = :'request' AND event_type = 'request.succeeded';",
+                              request=receipts[1])
         advance_fixture_clock("UPDATE gateway_export_events SET occurred_at = now() - interval '3 days' "
                               "WHERE project_id = :'project';", project=project)
         expected, expected_headers = read_feed(clients[0])
@@ -241,7 +300,8 @@ def verify(gateway, directory, settings, session, account, project):
                               archive=archive_id)
         eventually(lambda: call(port, archive, 200, headers=project_reader)[0]["state"] == "available",
                    "verified cold restore")
-        archive_data, archive_headers = call(port, archive + "/data", 200, headers=project_reader)
+        archive_data, archive_headers = call(port, archive + "/data", 200, headers=project_reader,
+                                             max_bytes=MAX_ARCHIVE_BYTES)
         assert archive_headers["X-TokenCraft-Content-Sha256"] == sha256(archive_data).hexdigest()
         assert archive_data == expected_project
         assert {event["request_id"] for event in map(json.loads, archive_data.splitlines())} == set(receipts)
@@ -255,6 +315,8 @@ def verify(gateway, directory, settings, session, account, project):
         assert len(bucket.restore_requests) == 1
         assert connector.jobs == {identifier: 1 for identifier in receipts}
         print("PASS the administrator's retrieval superseded in-flight verification and the original cursor resumed")
+        verify_archive_download_capacity(port, archive + "/data", project_reader, clients[0],
+                                         project, archive_data, first_page)
         verify_export_backpressure(port, directory, psql, pg_env, project, clients[0])
 
 

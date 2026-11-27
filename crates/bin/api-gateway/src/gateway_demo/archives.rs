@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::{
         header::{CONTENT_DISPOSITION, CONTENT_TYPE},
@@ -34,13 +35,22 @@ use crate::{
 };
 
 const PARTITION_EVENTS: i64 = 1000;
+const MAX_DOWNLOADS_IN_FLIGHT: usize = 2;
+
+#[derive(Clone)]
+struct DownloadCapacity(exports::Capacity);
 
 pub(super) fn router(storage: Arc<ArchiveStorage>) -> Router<AppState> {
     Router::new()
         .route("/v1/archives", get(list).post(create))
         .route("/v1/archives/:id", get(detail))
         .route("/v1/archives/:id/restore", post(restore))
-        .route("/v1/archives/:id/data", get(data))
+        .route(
+            "/v1/archives/:id/data",
+            get(data).layer(Extension(DownloadCapacity(exports::Capacity::new(
+                MAX_DOWNLOADS_IN_FLIGHT,
+            )))),
+        )
         .layer(Extension(storage))
 }
 
@@ -242,10 +252,11 @@ async fn restore(
 async fn data(
     State(state): State<AppState>,
     Extension(storage): Extension<Arc<ArchiveStorage>>,
+    Extension(DownloadCapacity(capacity)): Extension<DownloadCapacity>,
     caller: GatewayCaller,
     Query(query): Query<ScopeQuery>,
     Path(raw): Path<String>,
-) -> ApiResult<(HeaderMap, Vec<u8>)> {
+) -> ApiResult<(HeaderMap, Bytes)> {
     let access = access::resolve(&state, caller, query, Permission::ReadExports).await?;
     let id = parse_id(&raw, "archive_id")?;
     let scope = access.scope();
@@ -258,6 +269,7 @@ async fn data(
     let expected = Expected::from_manifest(scope.account, &archive)
         .ok_or_else(|| ApiError::Internal("archive is missing integrity metadata".into()))?;
     let checksum = expected.content_sha256.clone();
+    let permit = capacity.acquire()?;
     let body = storage.read(expected).await.map_err(|code| {
         if code == COLD_OBJECT {
             ApiError::Conflict(
@@ -284,7 +296,7 @@ async fn data(
         exports::SHA256_HEADER,
         HeaderValue::from_str(&checksum).expect("verified SHA-256 hex is header-safe"),
     );
-    Ok((headers, body))
+    Ok((headers, exports::response_bytes(body, permit)))
 }
 
 async fn scoped_archive(

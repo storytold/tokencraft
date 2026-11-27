@@ -252,6 +252,7 @@ const dataOperations = [
     responses: {
       200: { description: "Integrity-checked NDJSON. Schema applies to each line.", content: ndjson, headers: downloadHeaders },
       404: outOfScope, 409: error("Restore the archive before downloading."),
+      503: { ...exportBusy, description: "Both archive download slots are busy. Retry the same archive during its restore window." },
     },
   }),
 ];
