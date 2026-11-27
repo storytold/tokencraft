@@ -96,7 +96,7 @@ Migration 87 adds a receipt digest for recoverable webhook key rotations. Schema
 
 ### Rehearse the cutover before release
 
-The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. It checks preflight, then runs the API, worker, and bundled connector from each release. The rehearsal verifies receipt replay, artifact and webhook bytes, and completion of queued and new work after both cutover and rollback. The rollback runs against an independent database and connector snapshot.
+The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.
 
 Run the same rehearsal from a source checkout with matching binaries, PostgreSQL 17, OpenSSL, and loopback port 4019 available.
 
