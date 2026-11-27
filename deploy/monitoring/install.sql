@@ -15,13 +15,13 @@ SET search_path = pg_catalog, pg_temp
 AS $sample$
 WITH parameters AS MATERIALIZED (
     SELECT now() AS sampled_at,
-           ARRAY(SELECT jsonb_array_elements_text(providers)) AS providers,
-           ARRAY(SELECT jsonb_array_elements_text(capacity->'local')) AS local_bindings,
-           ARRAY(SELECT jsonb_array_elements_text(capacity->'connector')) AS connector_bindings
+           ARRAY(SELECT jsonb_array_elements_text(providers)) AS providers
     WHERE jsonb_array_length(providers) BETWEEN 1 AND 64
       AND jsonb_array_length(targets) <= 64
       AND jsonb_array_length(capacity->'local') <= 512
       AND jsonb_array_length(capacity->'connector') <= 512
+      AND coalesce(jsonb_array_length(capacity->'poll'), 0) <= 512
+      AND coalesce(jsonb_array_length(capacity->'lookup'), 0) <= 512
       AND reserve BETWEEN 0 AND 10000
       AND (scope_project IS NULL OR scope_account IS NOT NULL)
 ), newest AS MATERIALIZED (
@@ -169,33 +169,10 @@ WITH parameters AS MATERIALIZED (
     ) a ON a.provider = t.provider AND a.attempt#>>'{selection,home_cell}' = t.cell
        AND a.attempt#>>'{selection,stack}' = t.stack AND a.attempt#>>'{selection,target}' = t.target
     GROUP BY t.id
-), eligible AS MATERIALIZED (
-    SELECT r.dispatch_after
-    FROM public.gateway_requests r
-    JOIN public.gateway_provider_runs p ON p.request_id = r.id
-    CROSS JOIN parameters n
-    WHERE r.provider = ANY(n.providers)
-      AND (scope_account IS NULL OR r.account_id = scope_account)
-      AND (scope_project IS NULL OR r.project_id = scope_project)
-      AND ((r.adapter = 'openai_compatible_chat' AND p.binding_digest = ANY(n.local_bindings))
-           OR (r.adapter = 'connector_queue' AND p.binding_digest = ANY(n.connector_bindings)))
-      AND r.dispatched_at IS NULL AND r.failed_at IS NULL AND r.canceled_at IS NULL
-      AND r.uncertain_at IS NULL AND (p.lease_until IS NULL OR p.lease_until <= n.sampled_at)
-      AND r.dispatch_after <= n.sampled_at AND r.dispatch_after > n.sampled_at - interval '15 minutes'
-      AND r.created_at > n.sampled_at - interval '15 minutes'
-      AND p.request_payload IS NOT NULL
-      AND NOT EXISTS (
-          SELECT 1 FROM public.gateway_dispatch_controls d
-          WHERE d.account_id = r.account_id AND (d.pause_all OR r.provider = ANY(d.paused_providers))
-      )
-      AND (r.adapter <> 'connector_queue' OR NOT EXISTS (
-          SELECT 1 FROM public.gateway_queue_cooldowns c
-          WHERE c.account_id = r.account_id AND c.project_id = r.project_id
-            AND c.binding_digest = p.binding_digest AND c.upstream_model = p.upstream_model
-            AND c.available_after > n.sampled_at
-      ))
-    ORDER BY r.dispatch_after, r.sid
-    LIMIT 256
+),
+provider_work AS MATERIALIZED (
+    SELECT lanes.* FROM parameters n
+    CROSS JOIN LATERAL public.gateway_provider_work_sample(capacity, n.providers, scope_account, scope_project) lanes
 ), connections AS (
     SELECT greatest(0, current_setting('max_connections')::integer
         - current_setting('superuser_reserved_connections')::integer
@@ -208,8 +185,10 @@ SELECT jsonb_build_object(
     'truncated', (SELECT count(*) = 10001 AND min(created_at) >= n.sampled_at - interval '15 minutes' FROM newest),
     'provider', coalesce((SELECT jsonb_object_agg(provider, metrics) FROM provider_summary), '{}'::jsonb),
     'compute', coalesce((SELECT jsonb_object_agg(id, metrics) FROM target_summary), '{}'::jsonb),
-    'eligible', (SELECT count(*) FROM eligible),
-    'oldest_eligible_seconds', (SELECT max(extract(epoch FROM n.sampled_at - dispatch_after)) FROM eligible),
+    'eligible', (SELECT eligible FROM provider_work WHERE lane = 'submit'),
+    'oldest_eligible_seconds', (SELECT oldest_seconds FROM provider_work WHERE lane = 'submit'),
+    'provider_work', (SELECT jsonb_object_agg(lane, jsonb_build_object(
+        'eligible', eligible, 'oldest_seconds', oldest_seconds)) FROM provider_work),
     'database_connections_available', (SELECT free FROM connections),
     'publication', coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY provider, workload) FROM publication p), '[]'::jsonb),
     'request_queues', coalesce((SELECT jsonb_agg(to_jsonb(q) ORDER BY provider, workload, state) FROM request_queues q), '[]'::jsonb),
@@ -239,6 +218,7 @@ BEGIN
                    SELECT 1 FROM unnest(ARRAY[
                        'public.gateway_requests'::regclass, 'public.gateway_provider_runs'::regclass,
                        'public.gateway_dispatch_controls'::regclass, 'public.gateway_queue_cooldowns'::regclass,
+                       'public.gateway_connector_completions'::regclass,
                        'public.workflow_runs'::regclass, 'public.gateway_webhook_deliveries'::regclass,
                        'public.gateway_export_events'::regclass
                    ]) AS relation(ref)

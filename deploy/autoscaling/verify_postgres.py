@@ -119,10 +119,11 @@ def check_queries(pg_bin, directory):
                ('scheduled', repeat('a',64), 'fixture', decode('aa','hex'));
     """)
 
+    bindings = {"local": [], "connector": ["a" * 64], "poll": ["b" * 64], "lookup": ["c" * 64]}
+
     def sample():
         return json.loads(query(
-            "-v", "reserve_connections=10", "-v", "local_bindings=[]",
-            "-v", f"connector_bindings={json.dumps(['a' * 64])}", "-f", HERE / "signals.sql",
+            "-v", "reserve_connections=10", "-v", f"bindings={json.dumps(bindings)}", "-f", HERE / "signals.sql",
         ))
 
     measured = sample()
@@ -133,6 +134,72 @@ def check_queries(pg_bin, directory):
     query("-c", "DELETE FROM gateway_queue_cooldowns; INSERT INTO gateway_dispatch_controls VALUES ('burst',1,true,'{}')")
     assert sample()["eligible_sample"] == 0
     print("PASS sampler sees eligible work and excludes delayed, cooling-down and paused requests")
+
+    query("-c", """
+        INSERT INTO gateway_requests (id, account_id, project_id, actor_id, idempotency_digest, intent_digest,
+            model, offer_id, provider, quote, adapter, estimated_usd_nanos, dispatched_at, uncertain_at)
+        SELECT id, 'burst', 'project', 'anonymous', md5(id) || md5(id), repeat('e',64),
+            'fixture', 'offer', 'fal', '{}', 'connector_queue', 0,
+            now() - CASE WHEN id='lookup-expired' THEN interval '16 minutes' ELSE interval '5 minutes' END,
+            CASE WHEN id LIKE 'lookup-%' THEN now() - interval '84 seconds' END
+        FROM unnest(ARRAY['poll-due','poll-leased','poll-delayed','poll-expired','poll-other',
+                          'lookup-due','lookup-leased','lookup-expired','lookup-other']) AS ids(id);
+
+        INSERT INTO gateway_provider_runs (request_id, binding_digest, upstream_model, upstream_handle,
+            accepted_at, poll_after, poll_deadline, lease_until, error_code)
+        SELECT id, repeat(CASE WHEN id LIKE '%-other' THEN 'd' WHEN id LIKE 'poll-%' THEN 'b' ELSE 'c' END,64),
+            'fixture', CASE WHEN id LIKE 'poll-%' THEN id END,
+            CASE WHEN id LIKE 'poll-%' THEN now() - interval '3 minutes' END,
+            CASE WHEN id='poll-delayed' THEN now() + interval '1 minute'
+                 WHEN id LIKE 'poll-%' THEN now() - interval '62 seconds' END,
+            CASE WHEN id='poll-expired' THEN now() - interval '1 second'
+                 WHEN id LIKE 'poll-%' THEN now() + interval '3 minutes' END,
+            CASE WHEN id='poll-leased' THEN now() + interval '1 minute' END,
+            CASE WHEN id LIKE 'lookup-%' THEN 'connector_submission_unconfirmed' END
+        FROM gateway_requests WHERE id LIKE 'poll-%' OR id LIKE 'lookup-%';
+
+        INSERT INTO gateway_connector_completions (request_id, next_lookup_at)
+        VALUES ('lookup-leased', now() + interval '10 seconds');
+    """)
+    measured = sample()
+    assert measured["eligible_sample"] == 2 and 84 <= measured["oldest_ready_age_seconds"] < 95, measured
+    print("PASS sampler includes due polls and lookups for retained bindings and excludes leases, delays and other bindings")
+
+    query("-c", "CREATE ROLE capacity_monitor LOGIN")
+    query("-v", "monitor_role=capacity_monitor", "-f", HERE.parent / "monitoring/install.sql")
+    settings = json.dumps(bindings)
+    providers = json.dumps(["fal"])
+    monitored = json.loads(query("-c", "SET ROLE capacity_monitor; " +
+        f"SELECT tokencraft_monitor.sample('{providers}', '[]', '{settings}', 10, 'burst', 'project')"))
+    lanes = monitored["provider_work"]
+    assert monitored["eligible"] == 0 and monitored["oldest_eligible_seconds"] is None, monitored
+    assert {name: lane["eligible"] for name, lane in lanes.items()} == {"submit": 0, "poll": 1, "lookup": 1}, lanes
+    other_scope = json.loads(query("-c", "SET ROLE capacity_monitor; " +
+        f"SELECT tokencraft_monitor.sample('{providers}', '[]', '{settings}', 10, 'second', NULL)"))
+    assert all(lane["eligible"] == 0 for lane in other_scope["provider_work"].values())
+    try:
+        query("-c", f"SET ROLE capacity_monitor; SELECT * FROM public.gateway_provider_work_sample('{settings}')")
+    except subprocess.CalledProcessError as error:
+        assert "permission denied" in error.stderr, error.stderr
+    else:
+        raise AssertionError("the invoker routine bypassed table permissions")
+    print("PASS monitor exposes scoped aggregate lanes through its restricted function")
+
+    query("-c", """
+        INSERT INTO gateway_projects(id, account_id, name) VALUES ('overflow', 'second', 'Overflow fixture');
+        INSERT INTO gateway_requests (id, account_id, project_id, actor_id, idempotency_digest, intent_digest,
+            model, offer_id, provider, quote, adapter, estimated_usd_nanos, dispatched_at, uncertain_at)
+        SELECT 'overflow-' || n, 'second', 'overflow', 'anonymous', repeat(md5(n::text), 2), repeat('a',64),
+            'fixture', 'offer', 'fal', '{}', 'connector_queue', 0,
+            now() - interval '5 minutes', now() - n * interval '1 second'
+        FROM generate_series(1, 270) n;
+        INSERT INTO gateway_provider_runs (request_id, binding_digest, upstream_model, error_code)
+        SELECT id, repeat('c',64), 'fixture', 'submission_interrupted'
+        FROM gateway_requests WHERE project_id = 'overflow';
+    """)
+    capped = sample()
+    assert capped["eligible_sample"] == 257 and 270 <= capped["oldest_ready_age_seconds"] < 280, capped
+    print("PASS lookup sample caps at 256 without dropping the oldest item or the separate poll lane")
 
     query("-c", """
         INSERT INTO gateway_provider_workflow_frames (request_id, encrypted_png)

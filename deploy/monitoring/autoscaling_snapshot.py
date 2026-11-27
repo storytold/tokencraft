@@ -60,10 +60,14 @@ def snapshot(observation, source, now, max_age=45):
         if role == "api":
             result[role].update(cpu_fraction=external["cpu_fraction"], sse_readers=first, sse_capacity=second)
         else:
+            lanes = sample["provider_work"]
+            if not isinstance(lanes, dict) or set(lanes) != {"submit", "poll", "lookup"}:
+                raise ValueError("worker scaling requires a sample of every provider lane")
             result[role].update(
                 active_tasks=first, task_capacity=second,
-                oldest_ready_age_seconds=math.floor(sample["oldest_eligible_seconds"] or 0),
-                eligible_sample=sample["eligible"], provider_headroom=source.get("provider_headroom") is True,
+                oldest_ready_age_seconds=math.floor(max(lane["oldest_seconds"] or 0 for lane in lanes.values())),
+                eligible_sample=sum(lane["eligible"] for lane in lanes.values()),
+                provider_headroom=source.get("provider_headroom") is True,
             )
     return result
 

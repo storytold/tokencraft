@@ -106,14 +106,17 @@ class PolicyTest(unittest.TestCase):
         probes = {
             "api": {"role": "api", "instance_id": "a" * 32, "ready": True, "sse_readers": 24, "sse_capacity": 32},
             "worker": {"role": "worker", "instance_id": "b" * 32, "ready": True, "provider_tasks": 4, "provider_capacity": 4,
-                       "local_bindings": [], "connector_bindings": ["binding"]},
+                       "local_bindings": [], "connector_bindings": ["1" * 64],
+                       "poll_bindings": ["1" * 64, "2" * 64], "lookup_bindings": ["2" * 64]},
         }
         database = {"additional_connections": 90, "eligible_sample": 3, "oldest_ready_age_seconds": 41}
         with patch("collect.time.time", return_value=1001), \
                 patch("collect.scrape", side_effect=lambda url, _: probes[url]), \
                 patch("collect.query_database", return_value=database) as query:
             snapshot = collect(source, "synthetic", "psql")
-        query.assert_called_once_with("psql", 20, (), ("binding",))
+        query.assert_called_once_with("psql", 20, {
+            "local": (), "connector": ("1" * 64,), "poll": ("1" * 64, "2" * 64), "lookup": ("2" * 64,),
+        })
         self.assertFalse(snapshot["worker"]["provider_headroom"])
         self.assertEqual(snapshot["api"]["sse_readers"], 24)
         self.assertEqual(snapshot["worker"]["oldest_ready_age_seconds"], 41)

@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from history import HISTORY_FIELDS, History
 import plugin_traffic
-from sources import ID, load_config, observe_target, sample_database, token_from
+from sources import BINDING_KINDS, ID, load_config, observe_target, sample_database, token_from
 
 ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -78,8 +78,8 @@ class Collector:
                 cached = [self.binding_cache.get(worker) for worker in workers]
                 cutoff = now - min(600, self.config["interval_seconds"] * 10)
                 live = [item for item in cached if item is not None and item[0] >= cutoff]
-                combined = {form: sorted({key for _, binding in live for key in binding[form]})
-                            for form in ("local", "connector")}
+                combined = {form: sorted({key for _, binding in live for key in binding.get(form, [])})
+                            for form in BINDING_KINDS}
                 scoped_bindings = len(live) == len(workers) and bool(workers) and all(
                     len(items) <= 512 for items in combined.values())
                 cells[name] = {
@@ -90,11 +90,12 @@ class Collector:
                     "status": "not_configured" if not definition["pg_service"] else "unknown",
                     "scopes": {scope: {"status": "unknown"} for scope in definition["scopes"]},
                     "worker_bindings_uniform": scoped_bindings and all(
-                        {form: sorted(set(binding[form])) for form in combined} == combined for _, binding in live),
+                        {form: sorted(set(values)) for form, values in binding.items()} == combined
+                        for _, binding in live),
                 }
                 if definition["pg_service"]:
                     if not scoped_bindings:
-                        combined = {"local": [], "connector": []}
+                        combined = {form: [] for form in BINDING_KINDS}
                     futures[name, None] = pool.submit(sample_database, self.psql, definition, targets, combined, {})
                     for scope, params in definition["scopes"].items():
                         futures[name, scope] = pool.submit(sample_database, self.psql, definition, targets, combined, params)
@@ -109,6 +110,7 @@ class Collector:
                 if sample and cell["queue_coverage"] == "unknown":
                     sample["eligible"] = None
                     sample["oldest_eligible_seconds"] = None
+                    sample["provider_work"] = None
         snapshot = {"observed_at": now, "duration_ms": round((time.monotonic() - started) * 1000),
                     "cells": cells, "targets": observations}
         self.history.record(snapshot, evaluate(snapshot, self.config["alerts"]),

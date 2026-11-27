@@ -16,6 +16,9 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from controller import MAX_SAMPLE_AGE, ROLES, cpu_utilization, integer, read_object, save_state
 
 
+BINDING_KINDS = ("local", "connector", "poll", "lookup")
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args):
         return None
@@ -39,11 +42,10 @@ def scrape(url, token):
     return json.loads(data)
 
 
-def query_database(psql, reserve, local_bindings, connector_bindings):
+def query_database(psql, reserve, bindings):
     output = subprocess.run([
         psql, "-XqAtw", "--set=ON_ERROR_STOP=1", f"--set=reserve_connections={reserve}",
-        f"--set=local_bindings={json.dumps(local_bindings)}",
-        f"--set=connector_bindings={json.dumps(connector_bindings)}",
+        f"--set=bindings={json.dumps(bindings)}",
         "--file", str(Path(__file__).with_name("signals.sql")),
     ], check=True, timeout=6, text=True, capture_output=True)
     return json.loads(output.stdout)
@@ -77,14 +79,21 @@ def collect(source, token, psql):
         seen_instances.add(instance_id)
         by_role[role].append(probe)
 
-    worker_bindings = {
-        (tuple(sorted(probe["local_bindings"])), tuple(sorted(probe["connector_bindings"])))
-        for probe in by_role["worker"]
-    }
+    worker_bindings = set()
+    for probe in by_role["worker"]:
+        groups = []
+        for kind in BINDING_KINDS:
+            digests = probe.get(f"{kind}_bindings")
+            if (not isinstance(digests, list) or len(digests) > 512
+                    or any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                           for digest in digests)):
+                raise ValueError("workers must report valid binding digests for every provider lane")
+            groups.append(tuple(sorted(set(digests))))
+        worker_bindings.add(tuple(groups))
     if len(worker_bindings) != 1:
         raise ValueError("worker replicas must report matching binding revisions")
-    local_bindings, connector_bindings = worker_bindings.pop()
-    database = query_database(psql, reserve, local_bindings, connector_bindings)
+    bindings = dict(zip(BINDING_KINDS, worker_bindings.pop()))
+    database = query_database(psql, reserve, bindings)
     snapshot = {
         "cell": source["cell"], "observed_at": sampled_at,
         "database": {

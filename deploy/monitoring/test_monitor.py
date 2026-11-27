@@ -32,6 +32,11 @@ def sample():
     return {
         "window_seconds": 900, "truncated": False, "provider": {}, "compute": {},
         "eligible": 2, "oldest_eligible_seconds": 75, "database_connections_available": 20,
+        "provider_work": {
+            "submit": {"eligible": 2, "oldest_seconds": 75},
+            "poll": {"eligible": 1, "oldest_seconds": 95},
+            "lookup": {"eligible": 0, "oldest_seconds": None},
+        },
         "publication": [], "request_queues": [], "workflow_queues": [],
         "delivery_queues": [], "workflow_outcomes": {},
     }
@@ -214,7 +219,7 @@ class IntegrationLogic(unittest.TestCase):
                 "cells": {"lab": {"providers": ["fal"], "pg_service": "lab",
                                   "reserved_connections": 20, "scopes": {"team": {"account": "acct_test"}}}},
             }
-            binding = {"local": [], "connector": ["b" * 64]}
+            binding = {"local": [], "connector": ["b" * 64], "poll": ["b" * 64], "lookup": []}
             probe.return_value = (dict(target, status="up", latency_ms=2, signals={}), binding)
             db.side_effect = lambda *_: {"status": "up", "sample": sample()}
             collector = Collector(config, history, "/psql")
@@ -261,7 +266,8 @@ class IntegrationLogic(unittest.TestCase):
                   "worker": {"replicas": ["work"], "desired": 1, "stable": True, "deployment_version": "y"}}
         computed = scaling_snapshot(obs, source, 115)
         self.assertEqual(computed["observed_at"], 108)
-        self.assertEqual(computed["worker"]["oldest_ready_age_seconds"], 75)
+        self.assertEqual(computed["worker"]["oldest_ready_age_seconds"], 95)
+        self.assertEqual(computed["worker"]["eligible_sample"], 3)
         self.assertFalse(computed["worker"]["provider_headroom"])
         self.assertRegex(computed["api"]["replica_set"], r"^[0-9a-f]{64}$")
         obs["targets"]["alias"] = dict(obs["targets"]["api"], id="alias")

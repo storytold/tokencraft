@@ -20,6 +20,7 @@ ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}")
 SECRET = re.compile(r"[A-Za-z0-9_-]{32,128}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 INSTANCE_ID = re.compile(r"[0-9a-f]{32}")
+BINDING_KINDS = ("local", "connector", "poll", "lookup")
 KINDS = {"gateway", "worker", "combined", "plugin", "compute", "upstream", "gpu"}
 REPLICA_ROLES = {"gateway": "api", "worker": "worker", "combined": "combined"}
 CHECKS = {"database", "migrations", "worker", "provider_worker", "artifact_storage"}
@@ -335,8 +336,11 @@ def replica_sample(payload, kind):
     result["checks"] = {key: check for key, check in checks.items()
                         if key in CHECKS and isinstance(check, str) and check in CHECK_STATES}
     bindings = {}
-    for form in ("local", "connector"):
-        values = value.get(form + "_bindings", [])
+    for form in BINDING_KINDS:
+        field = form + "_bindings"
+        if form in ("poll", "lookup") and field not in value:
+            continue
+        values = value.get(field, [])
         if (not isinstance(values, list) or len(values) > 512
                 or any(not isinstance(digest, str) or not DIGEST.fullmatch(digest) for digest in values)):
             raise ValueError("invalid binding digests")

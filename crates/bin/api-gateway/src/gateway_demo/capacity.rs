@@ -73,6 +73,8 @@ pub(super) struct Signals {
     provider_capacity: Option<usize>,
     local_bindings: Vec<String>,
     connector_bindings: Vec<String>,
+    poll_bindings: Vec<String>,
+    lookup_bindings: Vec<String>,
 }
 
 pub(super) async fn inspect(
@@ -106,12 +108,13 @@ pub(super) async fn inspect(
             .map(|runtime| runtime.local_binding_digests().map(str::to_owned).collect())
             .unwrap_or_default(),
         connector_bindings: worker
-            .map(|runtime| {
-                runtime
-                    .connector_binding_digests()
-                    .map(str::to_owned)
-                    .collect()
-            })
+            .map(|runtime| runtime.connector_binding_digests().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        poll_bindings: worker
+            .map(|runtime| runtime.poll_binding_digests().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        lookup_bindings: worker
+            .map(|runtime| runtime.lookup_binding_digests().map(str::to_owned).collect())
             .unwrap_or_default(),
     }))
 }

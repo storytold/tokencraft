@@ -228,6 +228,14 @@ impl ProviderRuntime {
     pub(super) fn connector_binding_digests(&self) -> impl Iterator<Item = &str> {
         self.connectors.active_digests()
     }
+
+    pub(super) fn poll_binding_digests(&self) -> impl Iterator<Item = &str> {
+        self.connectors.digests()
+    }
+
+    pub(super) fn lookup_binding_digests(&self) -> impl Iterator<Item = &str> {
+        self.connectors.recovery_digests()
+    }
 }
 
 pub(super) fn spawn(
