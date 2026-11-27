@@ -78,6 +78,8 @@ jobs:
         run: python3 -B scripts/smoke_rate_admission.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify automatic event retirement and cold retrieval
         run: python3 -B scripts/smoke_event_archives.py target/debug/api-gateway target/debug/admin-cli
+      - name: Verify scoped request latency baselines
+        run: python3 -B scripts/smoke_trace_baseline.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify webhook backlog isolation and recovery
         run: python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify profiled media runners and workflow reuse

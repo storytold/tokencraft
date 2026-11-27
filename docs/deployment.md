@@ -68,7 +68,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 81 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 82 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
@@ -79,6 +79,8 @@ Migration 79 adds the active workflow deadline index and supports overlap with s
 Use a coordinated drain and restart when moving to schema 80. Published workflows can supply a customer reference, and workers store it on each child alongside the application budget identity. Upgrade all API servers and workers in the cell before reopening admissions. The migration adds an application spending index to the request table.
 
 Migration 81 adds an optional customer reference to new terminal workflow webhook events. Schema-80 API and worker binaries can overlap with the new fleet. Existing queued deliveries keep their original payload bytes and runtime grants carry forward.
+
+Migration 82 indexes successful requests for scoped latency baselines. Schema-81 API and worker binaries can overlap with the new fleet after the index commits. The index build pauses writes to the request table, so apply it during the planned cutover window.
 
 ### Rehearse the cutover before release
 

@@ -8,7 +8,7 @@ Use the durable ID returned by any request endpoint. A project key needs `reques
 | `GET /v1/requests/{id}/trace/baseline` | Median queue, elapsed, and publication times with the exact sample IDs |
 | `GET /v1/requests/{id}/trace/otlp` | Redacted OpenTelemetry timing in OTLP/HTTP JSON |
 
-The baseline uses earlier requests that succeeded before admission. It compares the same project, client, app, model, workload, API profile, and served route from the previous seven days. At most 50 matching requests contribute to the medians. Each timing reports the number with usable timestamps.
+The baseline uses earlier requests that succeeded before admission. It compares the same project, client, app, model, workload, API profile, and served route from the previous seven days. The newest 50 matching requests by admission time contribute to the medians. Each timing reports the number with usable timestamps.
 
 For example, use the original receipt ID with a project key.
 

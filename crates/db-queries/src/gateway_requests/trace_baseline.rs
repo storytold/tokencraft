@@ -38,42 +38,39 @@ pub async fn trace_baseline<'e>(
              FROM gateway_requests r LEFT JOIN gateway_provider_runs p ON p.request_id = r.id
              WHERE r.id = $1 AND r.account_id = $2 AND r.project_id = $3
                AND ($4::text IS NULL OR r.client_ref = $4)
-           ), recent AS MATERIALIZED (
-             SELECT r.id, r.sid, r.model, r.provider, r.offer_id, r.adapter, r.quote,
-                    r.created_at, r.dispatched_at, r.succeeded_at
-             FROM subject s JOIN gateway_requests r ON r.account_id = s.account_id AND r.project_id = s.project_id
-             WHERE r.sid < s.sid AND r.created_at >= s.created_at - interval '168 hours'
-               AND r.created_at < s.created_at
-               AND r.succeeded_at <= s.created_at
-               AND r.client_ref IS NOT DISTINCT FROM s.client_ref
-               AND r.app_ref IS NOT DISTINCT FROM s.app_ref
-             ORDER BY r.sid DESC LIMIT 1000
            ), matches AS MATERIALIZED (
-             SELECT r.id, r.sid,
-                    CASE WHEN r.succeeded_at >= r.created_at THEN r.succeeded_at - r.created_at END AS total,
-                    CASE WHEN r.dispatched_at >= r.created_at THEN r.dispatched_at - r.created_at END AS queue,
-                    CASE WHEN r.succeeded_at >= p.result_observed_at THEN r.succeeded_at - p.result_observed_at END AS publication
-             FROM recent r CROSS JOIN subject s
-             LEFT JOIN gateway_provider_runs p ON p.request_id = r.id
-             WHERE r.provider = s.provider AND r.adapter = s.adapter
-               AND r.model = s.model
-               AND r.quote->>'profile' IS NOT DISTINCT FROM s.quote->>'profile'
-               AND r.quote #> '{input,workload}' = s.quote #> '{input,workload}'
-               AND coalesce(p.route_retries->-1->'decision'->>'next_offer_id', r.offer_id) = s.offer_id
-               AND p.binding_digest IS NOT DISTINCT FROM s.binding_digest
-               AND p.upstream_model IS NOT DISTINCT FROM s.upstream_model
-               AND (
-                 SELECT jsonb_build_array(c->'applied_aspect_ratio', c->'output_size')
-                 FROM jsonb_array_elements(r.quote->'candidates') c WHERE c->>'offer_id' = s.offer_id LIMIT 1
-               ) IS NOT DISTINCT FROM (
-                 SELECT jsonb_build_array(c->'applied_aspect_ratio', c->'output_size')
-                 FROM jsonb_array_elements(s.quote->'candidates') c WHERE c->>'offer_id' = s.offer_id LIMIT 1
-               )
-             ORDER BY r.sid DESC LIMIT 50
+             SELECT sample.*
+             FROM subject s CROSS JOIN LATERAL (
+               SELECT r.id, r.sid, r.created_at,
+                      CASE WHEN r.succeeded_at >= r.created_at THEN r.succeeded_at - r.created_at END AS total,
+                      CASE WHEN r.dispatched_at >= r.created_at THEN r.dispatched_at - r.created_at END AS queue,
+                      CASE WHEN r.succeeded_at >= p.result_observed_at THEN r.succeeded_at - p.result_observed_at END AS publication
+               FROM gateway_requests r
+               LEFT JOIN gateway_provider_runs p ON p.request_id = r.id
+               WHERE r.account_id = s.account_id AND r.project_id = s.project_id
+                 AND coalesce(r.client_ref, '') = coalesce(s.client_ref, '')
+                 AND coalesce(r.app_ref, '') = coalesce(s.app_ref, '')
+                 AND r.model = s.model AND r.provider = s.provider AND r.adapter = s.adapter
+                 AND r.sid < s.sid AND r.created_at >= s.created_at - interval '168 hours'
+                 AND r.created_at < s.created_at AND r.succeeded_at <= s.created_at
+                 AND r.quote->>'profile' IS NOT DISTINCT FROM s.quote->>'profile'
+                 AND r.quote #> '{input,workload}' = s.quote #> '{input,workload}'
+                 AND coalesce(p.route_retries->-1->'decision'->>'next_offer_id', r.offer_id) = s.offer_id
+                 AND p.binding_digest IS NOT DISTINCT FROM s.binding_digest
+                 AND p.upstream_model IS NOT DISTINCT FROM s.upstream_model
+                 AND (
+                   SELECT jsonb_build_array(c->'applied_aspect_ratio', c->'output_size')
+                   FROM jsonb_array_elements(r.quote->'candidates') c WHERE c->>'offer_id' = s.offer_id LIMIT 1
+                 ) IS NOT DISTINCT FROM (
+                   SELECT jsonb_build_array(c->'applied_aspect_ratio', c->'output_size')
+                   FROM jsonb_array_elements(s.quote->'candidates') c WHERE c->>'offer_id' = s.offer_id LIMIT 1
+                 )
+               ORDER BY r.created_at DESC, r.sid DESC LIMIT 50
+             ) sample
            )
            SELECT s.model, s.provider, s.offer_id AS "offer_id!",
                   s.created_at - interval '168 hours' AS "window_start!", s.created_at AS "window_end!",
-                  ARRAY(SELECT id FROM matches ORDER BY sid DESC) AS "request_ids!",
+                  ARRAY(SELECT id FROM matches ORDER BY created_at DESC, sid DESC) AS "request_ids!",
                   CASE WHEN s.finished_at >= s.created_at
                     THEN round(extract(epoch FROM s.finished_at - s.created_at) * 1000)::bigint END AS total_ms,
                   CASE WHEN s.dispatched_at >= s.created_at
