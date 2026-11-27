@@ -24,10 +24,15 @@ request() {
 }
 
 check() {
-  local origin=$1 target=$2 route=$3 expected=$4
-  shift 4
-  if ! request --fail -- "$origin/$route" | "$@" >/dev/null; then
+  local origin=$1 target=$2 route=$3 expected=$4 stamp=$5
+  shift 5
+  if ! request --fail --output "$probe_body" --dump-header "$probe_headers" -- "$origin/$route" ||
+    ! "$@" <"$probe_body" >/dev/null; then
     printf 'FAIL %s /%s must %s\n' "$target" "$route" "$expected" >&2
+    return 1
+  fi
+  if [[ -n "$stamp" ]] && ! check_headers 200 "$stamp" "" <"$probe_headers"; then
+    printf 'FAIL %s /%s must report the expected gateway source revision\n' "$target" "$route" >&2
     return 1
   fi
   printf 'PASS %s /%s\n' "$target" "$route"
@@ -37,24 +42,30 @@ matches_contract() {
   jq -es 'length == 2 and .[0] == .[1]' "$root/contracts/openapi.json" -
 }
 
-probe_body=$(mktemp)
-trap 'rm -f -- "$probe_body"' EXIT
+probe_work=$(mktemp -d)
+trap 'rm -rf -- "$probe_work"' EXIT
+probe_body="$probe_work/body"
+probe_headers="$probe_work/headers"
 
 check_rate_limit_route() {
   local origin=$1 target=$2 status
   local path='/v1/rate-limits?account_id=hosted-smoke'
-  if ! status=$(request --output "$probe_body" --write-out '%{http_code}' -- "$origin$path") ||
+  if ! status=$(request --output "$probe_body" --dump-header "$probe_headers" --write-out '%{http_code}' -- "$origin$path") ||
     [[ "$status" != 401 ]] ||
     ! jq -es 'length == 1 and .[0].error.code == "unauthorized"' "$probe_body" >/dev/null; then
     printf 'FAIL %s /v1/rate-limits expected a gateway 401, got HTTP %s\n' \
       "$target" "${status:-unavailable}" >&2
     return 1
   fi
+  if [[ -n "$revision" ]] && ! check_headers 401 "$revision" private <"$probe_headers"; then
+    printf 'FAIL %s /v1/rate-limits must return a fresh, private denial from the expected source revision\n' "$target" >&2
+    return 1
+  fi
   printf 'PASS %s /v1/rate-limits\n' "$target"
 }
 
-check_no_store_headers() {
-  awk -v expected_status="$1" -v expected_revision="$2" '
+check_headers() {
+  awk -v expected_status="$1" -v expected_revision="$2" -v expected_policy="$3" '
     function header_value(line) {
       sub(/^[^:]+:[ \t]*/, "", line)
       sub(/[ \t\r]+$/, "", line)
@@ -82,12 +93,11 @@ check_no_store_headers() {
       fresh_age = (header_value($0) ~ /^0+$/)
     }
     END {
-      valid = status && policies == 1 && no_store && (ages == 0 || (ages == 1 && fresh_age))
-      if (expected_revision == "") {
-        valid = valid && private
-      } else {
-        valid = valid && stamps == 1 && matching_stamp
+      valid = status && (expected_revision == "" || (stamps == 1 && matching_stamp))
+      if (expected_policy != "") {
+        valid = valid && policies == 1 && no_store && (ages == 0 || (ages == 1 && fresh_age))
       }
+      if (expected_policy == "private") valid = valid && private
       exit !valid
     }
   '
@@ -96,7 +106,7 @@ check_no_store_headers() {
 check_release_ready() {
   local origin=$1 target=$2
   if ! request --fail --output "$probe_body" --dump-header - -- "$origin/ready" |
-    check_no_store_headers 200 "$revision" ||
+    check_headers 200 "$revision" no-store ||
     ! jq -es 'length == 1 and .[0].ready == true' "$probe_body" >/dev/null; then
     printf 'FAIL %s /ready must return fresh, non-storable readiness for the expected source revision\n' "$target" >&2
     return 1
@@ -107,8 +117,8 @@ check_release_ready() {
 check_session_cache_policy() {
   local origin=$1 target=$2
   if ! request --output /dev/null --dump-header - -- "$origin/v1/auth/me" |
-    check_no_store_headers 401 ""; then
-    printf 'FAIL %s /v1/auth/me must return a fresh, private, non-storable 401\n' "$target" >&2
+    check_headers 401 "$revision" private; then
+    printf 'FAIL %s /v1/auth/me must return a fresh, private, non-storable 401 from the expected source revision\n' "$target" >&2
     return 1
   fi
   printf 'PASS %s session cache policy\n' "$target"
@@ -119,24 +129,24 @@ if [[ -n "$revision" ]]; then
   check_release_ready "$console" console || result=1
   check_release_ready "$gateway" gateway || result=1
 else
-  check "$console" console ready 'report the gateway ready' jq -es 'length == 1 and .[0].ready == true' || result=1
-  check "$gateway" gateway ready 'report ready' jq -es 'length == 1 and .[0].ready == true' || result=1
+  check "$console" console ready 'report the gateway ready' "" jq -es 'length == 1 and .[0].ready == true' || result=1
+  check "$gateway" gateway ready 'report ready' "" jq -es 'length == 1 and .[0].ready == true' || result=1
 fi
-check "$gateway" gateway openapi.json 'match the release OpenAPI contract' matches_contract || result=1
-check "$console" console openapi.json 'serve the release OpenAPI contract' matches_contract || result=1
-check "$console" console docs/openapi.json 'serve the release OpenAPI contract' matches_contract || result=1
-check "$gateway" gateway v1/schemas/primitives 'match the release connector primitive registry' \
+check "$gateway" gateway openapi.json 'match the release OpenAPI contract' "$revision" matches_contract || result=1
+check "$console" console openapi.json 'serve the release OpenAPI contract' "" matches_contract || result=1
+check "$console" console docs/openapi.json 'serve the release OpenAPI contract' "" matches_contract || result=1
+check "$gateway" gateway v1/schemas/primitives 'match the release connector primitive registry' "$revision" \
   cmp -s "$primitives" - || result=1
-check "$console" console v1/schemas/primitives 'proxy the release connector primitive registry' \
+check "$console" console v1/schemas/primitives 'proxy the release connector primitive registry' "$revision" \
   cmp -s "$primitives" - || result=1
-check "$console" console catalog/artcraft-v1.json 'match the release ArtCraft catalog bytes' \
+check "$console" console catalog/artcraft-v1.json 'match the release ArtCraft catalog bytes' "" \
   cmp -s "$root/catalog/artcraft-v1.json" - || result=1
 check_rate_limit_route "$gateway" gateway || result=1
 check_rate_limit_route "$console" console || result=1
 if [[ -n "$revision" ]]; then
   check_session_cache_policy "$gateway" gateway || result=1
   check_session_cache_policy "$console" console || result=1
-  check "$console" console release.json 'report the expected console source revision' \
+  check "$console" console release.json 'report the expected console source revision' "" \
     jq -es --arg revision "$revision" 'length == 1 and .[0].source_revision == $revision' || result=1
 fi
 exit "$result"

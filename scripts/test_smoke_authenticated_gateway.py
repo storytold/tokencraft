@@ -57,6 +57,24 @@ class RevisionPreflightTest(unittest.TestCase):
 
 
 class ScopedResponseFreshnessTest(unittest.TestCase):
+    def test_versioned_check_rejects_mismatched_and_ambiguous_gateway_responses(self):
+        gateway = smoke.Gateway(smoke.origin("http://localhost:4000"), "synthetic-fixture-token", None,
+                                private_api=True, revision=REVISION)
+        for status in (200, 401):
+            for revisions in ((), ("b" * 40,), (REVISION, REVISION)):
+                with self.subTest(status=status, revisions=revisions):
+                    headers = HTTPMessage()
+                    headers["Cache-Control"] = "private, no-store"
+                    for revision in revisions:
+                        headers["TokenCraft-Source-Revision"] = revision
+                    response = Mock(status=status, headers=headers)
+                    with patch.object(smoke, "HTTPConnection") as connection:
+                        connection.return_value.getresponse.return_value = response
+                        with self.assertRaisesRegex(RuntimeError, "expected gateway source revision"):
+                            gateway.request("/v1/usage", status)
+                        response.read.assert_not_called()
+                        connection.return_value.close.assert_called_once()
+
     def test_rejects_aged_or_ambiguous_scoped_responses_before_reading_the_body(self):
         path = "/v1/requests/req_Fixture"
         gateway = smoke.Gateway(smoke.origin("http://localhost:4000"), "synthetic-fixture-token", None,

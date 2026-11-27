@@ -133,6 +133,16 @@ pub async fn run(mut cfg: config::Config) -> anyhow::Result<()> {
 }
 
 async fn serve(listener: tokio::net::TcpListener, app: Router, role: gateway_demo::ProcessRole) -> anyhow::Result<()> {
+  let app = if let Some(revision) = option_env!("TOKENCRAFT_SOURCE_REVISION").filter(|value| {
+    value.len() == 40 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+  }) {
+    app.layer(axum::middleware::map_response(move |mut response: axum::response::Response| async move {
+      response.headers_mut().insert("tokencraft-source-revision", HeaderValue::from_static(revision));
+      response
+    }))
+  } else {
+    app
+  };
   let addr = listener.local_addr()?;
   tracing::info!(?role, "api-gateway listening on http://{addr}");
   // with_connect_info: gives the trace span a peer address even when no proxy header is set.

@@ -252,11 +252,6 @@ pub(super) async fn ready(
     };
     let mut headers = HeaderMap::new();
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    if let Some(revision) = option_env!("TOKENCRAFT_SOURCE_REVISION").filter(|value| {
-        value.len() == 40 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-    }) {
-        headers.insert("tokencraft-source-revision", HeaderValue::from_static(revision));
-    }
     (status, headers, Json(ReadyResponse { ready }))
 }
 

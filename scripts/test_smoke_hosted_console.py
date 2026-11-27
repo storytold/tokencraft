@@ -48,6 +48,10 @@ class ConsoleFixture(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
             return
+        if route.startswith("/v1/") or (route == "/openapi.json" and self.server.gateway_origin):
+            revision = self.server.route_revisions.get(route, self.server.default_revision)
+            if revision is not None:
+                headers["TokenCraft-Source-Revision"] = revision
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -57,7 +61,8 @@ class ConsoleFixture(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def release_gate(console_ready, gateway_ready, revision=REVISION, *, console_session_age=None):
+def release_gate(console_ready, gateway_ready, revision=REVISION, *, console_session_age=None,
+                 console_route_revisions=None):
     with ExitStack() as stack:
         servers = []
         for responses in (console_ready, gateway_ready):
@@ -65,6 +70,9 @@ def release_gate(console_ready, gateway_ready, revision=REVISION, *, console_ses
             server.ready_calls = 0
             server.ready_responses = responses
             server.session_age = console_session_age if not servers else None
+            server.route_revisions = (console_route_revisions or {}) if not servers else {}
+            server.gateway_origin = bool(servers)
+            server.default_revision = revision
             servers.append(server)
         origins = [f"http://127.0.0.1:{server.server_port}" for server in servers]
         args = ["bash", str(ROOT / "scripts/smoke_hosted_console.sh"), *origins]
@@ -108,6 +116,16 @@ class HostedConsoleReadinessTest(unittest.TestCase):
         observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)], console_session_age="30")
         self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
         self.assertIn("FAIL console /v1/auth/me", observed.stderr)
+
+    def test_versioned_check_requires_each_proxied_response_to_match_readiness(self):
+        for route, revision in (("/v1/schemas/primitives", "b" * 40), ("/v1/rate-limits", None),
+                                ("/v1/auth/me", "b" * 40)):
+            with self.subTest(route=route, revision=revision):
+                observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)],
+                                           console_route_revisions={route: revision})
+                self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
+                self.assertIn(f"FAIL console {route}", observed.stderr)
+                self.assertIn("PASS console /ready and gateway source revision", observed.stdout)
 
 
 if __name__ == "__main__":

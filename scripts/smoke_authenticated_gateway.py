@@ -33,11 +33,12 @@ def origin(value):
 
 
 class Gateway:
-    def __init__(self, address, key, tls, *, private_api=False):
+    def __init__(self, address, key, tls, *, private_api=False, revision=None):
         self.address = address
         self.key = key
         self.tls = tls
         self.private_api = private_api
+        self.revision = revision
 
     def request(self, path, expected=200, *, body=None, idempotency_key=None, max_bytes=MAX_RESPONSE):
         host, port = self.address.hostname, self.address.port
@@ -56,11 +57,15 @@ class Gateway:
         try:
             connection.request("GET" if body is None else "POST", path, body, headers)
             response = connection.getresponse()
+            route = path.split("?")[0]
             if response.status != expected:
-                raise RuntimeError(f"{path.split('?')[0]} returned HTTP {response.status}, expected {expected}")
+                raise RuntimeError(f"{route} returned HTTP {response.status}, expected {expected}")
+            if self.revision is not None:
+                require(response.headers.get_all("TokenCraft-Source-Revision") == [self.revision],
+                        f"{self.address.netloc}{route} did not report the expected gateway source revision")
             if self.private_api and path.startswith("/v1/"):
                 require(fresh_no_store(response.headers, private=True),
-                        f"{path.split('?')[0]} did not return a fresh, private, non-storable response")
+                        f"{route} did not return a fresh, private, non-storable response")
             raw = response.read(max_bytes + 1)
             if len(raw) > max_bytes:
                 raise RuntimeError("Gateway response exceeded the smoke check size limit")
@@ -247,7 +252,7 @@ def verify_saved_receipt(gateway, request_id):
     require(usage["totals"]["succeeded"] >= 1, "Usage did not include successful work in the saved request scope")
     fingerprint, artifacts = verify_saved_result(gateway, path)
 
-    anonymous = Gateway(gateway.address, None, gateway.tls, private_api=True)
+    anonymous = Gateway(gateway.address, None, gateway.tls, private_api=True, revision=gateway.revision)
     for route in (path, trace_path, path + "/result", history_path, usage_path, *artifacts):
         error, _ = anonymous.json(route, 401)
         require(error["error"]["code"] == "unauthorized", "An anonymous read did not return a gateway denial")
@@ -260,7 +265,7 @@ def main():
     parser.add_argument("--peer", type=origin, help="Second trusted origin for replay or read-only verification")
     parser.add_argument("--request-id", help="Verify an existing successful receipt using only GET requests")
     parser.add_argument("--ca", help="PEM certificate bundle for a private HTTPS ingress")
-    parser.add_argument("--revision", help="Verify this Git SHA on both gateways before sending a scoped key")
+    parser.add_argument("--revision", help="Verify this Git SHA before sending a scoped key and on every response")
     args = parser.parse_args()
     if args.revision is not None and not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("--revision must be a full lowercase Git SHA")
@@ -276,8 +281,10 @@ def main():
             if args.peer is not None and args.peer != args.api:
                 verify_revision(args.peer, tls, args.revision)
         private_api = args.revision is not None or args.request_id is not None
-        first = Gateway(args.api, key, tls, private_api=private_api)
-        peer = Gateway(args.peer, key, tls, private_api=private_api) if args.peer and args.peer != args.api else first
+        first = Gateway(args.api, key, tls, private_api=private_api, revision=args.revision)
+        peer = first
+        if args.peer and args.peer != args.api:
+            peer = Gateway(args.peer, key, tls, private_api=private_api, revision=args.revision)
         if args.request_id is not None:
             found = verify_saved_receipt(first, args.request_id)
             if peer is not first:
