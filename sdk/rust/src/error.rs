@@ -1,6 +1,11 @@
 use std::error::Error as _;
+use std::time::Duration;
 
-use reqwest::StatusCode;
+use reqwest::{Response, StatusCode};
+use serde::Deserialize;
+
+const MAX_GATEWAY_ERROR_BYTES: usize = 64 * 1024;
+const GATEWAY_ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -49,6 +54,23 @@ impl Error {
         }
     }
 
+    pub(super) async fn from_gateway(response: Response, request_id: Option<String>) -> Self {
+        let status = response.status();
+        let problem = tokio::time::timeout(GATEWAY_ERROR_BODY_TIMEOUT, read_problem(response))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        Self::Gateway {
+            status,
+            code: problem.code.unwrap_or_else(|| "http_error".into()),
+            message: problem
+                .message
+                .unwrap_or_else(|| "the gateway did not return an error message".into()),
+            request_id,
+        }
+    }
+
     pub(super) fn from_http(source: reqwest::Error, request_id: Option<String>) -> Self {
         let source = source.without_url();
         if source.is_timeout() {
@@ -64,4 +86,31 @@ impl Error {
         }
         Self::Transport { source, request_id }
     }
+}
+
+#[derive(Deserialize)]
+struct ErrorEnvelope {
+    #[serde(default)]
+    error: Problem,
+}
+
+#[derive(Default, Deserialize)]
+struct Problem {
+    code: Option<String>,
+    message: Option<String>,
+}
+
+async fn read_problem(mut response: Response) -> Option<Problem> {
+    let declared = response.content_length().unwrap_or_default();
+    if declared > MAX_GATEWAY_ERROR_BYTES as u64 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(declared as usize);
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if chunk.len() > MAX_GATEWAY_ERROR_BYTES - bytes.len() {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice::<ErrorEnvelope>(&bytes).ok().map(|envelope| envelope.error)
 }

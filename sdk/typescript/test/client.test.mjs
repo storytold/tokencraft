@@ -13,6 +13,85 @@ const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const image = { model: "studio_image_demo", workload: { kind: "image", count: 1, aspect_ratio: "7:5" } };
 const options = { baseUrl: "https://gateway.example/edge/", apiKey: "fixture_key" };
 
+test("unusable error bodies preserve the HTTP status and request ID", async () => {
+  const diagnostic = JSON.stringify({ error: { code: "proxy_diagnostic", message: "diagnostic line\n".repeat(5_000) } });
+  const headers = { "TokenCraft-Request-Id": requestId };
+  let canceled = false;
+  const streamed = new ReadableStream({
+    start(controller) {
+      const bytes = new TextEncoder().encode(diagnostic);
+      controller.enqueue(bytes.subarray(0, 32 * 1024));
+      controller.enqueue(bytes.subarray(32 * 1024));
+    },
+    cancel() { canceled = true; },
+  });
+  const replies = [
+    new Response(diagnostic, { status: 502, headers: { ...headers, "Content-Length": String(diagnostic.length) } }),
+    new Response(streamed, { status: 502, headers }),
+    new Response("<h1>Upstream unavailable</h1>", { status: 502, headers }),
+  ];
+  const client = new TokenCraft({ ...options, fetch: async () => replies.shift() });
+  for (let i = 0; i < 3; i++) {
+    await assert.rejects(client.quote(image), { status: 502, code: "http_error", requestId });
+  }
+  assert.ok(canceled);
+});
+
+test("stalled HTTP error bodies are canceled while the known status is returned", { timeout: 4_000 }, async (t) => {
+  let closeResponse;
+  const closed = new Promise((resolve) => { closeResponse = resolve; });
+  const server = createServer((request, response) => {
+    request.resume();
+    response.once("close", closeResponse);
+    response.writeHead(502, { "Content-Length": "32", "TokenCraft-Request-Id": requestId });
+    response.write("{");
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  await once(server, "listening");
+  const client = new TokenCraft({
+    ...options, baseUrl: `http://127.0.0.1:${server.address().port}`, timeoutMs: 5_000,
+  });
+  await assert.rejects(client.quote(image), { status: 502, code: "http_error", requestId });
+  await closed;
+});
+
+test("caller cancellation interrupts error decoding", async () => {
+  let canceled = 0;
+  const client = new TokenCraft({ ...options, timeoutMs: 5_000, fetch: async () => {
+    const stream = new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("{")); },
+      cancel() { canceled++; },
+    });
+    return new Response(stream, { status: 502, headers: { "TokenCraft-Request-Id": requestId } });
+  } });
+  const controller = new AbortController();
+  const reason = new Error("stop waiting on the response");
+  const operation = client.quote(image, { signal: controller.signal });
+  await Promise.resolve();
+  controller.abort(reason);
+  await assert.rejects(operation, (error) => error === reason);
+  assert.equal(canceled, 1);
+});
+
+test("chunked TokenCraft errors retain their UTF-8 details", async () => {
+  const message = "Le fichier est prêt.";
+  const encoded = new TextEncoder().encode(JSON.stringify({ error: { code: "fixture", message } }));
+  const split = encoded.indexOf(0xc3) + 1;
+  const stream = new ReadableStream({ start(controller) {
+    controller.enqueue(encoded.subarray(0, split));
+    controller.enqueue(encoded.subarray(split));
+    controller.close();
+  } });
+  const client = new TokenCraft({ ...options, fetch: async () => new Response(stream, {
+    status: 409, headers: { "TokenCraft-Request-Id": requestId },
+  }) });
+  await assert.rejects(client.quote(image), { status: 409, code: "fixture", requestId, message });
+});
+
 test("uses scoped quotes, preserves the base path, and sends no secret for public calls", async () => {
   const seen = [];
   const client = new TokenCraft({

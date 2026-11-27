@@ -1,6 +1,8 @@
 import { readArtifact, readVerifiedContent, sha256, validContentType, validateArtifactRef } from "./content.js";
 import type { ContentMetadata, DownloadOptions, RetainedContent, VerifiedArtifact } from "./content.js";
-import { deadline, hasIdPrefix, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError } from "./http.js";
+import {
+  deadline, gatewayError, hasIdPrefix, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError,
+} from "./http.js";
 import { validateTraceparent } from "./trace.js";
 import type { OtlpTrace, RequestTraceSnapshot, TraceBaseline } from "./trace.js";
 import {
@@ -364,12 +366,9 @@ export class TokenCraft {
             continue;
           }
           if (!response.ok) {
-            const payload: unknown = await response.json().catch(() => null);
+            const error = await gatewayError(response, request.signal, id);
             request.signal.throwIfAborted();
-            const error = object(payload) && object(payload.error) ? payload.error : {};
-            const code = typeof error.code === "string" ? error.code : "http_error";
-            const message = typeof error.message === "string" ? error.message : `Gateway returned HTTP ${response.status}.`;
-            throw new TokenCraftError(response.status, code, message, id);
+            throw error;
           }
           const value = await consume(response, id);
           request.signal.throwIfAborted();

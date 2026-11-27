@@ -146,6 +146,55 @@ async fn scoped_quote_uses_bearer_and_preserves_gateway_error() {
 }
 
 #[tokio::test]
+async fn unusable_error_bodies_preserve_the_http_status_and_request_id() {
+    let prefix = format!(
+        "HTTP/1.1 502 Bad Gateway\r\nTokenCraft-Request-Id: {REQUEST}\r\nConnection: close\r\n"
+    );
+    let diagnostic = json!({
+        "error": { "code": "proxy_diagnostic", "message": "diagnostic line\n".repeat(5_000) }
+    }).to_string();
+    let responses = [
+        format!("{prefix}Content-Length: 65537\r\n\r\n"),
+        format!("{prefix}Content-Length: 32\r\n\r\n{{"),
+        format!(
+            "{prefix}Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{diagnostic}\r\n0\r\n\r\n",
+            diagnostic.len()
+        ),
+    ];
+    for wire in responses {
+        let (origin, captured) = reply_wire(wire).await;
+        let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        let error = client.quote(&input()).await.unwrap_err();
+        assert_eq!(error.status().map(|status| status.as_u16()), Some(502));
+        assert_eq!(error.request_id(), Some(REQUEST));
+        assert!(matches!(error, Error::Gateway { code, .. } if code == "http_error"));
+        captured.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn stalled_error_bodies_do_not_hide_the_known_http_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(socket);
+        assert!(reader.read_line(&mut String::new()).await.unwrap() > 0);
+        let headers = format!(
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 32\r\nTokenCraft-Request-Id: {REQUEST}\r\n\r\n{{"
+        );
+        reader.get_mut().write_all(headers.as_bytes()).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_secs(5)).unwrap();
+    let result = timeout(Duration::from_secs(3), client.quote(&input())).await;
+    server.abort();
+    let error = result.unwrap().unwrap_err();
+    assert_eq!(error.request_id(), Some(REQUEST));
+    assert!(matches!(error, Error::Gateway { status, code, .. } if status.as_u16() == 502 && code == "http_error"));
+}
+
+#[tokio::test]
 async fn reads_provider_path_from_scoped_trace() {
     use tokencraft_sdk::{DownstreamProvider, Provider, ProviderAttemptState};
 

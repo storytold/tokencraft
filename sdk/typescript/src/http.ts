@@ -18,6 +18,59 @@ export class TokenCraftTimeoutError extends Error {
   }
 }
 
+const maxGatewayErrorBytes = 64 * 1024;
+const gatewayErrorBodyTimeoutMs = 1_000;
+
+export async function gatewayError(
+  response: Response, signal: AbortSignal, requestId?: string,
+): Promise<TokenCraftError> {
+  const detail = await readErrorDetail(response, signal);
+  const code = typeof detail?.code === "string" ? detail.code : "http_error";
+  const message = typeof detail?.message === "string" ? detail.message : `Gateway returned HTTP ${response.status}.`;
+  return new TokenCraftError(response.status, code, message, requestId);
+}
+
+async function readErrorDetail(response: Response, signal: AbortSignal): Promise<Record<string, unknown> | undefined> {
+  const body = response.body;
+  if (!body || body.locked) return;
+  if (Number(response.headers.get("content-length")) > maxGatewayErrorBytes) {
+    void body.cancel().catch(() => {});
+    return;
+  }
+
+  const reader = body.getReader();
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    void reader.cancel().catch(() => {});
+  };
+  const timer = setTimeout(stop, gatewayErrorBodyTimeoutMs);
+  signal.addEventListener("abort", stop, { once: true });
+  if (signal.aborted) stop();
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let text = "";
+    let bytes = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (stopped) return;
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxGatewayErrorBytes) return;
+      text += decoder.decode(value, { stream: true });
+    }
+    const payload: unknown = JSON.parse(text + decoder.decode());
+    if (object(payload) && object(payload.error)) return payload.error;
+  } catch {
+    // The status and request ID are available even when the error body cannot be decoded.
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", stop);
+    stop();
+    reader.releaseLock();
+  }
+}
+
 export function milliseconds(value: number, name: string): number {
   if (!Number.isInteger(value) || value <= 0 || value > 2_147_483_647) {
     throw new RangeError(`${name} must be a positive integer in milliseconds.`);

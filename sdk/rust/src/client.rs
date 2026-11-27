@@ -4,7 +4,7 @@ use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CACHE_CONTROL, ETAG, IF_NONE_MATCH, RETRY_AFTER,
 };
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::content::verify_download;
 use crate::trace::{submit_traceparent, OtlpTrace, RequestTraceSnapshot, TraceBaseline};
@@ -691,23 +691,10 @@ impl TokenCraftClient {
         id_hint: Option<&str>,
     ) -> Result<(Response, Option<String>), Error> {
         let request_id = response_request_id(&response).or(id_hint).map(str::to_owned);
-        let status = response.status();
-        if status.is_success() {
+        if response.status().is_success() {
             return Ok((response, request_id));
         }
-        let problem = match response.json::<ErrorEnvelope>().await {
-            Ok(envelope) => envelope.error,
-            Err(source) if source.is_decode() => Problem::default(),
-            Err(source) => return Err(Error::from_http(source, request_id)),
-        };
-        Err(Error::Gateway {
-            status,
-            code: problem.code.unwrap_or_else(|| "http_error".into()),
-            message: problem
-                .message
-                .unwrap_or_else(|| "the gateway did not return an error message".into()),
-            request_id,
-        })
+        Err(Error::from_gateway(response, request_id).await)
     }
 }
 
@@ -802,16 +789,4 @@ struct MediaPrompts<'a> {
 #[derive(Serialize)]
 struct Delivery<'a> {
     webhook_subscription_id: &'a str,
-}
-
-#[derive(Deserialize)]
-struct ErrorEnvelope {
-    #[serde(default)]
-    error: Problem,
-}
-
-#[derive(Default, Deserialize)]
-struct Problem {
-    code: Option<String>,
-    message: Option<String>,
 }

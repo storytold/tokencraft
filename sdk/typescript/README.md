@@ -27,6 +27,8 @@ Native submissions and published workflow invocations make one attempt by defaul
 
 Artifact and workflow-output downloads also make one attempt by default. Set `downloadMaxAttempts: 3` to retry a `429` or `503` with a valid `Retry-After`. One `timeoutMs` and the caller's abort signal cover the wait, repeat requests, and final verified transfer.
 
+The SDK gives an HTTP error body up to one second and 64 KiB within the operation deadline. If it cannot decode the error details, `TokenCraftError` reports `http_error` with the HTTP status and any available request ID.
+
 For a shared project key, pass the same `clientRef` to `quote(input, { clientRef })` and `submit(quote, { idempotencyKey, clientRef, ...options })`.
 
 To link the active span of your application, pass its trace header to `submit(quote, { idempotencyKey, traceparent })`. Call `trace(receipt.id)` to read the stored correlation, or use `list({ traceId: callerTraceId })` to find the request by the caller's trace ID. [Trace correlation](../../docs/request-diagnostics.md#link-a-caller-trace)
