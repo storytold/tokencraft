@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { errorMessage, gatewayRequest } from "@/lib/gateway";
-import type { PolicyRevision, RoutingPolicy } from "@/lib/routing-policy";
+import { policyRequestTimeoutMs, type PolicyRevision, type RoutingPolicy } from "@/lib/routing-policy";
 
 type Draft = RoutingPolicy | string;
 type SaveStatus = {
@@ -52,10 +52,13 @@ export function usePolicyAutosave(path: string) {
 
       saving = true;
       notify({ kind: "saving" });
+      // A queued write keeps its deadline and original scope after the editor unmounts.
+      const deadline = AbortSignal.timeout(policyRequestTimeoutMs);
       const write = gatewayRequest<PolicyRevision>(path, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ expected_revision: revision, policy: draft }),
+        signal: deadline,
       });
       activeWrites.set(path, write);
       try {
@@ -67,9 +70,13 @@ export function usePolicyAutosave(path: string) {
       } catch (error) {
         queued ??= invalid ? undefined : draft;
         blocked = error instanceof ApiError && error.status === 409 ? "conflict" : "failed";
-        notify({ kind: blocked, message: blocked === "conflict"
-          ? "This policy changed elsewhere. Reload to see the latest revision before editing again."
-          : `Changes couldn’t be saved. ${errorMessage(error)}` });
+        let message = `Changes couldn’t be saved. ${errorMessage(error)}`;
+        if (blocked === "conflict") {
+          message = "The policy revision changed. Reload to see the latest revision before editing again.";
+        } else if (deadline.aborted) {
+          message = "The gateway did not confirm the save. Retry this draft or reload the policy to check the current revision.";
+        }
+        notify({ kind: blocked, message });
       } finally {
         if (activeWrites.get(path) === write) activeWrites.delete(path);
         saving = false;
@@ -108,14 +115,18 @@ export function usePolicyAutosave(path: string) {
         pending = activeWrites.get(path);
       }
       if (controller.signal.aborted) return;
+      const deadline = AbortSignal.timeout(policyRequestTimeoutMs);
+      const signal = AbortSignal.any([controller.signal, deadline]);
       try {
-        const next = await gatewayRequest<PolicyRevision>(path, { signal: controller.signal });
+        const next = await gatewayRequest<PolicyRevision>(path, { signal });
         if (controller.signal.aborted) return;
         revision = next.revision;
         setLoaded(next);
         setCurrent(next);
       } catch (error) {
-        if (!controller.signal.aborted) setLoadError(errorMessage(error));
+        if (!controller.signal.aborted) {
+          setLoadError(deadline.aborted ? "Timed out loading the routing policy." : errorMessage(error));
+        }
       }
     }
     void load();

@@ -1,5 +1,7 @@
 import type { Provider } from "./gateway";
 
+export const policyRequestTimeoutMs = 10_000;
+
 export type PolicySource =
   | "request" | "model_default" | "organization_default" | "project_default"
   | "organization_limit" | "project_limit" | "organization_offer" | "project_offer";

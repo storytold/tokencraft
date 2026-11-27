@@ -4,7 +4,8 @@ import { ChoicePicker } from "@/components/ChoicePicker";
 import { Button, Card, Input } from "@/components/ui";
 import { errorMessage, gatewayRequest, isGatewayEndpointUnavailable, type ProjectScope } from "@/lib/gateway";
 import {
-  dollarText, maxMonthlyBudget, parseActiveRequestLimit, parseDataRequirements, parseDollarCap, parseToleratedPercent, routeRankingNames,
+  dollarText, maxMonthlyBudget, parseActiveRequestLimit, parseDataRequirements, parseDollarCap, parseToleratedPercent,
+  policyRequestTimeoutMs, routeRankingNames,
   type ActiveRequestLimits, type ActiveRequests, type Bounds, type RoutingPolicy,
 } from "@/lib/routing-policy";
 import { comparisonApi, formatNanoUsd, providerLabel, usd, type Offer, type Provider, type Quote, type QuoteInput } from "@/surfaces/comparison/api";
@@ -209,15 +210,19 @@ function PolicyEditor({ accountId, projectId, layer, offers = [] }: { accountId:
     }
     const controller = new AbortController();
     previewRequest.current = controller;
+    const deadline = AbortSignal.timeout(policyRequestTimeoutMs);
+    const signal = AbortSignal.any([controller.signal, deadline]);
     const scope = new URLSearchParams({ account_id: accountId, project_id: projectId });
     setPreviewBusy(true);
     try {
       const next = await gatewayRequest<Quote>(`/v1/routing-policy/preview?${scope}`, {
-        method: "POST", headers: json, signal: controller.signal, body: JSON.stringify({ layer, policy: draft, input }),
+        method: "POST", headers: json, signal, body: JSON.stringify({ layer, policy: draft, input }),
       });
       if (!controller.signal.aborted) setPreview(next);
     } catch (error) {
-      if (!controller.signal.aborted) setPreviewError(errorMessage(error));
+      if (!controller.signal.aborted) {
+        setPreviewError(deadline.aborted ? "Timed out previewing the routing policy." : errorMessage(error));
+      }
     } finally {
       if (!controller.signal.aborted) setPreviewBusy(false);
     }
