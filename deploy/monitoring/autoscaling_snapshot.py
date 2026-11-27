@@ -29,6 +29,7 @@ def snapshot(observation, source, now, max_age=45):
     result = {
         "cell": name, "observed_at": min(sampled_at, external_at),
         "database": {"healthy": source["database_healthy"] is True,
+                     "primary": sample.get("database_primary") is True,
                      "additional_connections": sample["database_connections_available"],
                      "admissions_paused": maintenance.get("paused") if isinstance(maintenance, dict) else None},
     }

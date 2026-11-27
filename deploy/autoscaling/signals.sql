@@ -1,12 +1,15 @@
 BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout = '2000ms';
 
+SELECT NOT pg_is_in_recovery() AS database_primary \gset
 \set observed_admissions_paused null
+\if :database_primary
 SELECT coalesce(has_table_privilege(to_regclass('public.gateway_admission_control'), 'SELECT'), false)
     AS can_read_admission_pause \gset
 \if :can_read_admission_pause
 SELECT coalesce((SELECT paused::text FROM public.gateway_admission_control WHERE singleton), 'null')
     AS observed_admissions_paused \gset
+\endif
 \endif
 
 WITH lanes AS (
@@ -19,6 +22,7 @@ WITH lanes AS (
     FROM pg_stat_activity WHERE backend_type = 'client backend'
 )
 SELECT json_build_object(
+    'database_primary', :'database_primary'::boolean,
     'oldest_ready_age_seconds', coalesce(floor(max(oldest_seconds))::integer, 0),
     'eligible_sample', sum(eligible),
     'additional_connections', (SELECT free FROM connections),

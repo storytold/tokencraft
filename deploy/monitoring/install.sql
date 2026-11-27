@@ -51,6 +51,7 @@ SET search_path = pg_catalog, pg_temp
 AS $sample$
 WITH parameters AS MATERIALIZED (
     SELECT now() AS sampled_at,
+           NOT pg_is_in_recovery() AS database_primary,
            ARRAY(SELECT jsonb_array_elements_text(providers)) AS providers
     WHERE jsonb_array_length(providers) BETWEEN 1 AND 64
       AND jsonb_array_length(targets) <= 64
@@ -218,6 +219,7 @@ provider_work AS MATERIALIZED (
 )
 SELECT jsonb_build_object(
     'window_seconds', 900,
+    'database_primary', n.database_primary,
     'maintenance', CASE WHEN scope_account IS NULL THEN tokencraft_monitor.maintenance() END,
     'truncated', (SELECT count(*) = 10001 AND min(created_at) >= n.sampled_at - interval '15 minutes' FROM newest),
     'provider', coalesce((SELECT jsonb_object_agg(provider, metrics) FROM provider_summary), '{}'::jsonb),

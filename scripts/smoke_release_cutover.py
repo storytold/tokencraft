@@ -371,7 +371,18 @@ def rehearse(args, folder, stack):
         "-f", root / "deploy/monitoring/install.sql", settings=pg_env)
     monitor_query = """BEGIN READ ONLY; SET LOCAL ROLE tokencraft_cutover_monitor;
         SELECT tokencraft_monitor.sample('["mock"]', '[]', '{"local":[],"connector":[]}', 0, NULL, NULL); COMMIT;"""
-    assert json.loads(psql(monitor_query))["maintenance"]["paused"] is True
+
+    def standalone_sample(port):
+        return json.loads(run(
+            pg / "psql", "-XqAtw", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
+            "-v", "reserve_connections=10", "-v", 'bindings={"local":[],"connector":[],"poll":[],"lookup":[]}',
+            "-f", root / "deploy/autoscaling/signals.sql",
+            settings=dict(pg_env, PGPORT=str(port), PGUSER="tokencraft_runtime", PGPASSWORD=runtime_password),
+        ))
+
+    writer_monitor = json.loads(psql(monitor_query))
+    assert writer_monitor["maintenance"]["paused"] is True
+    writer_sample = standalone_sample(pg_port)
     standby, standby_port = folder / "standby", smoke.loopback_port()
     run(pg / "pg_basebackup", "-w", "-D", standby, "-X", "stream", "-R", "-c", "fast", settings=pg_env)
     with postgres_service(standby, standby_port):
@@ -382,8 +393,15 @@ def rehearse(args, folder, stack):
                                    cwd=folder, env=standby_runtime, capture_output=True, text=True, timeout=15)
         assert assertion.returncode == 1 and not assertion.stdout
         assert "admission status requires the cell's primary database" in assertion.stderr
-        assert json.loads(psql(monitor_query, port=standby_port))["maintenance"] is None
-    print("PASS a PostgreSQL standby cannot confirm the pause through the CLI or Operations", flush=True)
+        monitored = json.loads(psql(monitor_query, port=standby_port))
+        measured = standalone_sample(standby_port)
+        assert measured["admissions_paused"] is None, f"standby reported a live admission state: {measured}"
+        assert monitored["maintenance"] is None
+        assert measured["database_primary"] is monitored["database_primary"] is False
+    assert writer_sample["database_primary"] is writer_monitor["database_primary"] is True
+    assert writer_sample["admissions_paused"] is True
+    print("PASS both capacity samplers identify the PostgreSQL writer and withhold admission state on a standby",
+          flush=True)
 
     versions = psql(
         "SELECT string_agg(version::text, ',' ORDER BY version) FROM public._sqlx_migrations WHERE success"

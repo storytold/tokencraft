@@ -98,6 +98,7 @@ def collect(source, token, psql):
         "cell": source["cell"], "observed_at": sampled_at,
         "database": {
             "healthy": source["database_healthy"] is True,
+            "primary": database.get("database_primary") is True,
             "additional_connections": database["additional_connections"],
             "admissions_paused": database.get("admissions_paused"),
         },

@@ -17,7 +17,7 @@ class PolicyTest(unittest.TestCase):
         }
         self.sample = {
             "cell": "test", "observed_at": 1000,
-            "database": {"healthy": True, "additional_connections": 40, "admissions_paused": False},
+            "database": {"healthy": True, "primary": True, "additional_connections": 40, "admissions_paused": False},
             "api": {"desired": 3, "ready": 3, "stable": True, "deployment_version": "11",
                     "cpu_fraction": 0.4, "sse_readers": 0, "sse_capacity": 96},
             "worker": {"desired": 2, "ready": 2, "stable": True, "deployment_version": "21", "active_tasks": 0,
@@ -80,6 +80,37 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(state["roles"]["api"]["high_since"], 1030)
         action, _ = self.tick(state, 60)
         self.assertEqual((action["decision"], action["role"]), ("scale", "api"))
+
+    def test_unverified_writer_clears_pressure_even_at_the_same_timestamp(self):
+        self.sample["api"]["cpu_fraction"] = 0.9
+        self.sample["worker"].update(oldest_ready_age_seconds=61, active_tasks=8)
+        database = self.sample["database"]
+        for evidence in (False, None, 1, "true"):
+            with self.subTest(evidence=evidence):
+                database["primary"] = True
+                _, state = self.tick({}, 0)
+                _, state = self.tick(state, 15)
+                if evidence is None:
+                    database.pop("primary")
+                else:
+                    database["primary"] = evidence
+                action, state = self.tick(state, 15)
+                self.assertIn("primary database", action["reason"])
+                self.assertEqual(state["roles"], {})
+                self.assertEqual(self.tick(state, 30)[0]["decision"], "hold")
+
+                database["primary"] = True
+                action, state = self.tick(state, 30)
+                self.assertEqual(action["decision"], "hold")
+                self.assertEqual(self.tick(state, 60)[0]["decision"], "scale")
+
+    def test_legacy_state_cannot_supply_verified_writer_pressure(self):
+        self.sample["api"]["cpu_fraction"] = 0.9
+        _, state = self.tick({}, 0)
+        del state["database_primary"]
+        action, state = self.tick(state, 30)
+        self.assertEqual(action["decision"], "hold")
+        self.assertEqual(state["roles"]["api"]["high_since"], 1030)
 
     def test_api_can_scale_over_requested_cpu_without_provider_slots(self):
         self.sample["api"]["cpu_fraction"] = 1.3
@@ -193,7 +224,7 @@ class PolicyTest(unittest.TestCase):
                        "local_bindings": [], "connector_bindings": ["1" * 64],
                        "poll_bindings": ["1" * 64, "2" * 64], "lookup_bindings": ["2" * 64]},
         }
-        database = {"additional_connections": 90, "eligible_sample": 3, "oldest_ready_age_seconds": 41,
+        database = {"database_primary": True, "additional_connections": 90, "eligible_sample": 3, "oldest_ready_age_seconds": 41,
                     "admissions_paused": True}
         with patch("collect.time.time", return_value=1001), \
                 patch("collect.scrape", side_effect=lambda url, _: probes[url]), \
@@ -207,6 +238,16 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["worker"]["oldest_ready_age_seconds"], 41)
         self.assertRegex(snapshot["api"]["replica_set"], r"^[0-9a-f]{64}$")
         self.assertIs(snapshot["database"]["admissions_paused"], True)
+        self.assertIs(snapshot["database"]["primary"], True)
+
+        source["database_primary"] = True
+        database.pop("database_primary")
+        with patch("collect.time.time", return_value=1001), \
+                patch("collect.scrape", side_effect=lambda url, _: probes[url]), \
+                patch("collect.query_database", return_value=database):
+            self.assertIs(collect(source, "synthetic", "psql")["database"]["primary"], False)
+            database["database_primary"] = False
+            self.assertIs(collect(source, "synthetic", "psql")["database"]["primary"], False)
 
         source["api"].update(desired=2, probe_urls=["api", "alias"])
         probes["alias"] = probes["api"].copy()

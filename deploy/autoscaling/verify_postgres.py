@@ -134,6 +134,7 @@ def check_queries(pg_bin, directory):
     measured = sample()
     assert measured["oldest_ready_age_seconds"] >= 30 and measured["eligible_sample"] == 1, measured
     assert measured["additional_connections"] > 0, measured
+    assert measured["database_primary"] is True
     assert measured["admissions_paused"] is None
     query("--single-transaction", *(arg for path in migrations[gate_index:] for arg in ("-f", path)))
     assert sample()["admissions_paused"] is False
@@ -195,6 +196,7 @@ def check_queries(pg_bin, directory):
     query("-c", "UPDATE public.gateway_admission_control SET paused = true")
     whole_cell = json.loads(query("-c", "SET ROLE capacity_monitor; " +
         f"SELECT tokencraft_monitor.sample('{providers}', '[]', '{settings}', 10, NULL, NULL)"))
+    assert whole_cell["database_primary"] is True
     assert whole_cell["maintenance"]["paused"] is sample("capacity_collector")["admissions_paused"] is True
     query("-c", "UPDATE public.gateway_admission_control SET paused = false")
     monitored = json.loads(query("-c", "SET ROLE capacity_monitor; " +
@@ -266,7 +268,9 @@ def verify_scale_in(pg_bin, directory, query):
         "worker": {"deployment": "worker", "min": 2, "max": 6},
     }
     snapshot = {
-        "cell": "fixture", "database": {"healthy": True, "additional_connections": 30, "admissions_paused": False},
+        "cell": "fixture", "database": {
+            "healthy": True, "primary": True, "additional_connections": 30, "admissions_paused": False,
+        },
         "api": {"desired": 3, "ready": 3, "stable": True, "deployment_version": "11", "cpu_fraction": 0.1,
                 "sse_readers": 0, "sse_capacity": 96},
         "worker": {"desired": 2, "ready": 2, "stable": True, "deployment_version": "21", "active_tasks": 0,
@@ -279,7 +283,7 @@ def verify_scale_in(pg_bin, directory, query):
         now = time.time()
         sample_file.write_text(json.dumps(dict(snapshot, observed_at=now)))
         state_file.write_text(json.dumps({
-            "cell": "fixture", "last_observed_at": now - 15, "admissions_paused": False,
+            "cell": "fixture", "last_observed_at": now - 15, "database_primary": True, "admissions_paused": False,
             "roles": {"api": {"desired": 3, "low_since": now - 301}},
         }))
         result = subprocess.run([

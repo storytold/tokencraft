@@ -30,7 +30,7 @@ POLICY = {
 
 def sample():
     return {
-        "window_seconds": 900, "truncated": False, "provider": {}, "compute": {},
+        "window_seconds": 900, "database_primary": True, "truncated": False, "provider": {}, "compute": {},
         "eligible": 2, "oldest_eligible_seconds": 75, "database_connections_available": 20,
         "provider_work": {
             "submit": {"eligible": 2, "oldest_seconds": 75},
@@ -289,7 +289,14 @@ class IntegrationLogic(unittest.TestCase):
         computed = scaling_snapshot(obs, source, 115)
         self.assertEqual(computed["observed_at"], 108)
         self.assertIsNone(computed["database"]["admissions_paused"])
+        self.assertIs(computed["database"]["primary"], True)
         maintenance = obs["cells"]["lab"]["sample"]
+        source["database_primary"] = True
+        maintenance.pop("database_primary")
+        self.assertIs(scaling_snapshot(obs, source, 115)["database"]["primary"], False)
+        maintenance["database_primary"] = False
+        self.assertIs(scaling_snapshot(obs, source, 115)["database"]["primary"], False)
+        maintenance["database_primary"] = True
         for paused in (True, False):
             maintenance["maintenance"] = {"paused": paused}
             source["admissions_paused"] = not paused

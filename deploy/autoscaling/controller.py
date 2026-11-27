@@ -123,7 +123,8 @@ def decide(config, snapshot, previous, now):
         raise ValueError("controller state belongs to another cell")
     state = {
         "cell": config["cell"], "last_observed_at": None, "last_action_at": previous.get("last_action_at"),
-        "last_scaled_role": previous.get("last_scaled_role"), "admissions_paused": None, "roles": {},
+        "last_scaled_role": previous.get("last_scaled_role"), "database_primary": False,
+        "admissions_paused": None, "roles": {},
     }
 
     def hold(reason):
@@ -135,16 +136,20 @@ def decide(config, snapshot, previous, now):
     if not fresh(sampled_at, now):
         return hold("snapshot is stale or has an invalid timestamp")
     database = snapshot["database"]
+    prior_at = previous.get("last_observed_at")
+    if database.get("primary") is not True:
+        state["last_observed_at"] = max(sampled_at, prior_at) if prior_at is not None else sampled_at
+        return hold("autoscaling requires a sample from the cell's primary database")
     paused = database.get("admissions_paused")
     if type(paused) is not bool:
         paused = None
-    prior_at = previous.get("last_observed_at")
     if prior_at is not None and sampled_at <= prior_at:
         # A newer database read can share the same oldest contributing timestamp.
         if sampled_at == prior_at and paused is not False:
             previous = {**previous, "admissions_paused": paused}
         return {"decision": "hold", "reason": "waiting for a fresh snapshot"}, previous
     state["last_observed_at"] = sampled_at
+    state["database_primary"] = True
     state["admissions_paused"] = paused
     if database["healthy"] is not True:
         return hold("database health guard is closed")
@@ -156,7 +161,8 @@ def decide(config, snapshot, previous, now):
     reserved = sum(snapshot[role]["desired"] for role in ROLES) * config["connections_per_replica"]
     remaining = min(free_connections, config["connection_budget"] - reserved)
 
-    continuity = prior_at is not None and sampled_at - prior_at <= MAX_SAMPLE_AGE
+    continuity = (previous.get("database_primary") is True and prior_at is not None
+                  and sampled_at - prior_at <= MAX_SAMPLE_AGE)
     elapsed = now - state["last_action_at"] if state["last_action_at"] is not None else math.inf
     actions = []
     for role, (high, low, reason) in pressure.items():
