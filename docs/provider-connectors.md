@@ -106,6 +106,8 @@ Use `GET /v1/catalog/models/scoped` to populate an application's model picker, t
 
 Use a shared local model ID for equivalent offers when you want TokenCraft to compare providers. For example, a local five-second video model can have separate fal and Kinovi offers. Each offer keeps its own upstream model, binding, capabilities, and price. The scoped quote includes the estimates and the selected offer. By default it selects the lowest priced eligible offer. Request and account preferences can change the order within the project's limits. [Routing policy](deployment.md#routing-policy-precedence)
 
+Compare starts image requests with an aspect ratio from the model's scoped catalog and video requests with the selected preset's ratio. Choose a catalog suggestion or type a custom ratio. Ratio matching uses the project policy by default, and the quote shows the applied ratio for each eligible offer.
+
 If one project key serves several customers, include the same opaque `client_ref` when quoting and submitting. Filter subsequent request and usage reads by that reference. Issue a client-pinned key when a caller should only be able to read or submit for one client. [Request diagnostics](request-diagnostics.md)
 
 ### Adopt a new preset revision

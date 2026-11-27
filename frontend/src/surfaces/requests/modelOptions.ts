@@ -44,6 +44,15 @@ export function modelChoices(catalog: ModelCatalog | null) {
   return Array.from(choices).sort((a, b) => order.indexOf(a[1].kind) - order.indexOf(b[1].kind));
 }
 
+export function defaultImageAspectRatio(ratios: readonly string[]) {
+  return ratios.includes("1:1") ? "1:1" : ratios[0] ?? "1:1";
+}
+
+export function validAspectRatio(value: string) {
+  if (!/^[0-9]{1,3}:[0-9]{1,3}$/.test(value)) return false;
+  return value.split(":").every((part) => Number(part) >= 1 && Number(part) <= 100);
+}
+
 export const presetLabels = { video: "Video preset", audio: "Audio preset", mesh: "3D format" };
 
 export function modelPresets(choice?: ModelChoice) {

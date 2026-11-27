@@ -12,7 +12,7 @@ import { statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
 import { ReceiptRecovery } from "@/surfaces/comparison/ReceiptRecovery";
 import { useModelSubmission } from "@/surfaces/comparison/useModelSubmission";
 import { ProjectPicker, ProjectStatus, useProject } from "@/surfaces/projects/ProjectScope";
-import { modelChoices, modelPresets, modalityNames, presetLabels, type Modality, type ModelChoice } from "@/surfaces/requests/modelOptions";
+import { defaultImageAspectRatio, modelChoices, modelPresets, modalityNames, presetLabels, type Modality, type ModelChoice } from "@/surfaces/requests/modelOptions";
 import { RequestWaterfall } from "@/surfaces/requests/RequestWaterfall";
 import { requestIsActive, useRequestStatus } from "@/surfaces/requests/useRequestListener";
 import { ModelPicker } from "./ModelPicker";
@@ -311,7 +311,7 @@ function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft,
   const [evaluation, setEvaluation] = useState<{ key: string; quote?: ModelQuote; error?: string }>();
   const presets = useMemo(() => modelPresets(choice), [choice]);
   const ratios = choice.aspectRatios.length ? choice.aspectRatios : ["1:1"];
-  const ratio = ratioChoice || (ratios.includes("1:1") ? "1:1" : ratios[0]);
+  const ratio = ratioChoice || defaultImageAspectRatio(ratios);
   const preset = (presets.find(([id]) => id === presetChoice) ?? presets[0])?.[1];
   const maxNanos = parseDollarCap(costCap);
   const validClient = !clientRef || /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(clientRef);

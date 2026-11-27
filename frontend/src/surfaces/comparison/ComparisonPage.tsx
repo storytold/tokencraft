@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { SlidersHorizontal } from "lucide-react";
 import { Button, Card, Container, Input, Select } from "@/components/ui";
@@ -10,9 +10,26 @@ import { comparisonApi, errorMessage, type ModelCatalog, type ModelQuote, type P
 import { OfferComparison } from "./OfferComparison";
 import { ProviderOrder, providerOrderValue } from "./ProviderOrder";
 import { RequestActivity } from "./RequestActivity";
-import { catalogModelName, modelChoices, modelPresets, presetLabels } from "@/surfaces/requests/modelOptions";
+import { catalogModelName, defaultImageAspectRatio, modelChoices, modelPresets, presetLabels, validAspectRatio } from "@/surfaces/requests/modelOptions";
 
 const labelClass = "block space-y-1.5 text-sm font-medium";
+
+function AspectRatioInput({ label, value, ratios, invalid, onChange }: {
+  label: string; value: string; ratios: string[]; invalid: boolean; onChange: (value: string) => void;
+}) {
+  const id = useId();
+  return (
+    <div className={labelClass}>
+      <label htmlFor={id}>{label}</label>
+      <Input id={id} value={value} list={ratios.length ? `${id}-ratios` : undefined} maxLength={7}
+        aria-invalid={invalid || undefined} aria-describedby={invalid ? `${id}-error` : undefined}
+        onChange={(event) => onChange(event.target.value)} />
+      {ratios.length > 0 && <datalist id={`${id}-ratios`}>{ratios.map((ratio) => <option key={ratio} value={ratio} />)}</datalist>}
+      {invalid && <span id={`${id}-error`} className="block text-xs text-rose-500">Enter two integers from 1 to 100 separated by a colon.</span>}
+    </div>
+  );
+}
+
 export default function ComparisonPage() {
   useEffect(() => {
     const previous = document.title;
@@ -40,13 +57,13 @@ function ComparisonForm({ scope, clientRef, children }: {
   const [catalogVersion, setCatalogVersion] = useState(0);
   const [modelChoice, setModelChoice] = useState("");
   const [presetChoice, setPresetChoice] = useState("");
-  const [aspectRatio, setAspectRatio] = useState("7:5");
+  const [imageRatios, setImageRatios] = useState<Record<string, string>>({});
   const [ratioMode, setRatioMode] = useState(() => {
     const mode = params.get("ratio");
     return mode === "exact" || mode === "nearby" ? mode : "default";
   });
   const [ratioPercent, setRatioPercent] = useState("8");
-  const [videoAspectRatio, setVideoAspectRatio] = useState("");
+  const [videoAspectRatio, setVideoAspectRatio] = useState<string | null>(null);
   const [videoRatioMode, setVideoRatioMode] = useState("default");
   const [videoRatioPercent, setVideoRatioPercent] = useState("8");
   const [count, setCount] = useState(1);
@@ -81,27 +98,36 @@ function ComparisonForm({ scope, clientRef, children }: {
   const selected = models.find(([id]) => id === modelChoice) ?? models.find(([, model]) => model.kind === "image") ?? models[0];
   const presets = useMemo(() => modelPresets(selected?.[1]), [selected]);
   const preset = presets.find(([label]) => label === presetChoice) ?? presets[0];
+  const videoPreset = preset?.[1].kind === "video" ? preset[1] : undefined;
   const maxNanos = parseDollarCap(maxUsd);
+  const isImage = selected?.[1].kind === "image";
   const isVideo = selected?.[1].kind === "video";
-  const hasRatio = isVideo || selected?.[1].kind === "image";
+  const hasRatio = isVideo || isImage;
+  const aspectRatio = selected && isImage
+    ? imageRatios[selected[0]] ?? defaultImageAspectRatio(selected[1].aspectRatios)
+    : videoAspectRatio ?? videoPreset?.aspect_ratio ?? "";
+  const invalidRatio = hasRatio && !validAspectRatio(aspectRatio);
+  const videoRatios = !videoPreset ? [] : presets.flatMap(([, workload]) =>
+    workload.kind === "video" && workload.resolution === videoPreset.resolution
+      && workload.duration_seconds === videoPreset.duration_seconds ? [workload.aspect_ratio] : []);
   const matchingMode = isVideo ? videoRatioMode : ratioMode;
   const setMatchingMode = isVideo ? setVideoRatioMode : setRatioMode;
   const matchingPercent = isVideo ? videoRatioPercent : ratioPercent;
   const setMatchingPercent = isVideo ? setVideoRatioPercent : setRatioPercent;
   const tolerance = matchingMode === "default" ? null : matchingMode === "exact" ? 0 : parseToleratedPercent(scope ? matchingPercent : "8") ?? undefined;
   const input = useMemo<QuoteInput | null>(() => {
-    if (!selected || maxNanos === undefined) return null;
+    if (!selected || maxNanos === undefined || invalidRatio) return null;
     const { kind, model } = selected[1];
     if (providerOrder.mode === "ordered" && !providerOrder.order.length) return null;
     const preference = providerOrder.mode === "inherit" ? {} : {
       preferred_providers: providerOrder.mode === "ordered" ? providerOrder.order : [],
     };
     if ((kind === "image" || kind === "video") && tolerance === undefined) return null;
-    if (preset?.[1].kind === "video") {
+    if (videoPreset) {
       return {
         model, provider: null, max_total_usd_nanos: maxNanos, ...preference,
         workload: {
-          ...preset[1], aspect_ratio: videoAspectRatio || preset[1].aspect_ratio,
+          ...videoPreset, aspect_ratio: aspectRatio,
           ...(tolerance == null ? {} : { max_relative_error_bps: tolerance }),
         },
       };
@@ -115,7 +141,7 @@ function ComparisonForm({ scope, clientRef, children }: {
         ? { kind, count, aspect_ratio: aspectRatio, max_relative_error_bps: tolerance ?? null }
         : { kind, max_input_tokens: inputTokens, max_output_tokens: outputTokens },
     };
-  }, [selected, maxNanos, count, aspectRatio, tolerance, inputTokens, outputTokens, preset, providerOrder, videoAspectRatio]);
+  }, [selected, maxNanos, invalidRatio, count, aspectRatio, tolerance, inputTokens, outputTokens, preset, providerOrder, videoPreset]);
 
   useEffect(() => {
     if (!input) return;
@@ -142,14 +168,15 @@ function ComparisonForm({ scope, clientRef, children }: {
           <h2 className="mb-5 flex items-center gap-2 text-lg font-semibold"><SlidersHorizontal className="h-4 w-4 text-brand" aria-hidden /> Request settings</h2>
           <div className="space-y-4">
             <label className={labelClass}>Model
-              <Select value={selected?.[0] ?? ""} disabled={!models.length} onChange={(event) => { setModelChoice(event.target.value); setVideoAspectRatio(""); }}>
+              <Select value={selected?.[0] ?? ""} disabled={!models.length} onChange={(event) => { setModelChoice(event.target.value); setVideoAspectRatio(null); }}>
                 {!models.length && <option value="">{catalogError ? "Models unavailable" : catalog ? "No models available" : "Loading models…"}</option>}
                 {models.map(([id, item]) => <option key={id} value={id}>{catalogModelName(item.model) ?? item.model} · {item.kind === "mesh" ? "3D" : item.kind}</option>)}
               </Select>
             </label>
             {selected?.[1].kind === "image" && (
               <div className="grid grid-cols-2 gap-3">
-                <label className={labelClass}>Aspect ratio<Input value={aspectRatio} maxLength={7} onChange={(event) => setAspectRatio(event.target.value)} /></label>
+                <AspectRatioInput label="Aspect ratio" value={aspectRatio} ratios={selected[1].aspectRatios} invalid={invalidRatio}
+                  onChange={(value) => setImageRatios((drafts) => ({ ...drafts, [selected[0]]: value }))} />
                 <label className={labelClass}>Image count<Input type="number" min={1} max={8} value={count} onChange={(event) => setCount(Number(event.target.value))} /></label>
               </div>
             )}
@@ -160,14 +187,12 @@ function ComparisonForm({ scope, clientRef, children }: {
               </div>
             )}
             {preset && <label className={labelClass}>{presetLabels[preset[1].kind]}
-              <Select value={preset[0]} onChange={(event) => { setPresetChoice(event.target.value); setVideoAspectRatio(""); }}>
+              <Select value={preset[0]} onChange={(event) => { setPresetChoice(event.target.value); setVideoAspectRatio(null); }}>
                 {presets.map(([label]) => <option key={label}>{label}</option>)}
               </Select>
             </label>}
-            {preset?.[1].kind === "video" && <label className={labelClass}>Requested aspect ratio
-              <Input value={videoAspectRatio} placeholder={preset[1].aspect_ratio} maxLength={7}
-                onChange={(event) => setVideoAspectRatio(event.target.value)} />
-            </label>}
+            {videoPreset && <AspectRatioInput label="Requested aspect ratio" value={aspectRatio} ratios={videoRatios}
+              invalid={invalidRatio} onChange={setVideoAspectRatio} />}
             {hasRatio && (scope ? <>
               <label className={labelClass}>Ratio matching
                 <Select value={matchingMode} onChange={(event) => setMatchingMode(event.target.value)}>

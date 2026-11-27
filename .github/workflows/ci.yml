@@ -136,6 +136,8 @@ jobs:
         run: node --experimental-strip-types --test ../scripts/console_retention_timer.test.mjs
       - name: Verify console submission snapshots and receipts
         run: node --experimental-strip-types --test ../scripts/console_model_submission.test.mjs
+      - name: Verify console aspect ratio defaults and input
+        run: node --experimental-strip-types --test ../scripts/console_aspect_ratio.test.mjs
       - run: npm run build
         env:
           VITE_API_BASE_URL: /
