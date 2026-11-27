@@ -48,7 +48,14 @@ pub(in crate::gateway_demo) struct WebhookDelivery {
     /// One of pending, sending, delivered, or dead.
     state: String,
     occurred_at: DateTime<Utc>,
+    /// Delivery-specific retry time or active lease deadline.
     available_at: DateTime<Utc>,
+    /// End of an active receiver delay affecting this pending delivery.
+    #[schema(required = true)]
+    receiver_available_after: Option<DateTime<Utc>>,
+    /// Earliest eligible attempt for a pending delivery, including receiver delay and the retry window.
+    #[schema(required = true)]
+    next_attempt_at: Option<DateTime<Utc>>,
     #[schema(required = true)]
     finished_at: Option<DateTime<Utc>>,
     attempt_count: i32,
@@ -67,6 +74,8 @@ impl From<Delivery> for WebhookDelivery {
             state: row.state,
             occurred_at: row.occurred_at,
             available_at: row.available_at,
+            receiver_available_after: row.receiver_available_after,
+            next_attempt_at: row.next_attempt_at,
             finished_at: row.finished_at,
             attempt_count: row.attempt_count,
             last_error: row.last_error,

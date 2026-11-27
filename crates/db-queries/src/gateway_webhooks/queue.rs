@@ -2,7 +2,7 @@ use sqlx::PgPool;
 
 use super::cooldowns;
 
-const MAX_ATTEMPTS: i32 = 6;
+pub(super) const MAX_ATTEMPTS: i32 = 6;
 
 pub struct Claim {
     pub id: String,

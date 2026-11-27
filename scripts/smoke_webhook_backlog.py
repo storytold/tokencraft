@@ -3,6 +3,7 @@
 import argparse
 from base64 import b64decode, b64encode
 from contextlib import ExitStack
+from datetime import datetime
 from hashlib import sha256
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -117,6 +118,12 @@ def verify(gateway, directory, settings, session, account, project, case):
                         for path in ("/a", "/b")}
         worker = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
 
+        def trace_schedule(owner, org, project_id, request):
+            trace, _ = call(api, f"/v1/requests/{request}/trace?account_id={org}&project_id={project_id}",
+                            200, headers=owner)
+            event = next(step for step in trace["evidence"]["steps"] if step["id"] == "webhook")
+            return {field["label"]: field["value"] for field in event["attributes"]}
+
         if case in ("both", "expired"):
             expired_session, expired_account, expired_project = provision(api)
             expired_target = subscription(expired_session, expired_account, expired_project, "slow_a")
@@ -129,11 +136,17 @@ def verify(gateway, directory, settings, session, account, project, case):
                            "WHERE request_id = ANY (string_to_array(:'expired', ','));")
             command(postgres_bin() / "psql", "-Xqw", "-v", "ON_ERROR_STOP=1", "-v", "expired=" + ",".join(expired),
                     "-f", sql, cwd=directory, env=sql_env)
+            path = f"/v1/projects/{expired_project}/webhook-deliveries?account_id={expired_account}"
+            queued, _ = call(api, path, 200, headers=expired_session)
+            assert len(queued["items"]) == len(expired)
+            assert all(row["state"] == "pending" and row["next_attempt_at"] is None for row in queued["items"])
+            event = trace_schedule(expired_session, expired_account, expired_project, expired[0])
+            assert event.get("Retry schedule") == "No further attempt scheduled"
+            assert "Eligible to send after (UTC)" not in event
             request = enqueue(healthy)
             with service("webhook-expiry-worker", [gateway], directory, worker, lambda: ready(worker_port)):
                 verify_event(fast.received.get(timeout=2.5), healthy[0], healthy_project, request)
                 assert slow.received.empty()
-                path = f"/v1/projects/{expired_project}/webhook-deliveries?account_id={expired_account}"
                 items, _ = call(api, path, 200, headers=expired_session)
                 assert len(items["items"]) == len(expired)
                 assert all(row["state"] == "dead" and row["last_error"] == "retry_window_expired"
@@ -191,6 +204,30 @@ def verify(gateway, directory, settings, session, account, project, case):
             queued = enqueue(alias)
             independent = enqueue(destinations["/b"])
             healthy_request = enqueue(healthy)
+            rows, _ = call(api, path, 200, headers=session)
+            schedule = {row["request_id"]: row for row in rows["items"]}
+            delayed_until = schedule[queued]["receiver_available_after"]
+            assert delayed_until and schedule[original]["receiver_available_after"] == delayed_until
+            for request in (original, queued):
+                row = schedule[request]
+                assert row["next_attempt_at"] == max(row["available_at"], delayed_until, key=datetime.fromisoformat)
+            assert datetime.fromisoformat(delayed_until) > datetime.fromisoformat(schedule[queued]["available_at"])
+            unaffected = schedule[independent]
+            assert unaffected["receiver_available_after"] is None
+            assert unaffected["next_attempt_at"] == unaffected["available_at"]
+            item = schedule[queued]
+            detail_path = f"/v1/projects/{project}/webhook-deliveries/{item['id']}?account_id={account}"
+            detail, _ = call(api, detail_path, 200, headers=session)
+            assert detail["delivery"] == item and detail["attempts"] == []
+            event = trace_schedule(session, account, project, queued)
+            assert datetime.fromisoformat(event["Eligible to send after (UTC)"]) == datetime.fromisoformat(
+                delayed_until
+            )
+            call(api, f"/v1/projects/{healthy_project}/webhook-deliveries/{item['id']}?account_id={healthy_account}",
+                 404, headers=healthy_session)
+            call(api, f"/v1/requests/{queued}/trace?account_id={healthy_account}&project_id={healthy_project}",
+                 404, headers=healthy_session)
+            print("PASS scoped webhook list, detail, and request trace report the earliest eligible attempt")
             with service("webhook-replacement-worker", [gateway], directory, worker, lambda: ready(worker_port)):
                 sample = slow.received.get(timeout=3)
                 assert sample[0] == "/b", "the replacement sent to a receiver still in cooldown"
@@ -212,6 +249,16 @@ def verify(gateway, directory, settings, session, account, project, case):
                     resume[request] = verify_event(sample, sub, project, request)
                 assert set(resume) == {original, queued} and resume[original] == signed
                 assert all(slow.received_at[event[0]] - first_received >= 8 for event in resume.values())
+
+                def schedules_cleared():
+                    results, _ = call(api, path, 200, headers=session)
+                    items = results["items"]
+                    return len(items) == len(schedule) and all(
+                        row["state"] == "delivered" and row["next_attempt_at"] is None
+                        and row["receiver_available_after"] is None for row in items
+                    )
+
+                eventually(schedules_cleared, "completed deliveries with no pending schedules")
             print("PASS receiver delay survived worker replacement, held its alias, and preserved signed event replay")
 
 

@@ -5,6 +5,8 @@ use sqlx::PgExecutor;
 
 use crate::gateway_requests::RequestScope;
 
+use super::queue::MAX_ATTEMPTS;
+
 #[derive(Serialize)]
 pub struct Delivery {
     pub id: String,
@@ -15,6 +17,8 @@ pub struct Delivery {
     pub state: String,
     pub occurred_at: DateTime<Utc>,
     pub available_at: DateTime<Utc>,
+    pub receiver_available_after: Option<DateTime<Utc>>,
+    pub next_attempt_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub attempt_count: i32,
     pub last_error: Option<String>,
@@ -30,16 +34,24 @@ pub async fn deliveries<'e, E: PgExecutor<'e>>(
     sqlx::query_as!(
         Delivery,
         "SELECT d.id, d.request_id, d.workflow_run_id, s.id AS subscription_id, d.event_type, d.state,
-           d.occurred_at, d.available_at, d.finished_at, d.attempt_count, d.last_error
+           d.occurred_at, d.available_at, d.finished_at, d.attempt_count, d.last_error,
+           c.available_after AS \"receiver_available_after?\",
+           CASE WHEN d.state = 'pending' AND s.revoked_at IS NULL
+                      AND d.attempt_count - d.attempt_baseline < $6
+                      AND greatest(d.available_at, c.available_after, statement_timestamp()) < d.deadline_at
+                THEN greatest(d.available_at, c.available_after) END AS \"next_attempt_at?\"
          FROM gateway_webhook_deliveries d
            LEFT JOIN gateway_requests r ON r.id = d.request_id
            LEFT JOIN workflow_runs w ON w.id = d.workflow_run_id
            JOIN gateway_webhook_subscriptions s ON s.id = coalesce(r.webhook_subscription_id, w.webhook_subscription_id)
+           LEFT JOIN gateway_webhook_cooldowns c
+             ON d.state = 'pending' AND s.revoked_at IS NULL AND c.available_after > statement_timestamp()
+               AND c.receiver_digest = sha256(convert_to(s.destination_url, 'UTF8'))
          WHERE s.account_id = $1 AND s.project_id = $2 AND ($3::text IS NULL OR d.id = $3)
            AND ($4::text IS NULL OR d.id < $4)
          ORDER BY d.id DESC LIMIT $5",
         scope.account.as_str(), scope.project.as_str(), id.map(GatewayWebhookDeliveryId::as_str),
-        before.map(GatewayWebhookDeliveryId::as_str), limit,
+        before.map(GatewayWebhookDeliveryId::as_str), limit, MAX_ATTEMPTS,
     )
     .fetch_all(exec)
     .await

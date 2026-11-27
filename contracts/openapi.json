@@ -8891,6 +8891,8 @@
                 "state",
                 "occurred_at",
                 "available_at",
+                "receiver_available_after",
+                "next_attempt_at",
                 "finished_at",
                 "attempt_count",
                 "last_error"
@@ -8902,7 +8904,8 @@
                 },
                 "available_at": {
                   "type": "string",
-                  "format": "date-time"
+                  "format": "date-time",
+                  "description": "Delivery-specific retry time or active lease deadline."
                 },
                 "event_type": {
                   "type": "string"
@@ -8923,9 +8926,25 @@
                     "null"
                   ]
                 },
+                "next_attempt_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "Earliest eligible attempt for a pending delivery, including receiver delay and the retry window."
+                },
                 "occurred_at": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "receiver_available_after": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "End of an active receiver delay affecting this pending delivery."
                 },
                 "request_id": {
                   "type": [
@@ -12331,6 +12350,8 @@
           "state",
           "occurred_at",
           "available_at",
+          "receiver_available_after",
+          "next_attempt_at",
           "finished_at",
           "attempt_count",
           "last_error"
@@ -12342,7 +12363,8 @@
           },
           "available_at": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Delivery-specific retry time or active lease deadline."
           },
           "event_type": {
             "type": "string"
@@ -12363,9 +12385,25 @@
               "null"
             ]
           },
+          "next_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Earliest eligible attempt for a pending delivery, including receiver delay and the retry window."
+          },
           "occurred_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "receiver_available_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "End of an active receiver delay affecting this pending delivery."
           },
           "request_id": {
             "type": [

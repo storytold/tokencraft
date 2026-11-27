@@ -637,7 +637,11 @@ fn add_delivery_steps(steps: &mut Vec<Step>, delivery: &Delivery, attempts: Vec<
     event.field("Delivery state", &delivery.state);
     event.field("Recorded attempt count", delivery.attempt_count);
     if delivery.state == "pending" {
-        event.field("Eligible to send after (UTC)", delivery.available_at.to_rfc3339());
+        if let Some(at) = delivery.next_attempt_at {
+            event.field("Eligible to send after (UTC)", at.to_rfc3339());
+        } else {
+            event.field("Retry schedule", "No further attempt scheduled");
+        }
     }
     event.optional("Last delivery error", delivery.last_error.as_deref());
     steps.push(event);

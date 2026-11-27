@@ -177,7 +177,9 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
                   <span className="min-w-0 break-all"><span className="font-medium">{delivery.event_type}</span>{" "}
                     <span className="font-mono text-xs text-muted">{delivery.request_id ?? delivery.workflow_run_id}</span>
                   </span>
-                  <span>{stateLabels[delivery.state]} · {delivery.attempt_count} {delivery.attempt_count === 1 ? "attempt" : "attempts"}</span>
+                  <span>{stateLabels[delivery.state]} · {delivery.attempt_count} {delivery.attempt_count === 1 ? "attempt" : "attempts"}
+                    {delivery.state === "pending" && delivery.receiver_available_after && " · Receiver delay"}
+                  </span>
                 </button>
                 {selected === delivery.id && <DeliveryAttempts scope={scope} id={delivery.id} revision={revision} disabled={disabled}
                   redrive={() => { void change(() => webhooksApi.redrive(scope, delivery.id), "Delivery queued for another attempt."); }} />}
@@ -258,6 +260,7 @@ function DeliveryAttempts({ scope, id, revision, disabled, redrive }: {
   if (!result) return <p className="mt-2 text-muted" role="status">Loading delivery attempts…</p>;
   if (result.error) return <p className="mt-2 text-rose-600 dark:text-rose-300" role="alert">{result.error}</p>;
   const { delivery, attempts } = result.detail!;
+  const nextAttempt = delivery.next_attempt_at === undefined ? delivery.available_at : delivery.next_attempt_at;
   return (
     <div className="mt-2 space-y-2 bg-surface2/45 p-3 text-xs">
       <div className="flex flex-wrap items-center gap-3">
@@ -267,7 +270,12 @@ function DeliveryAttempts({ scope, id, revision, disabled, redrive }: {
         {delivery.workflow_run_id && <Link className="font-medium text-brand hover:underline"
           to={withProject(`/dashboard/${scope.account_id}/workflows`, scope.project_id)}>Open Workflows</Link>}
       </div>
-      {delivery.state === "pending" && <p className="text-muted">Next attempt {date(delivery.available_at)}</p>}
+      {delivery.state === "pending" && <>
+        <p className="text-muted">{nextAttempt ? `Eligible from ${date(nextAttempt)}` : "No further attempt scheduled"}</p>
+        {delivery.receiver_available_after && <p className="text-muted">
+          Receiver requested a delay until {date(delivery.receiver_available_after)}
+        </p>}
+      </>}
       {delivery.last_error && <p className="text-muted">{delivery.last_error.replaceAll("_", " ")}</p>}
       <ol className="space-y-1">
         {attempts.map((attempt) => <li key={attempt.number}>

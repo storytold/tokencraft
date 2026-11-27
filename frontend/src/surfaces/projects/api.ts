@@ -116,6 +116,8 @@ export type WebhookDelivery = {
   id: string; request_id?: string; workflow_run_id?: string; subscription_id: string; event_type: string;
   state: "pending" | "sending" | "delivered" | "dead"; occurred_at: string;
   available_at: string; attempt_count: number; last_error: string | null;
+  receiver_available_after?: string | null;
+  next_attempt_at?: string | null;
 };
 type WebhookAttempt = { number: number; started_at: string; outcome: string | null; http_status: number | null };
 export type WebhookDetail = { delivery: WebhookDelivery; attempts: WebhookAttempt[] };

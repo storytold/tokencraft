@@ -21,6 +21,8 @@ Retrieve one subscription with `GET /v1/projects/{project}/webhooks/{subscriptio
 
 Delivery records identify their subject with `request_id` or `workflow_run_id`. App subscriptions only receive terminal events for the assigned app.
 
+Pending deliveries report `next_attempt_at` as the earliest time the worker may try again. A null value indicates that the delivery has no eligible attempt in its retry window. When the receiver requested a pause, `receiver_available_after` shows when that pause ends. The existing `available_at` field holds the delivery's own retry time or active lease deadline. Request traces show the effective schedule on the webhook step.
+
 Native request events carry `data.request_id`, `data.project_id`, a status matching the event type, and `data.fetch_url` in the form `/v1/requests/{id}`. The event ID uses the same suffix as the request ID. New events include `data.client_ref` when the admitted request has a client reference. This applies to successful, failed, and canceled requests. Use the optional signed field to route events for a shared receiver. Unattributed requests omit it. Retry and redrive keep the original event ID and body, including deliveries created before this field was available.
 
 ## Inspect a workflow run
