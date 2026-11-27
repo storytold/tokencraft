@@ -72,6 +72,8 @@ jobs:
           python3 -B scripts/smoke_workflow_contract.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify connector receipt recovery after a worker restart
         run: python3 -B scripts/smoke_connector_recovery.py target/debug/api-gateway target/debug/admin-cli
+      - name: Verify connector artifact validation and retrieval recovery
+        run: python3 -B scripts/smoke_connector_artifact_validation.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify queued provider credential rotation and revocation
         run: python3 -B scripts/smoke_provider_credentials.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify rate expiry during budget contention

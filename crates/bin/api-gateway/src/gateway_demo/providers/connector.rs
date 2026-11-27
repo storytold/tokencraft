@@ -20,7 +20,7 @@ use super::{
     audio_format, mesh_format,
     completion::{CompletionGrant, CompletionTokens},
     payloads::Payloads,
-    queue::{read_body, Observation, RateLimit, Submission},
+    queue::{read_body, Observation, RateLimit, ResponseError, Submission},
     video,
 };
 use db_queries::gateway_requests::{queued_runs::{ClaimedQueuePoll, ProviderCharge}, ClaimedProviderRun};
@@ -512,7 +512,7 @@ impl Connector {
     where
         F: Future<Output = sqlx::Result<Option<header::HeaderValue>>> + Send,
     {
-        use FetchError::Unavailable;
+        use FetchError::{InvalidArtifact, Unavailable};
         let workload: Workload = serde_json::from_value(task.workload.clone().ok_or(Unavailable)?)
             .map_err(|_| Unavailable)?;
         let handle = &task.handle;
@@ -533,7 +533,7 @@ impl Connector {
                         tokio::task::spawn_blocking(move || png(bytes, slot, ratio))
                             .await
                             .map_err(|_| Unavailable)?
-                            .ok_or(Unavailable)?,
+                            .ok_or(InvalidArtifact)?,
                     );
                 }
                 Ok(FetchedMedia::Images(images))
@@ -552,7 +552,7 @@ impl Connector {
                 let bytes = self.artifact(task, 0, ArtifactSpec::Mp4, fresh_key).await?;
                 video::parse(bytes, duration_seconds, expected_size)
                     .map(FetchedMedia::Video)
-                    .ok_or(Unavailable)
+                    .ok_or(InvalidArtifact)
             }
             Workload::Audio {
                 duration_seconds,
@@ -561,13 +561,13 @@ impl Connector {
                 let bytes = self.artifact(task, 0, ArtifactSpec::Wav, fresh_key).await?;
                 audio_format::parse(bytes, duration_seconds)
                     .map(FetchedMedia::Audio)
-                    .ok_or(Unavailable)
+                    .ok_or(InvalidArtifact)
             }
             Workload::Mesh { format } if format == "glb" => {
                 let bytes = self.artifact(task, 0, ArtifactSpec::Glb, fresh_key).await?;
                 mesh_format::parse(bytes)
                     .map(FetchedMedia::Mesh)
-                    .ok_or(Unavailable)
+                    .ok_or(InvalidArtifact)
             }
             _ => Err(Unavailable),
         }
@@ -596,15 +596,22 @@ impl Connector {
         .await
         .map_err(|_| FetchError::Unavailable)?;
         let (media_type, limit) = spec.contents();
-        if !successful_media(&response, media_type) {
+        if response.status() != StatusCode::OK {
             return Err(FetchError::Unavailable);
         }
-        read_body(response, limit).await.map_err(|_| FetchError::Unavailable)
+        if !has_media_type(&response, media_type) {
+            return Err(FetchError::InvalidArtifact);
+        }
+        read_body(response, limit).await.map_err(|error| match error {
+            ResponseError::Invalid => FetchError::InvalidArtifact,
+            ResponseError::Transport => FetchError::Unavailable,
+        })
     }
 }
 
 pub(super) enum FetchError {
     Unavailable,
+    InvalidArtifact,
     CredentialUnavailable,
     Database(sqlx::Error),
 }
@@ -627,18 +634,17 @@ impl ArtifactSpec {
     }
 }
 
-fn successful_media(response: &reqwest::Response, expected: &str) -> bool {
-    response.status() == StatusCode::OK
-        && response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok()?.split(';').next())
-            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(expected))
+fn has_media_type(response: &reqwest::Response, expected: &str) -> bool {
+    response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok()?.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(expected))
 }
 
 async fn json<T: serde::de::DeserializeOwned>(request: reqwest::RequestBuilder) -> Option<T> {
     let response = request.send().await.ok()?;
-    if !successful_media(&response, "application/json") {
+    if response.status() != StatusCode::OK || !has_media_type(&response, "application/json") {
         return None;
     }
     serde_json::from_slice(&read_body(response, 16 * 1024).await.ok()?).ok()

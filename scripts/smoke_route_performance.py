@@ -76,7 +76,9 @@ def seed_history(directory, settings, donor):
         SELECT i.id, CASE WHEN kind = 'wrong_binding' THEN repeat('b', 64) ELSE binding_digest END,
                upstream_model, created + CASE WHEN kind = 'today' THEN interval '0'
                                               ELSE interval '200 milliseconds' END, 'job_' || n,
-               CASE WHEN outcome = 'failed' THEN 'provider_generation_failed' END,
+               CASE WHEN n = 16 THEN 'connector_job_failed'
+                    WHEN n = 17 THEN 'provider_artifact_invalid'
+                    WHEN outcome = 'failed' THEN 'provider_generation_failed' END,
                CASE WHEN kind = 'rerouted' THEN '[{"decision":{"next_offer_id":"steady"}}]'::jsonb
                     ELSE '[]'::jsonb END
         FROM inserted i JOIN fixtures f ON substring(i.id FROM 5)::integer = f.n WHERE kind <> 'noise';

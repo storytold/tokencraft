@@ -657,6 +657,7 @@ async fn fetch_observed_result(
             match fetch.await {
                 Ok(media) => Observation::Ready(media),
                 Err(FetchError::Unavailable) => Observation::StillRunning("completed"),
+                Err(FetchError::InvalidArtifact) => Observation::Rejected("provider_artifact_invalid"),
                 Err(FetchError::CredentialUnavailable) =>
                     Observation::Uncertain("provider_credential_unavailable"),
                 Err(FetchError::Database(error)) => return Err(error),

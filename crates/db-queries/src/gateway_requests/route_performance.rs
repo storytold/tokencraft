@@ -61,7 +61,9 @@ pub async fn recent_outcomes<'e>(
                  AND r.adapter IN ('fal_queue', 'kinovi_queue', 'connector_queue')
                  AND (r.succeeded_at IS NOT NULL OR r.uncertain_at IS NOT NULL OR r.failed_at IS NOT NULL)
                  AND coalesce(r.succeeded_at, r.uncertain_at, r.failed_at) < w.until
-                 AND (r.failed_at IS NULL OR p.error_code = 'provider_generation_failed')
+                 AND (r.failed_at IS NULL OR p.error_code IN (
+                     'provider_generation_failed', 'connector_job_failed', 'provider_artifact_invalid'
+                 ))
                  AND jsonb_hash_extended(r.quote #> '{input,workload}', 0) = jsonb_hash_extended($4::jsonb, 0)
                  AND r.quote #> '{input,workload}' = $4::jsonb
                  AND p.accepted_at IS NOT NULL

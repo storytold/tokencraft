@@ -21,13 +21,16 @@ from smoke_workflow_contract import (
 )
 
 
-def square_png(rgb):
+def fixture_png(rgb, width, height):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc32(kind + data))
 
-    side = 16
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", compress((b"\0" + bytes(rgb) * side) * side)) + chunk(b"IEND", b""))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", compress((b"\0" + bytes(rgb) * width) * height)) + chunk(b"IEND", b""))
+
+
+def square_png(rgb):
+    return fixture_png(rgb, 16, 16)
 
 
 class Connector(BaseHTTPRequestHandler):
