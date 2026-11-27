@@ -21,6 +21,7 @@ use super::providers::{
 };
 use super::quote::{Quote, QuoteInput, QuoteProfile, QuoteTarget, Reason, Workload};
 use super::routing_policy::Policies;
+use super::upstream_labels::provider_label;
 use super::webhooks::WebhookConfig;
 use crate::error::{ApiError, ApiResult};
 use crate::middleware::trace_context::{TraceContext, TRACE_ID_HEADER};
@@ -1339,7 +1340,7 @@ impl TryFrom<RequestRow> for RequestView {
                 adapter: row.adapter,
                 requested_model: row.upstream_model,
                 reported_model: row.reported_model,
-                reported_provider: row.reported_provider,
+                reported_provider: provider_label(row.reported_provider.as_deref()).map(str::to_owned),
                 finish_reason: row.finish_reason,
                 error_code: row.error_code,
                 result_expires_at: row.result_expires_at,

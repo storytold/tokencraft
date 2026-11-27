@@ -2,10 +2,11 @@ use chrono::{DateTime, Utc};
 use db_queries::gateway_requests::chat_streams;
 use reqwest::header;
 use serde::{de::IgnoredAny, Deserialize};
+use serde_json::Value;
 
 use super::super::payloads::Payloads;
 use super::{
-    safe_label, ChatCall, ChatClient, ChatDispatch, ChatInput, ChatResult, Completion,
+    provider_label, safe_label, ChatCall, ChatClient, ChatDispatch, ChatInput, ChatResult, Completion,
     SubmitOutcome, Usage, MAX_BODY, MAX_RESULT,
 };
 
@@ -118,7 +119,7 @@ fn next_line<'a>(input: &mut &'a [u8], skip_lf: &mut bool) -> Option<&'a [u8]> {
 struct Frame {
     id: String,
     model: Option<String>,
-    provider: Option<String>,
+    provider: Option<Value>,
     choices: Vec<Choice>,
     usage: Option<Usage>,
     error: Option<IgnoredAny>,
@@ -170,10 +171,9 @@ impl Accumulator {
             .model
             .and_then(|value| safe_label(value, 160))
             .or(self.model.take());
-        self.provider = frame
-            .provider
-            .and_then(|value| safe_label(value, 120))
-            .or(self.provider.take());
+        if let Some(provider) = provider_label(frame.provider.as_ref().and_then(Value::as_str)) {
+            self.provider = Some(provider.to_owned());
+        }
         if let Some(usage) = frame.usage {
             self.usage = usage;
         }

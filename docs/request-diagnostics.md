@@ -19,6 +19,8 @@ curl -fsS -H "Authorization: Bearer $TOKENCRAFT_API_KEY" \
 
 The [Rust SDK](../sdk/rust/README.md#inspect-a-request) and [TypeScript SDK](../sdk/typescript/README.md) expose all three reads. Provider IDs come from the configured catalog, including custom connectors.
 
+For buffered and streaming chat, `evidence.routing.downstream` records a valid provider name reported by the upstream. The admitted offer and gateway attempts remain available in the same routing evidence.
+
 Both SDKs check that returned request status, events, and trace evidence refer to the requested ID. If a response names a different request, the SDK reports `invalid_response` with the requested ID and stops polling.
 
 ## Link a caller trace

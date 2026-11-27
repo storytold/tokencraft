@@ -64,6 +64,7 @@ mod routing_policy;
 mod routing_settings;
 mod sealed;
 mod settlements;
+mod upstream_labels;
 mod usage;
 mod webhooks;
 mod workflows;

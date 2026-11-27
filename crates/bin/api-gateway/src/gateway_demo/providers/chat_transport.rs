@@ -5,8 +5,10 @@ use std::{
 use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder, Response, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::super::chat_input::{ChatInput, ChatOptions, ChatResult, Message};
+use super::super::upstream_labels::provider_label;
 use super::local_chat::compute::ComputeStack;
 
 mod stream;
@@ -350,6 +352,7 @@ pub(super) fn authorization(key: &str) -> Result<header::HeaderValue, header::In
 struct WireResponse {
     id: String,
     model: Option<String>,
+    provider: Option<Value>,
     choices: Vec<Choice>,
     usage: Option<Usage>,
 }
@@ -393,7 +396,7 @@ fn completion(body: &[u8]) -> Option<Completion> {
         },
         handle,
         model: reply.model.and_then(|value| safe_label(value, 160)),
-        provider: None,
+        provider: provider_label(reply.provider.as_ref().and_then(Value::as_str)).map(str::to_owned),
         input_tokens: usage.prompt_tokens.filter(|count| *count >= 0),
         output_tokens: usage.completion_tokens.filter(|count| *count >= 0),
         cost_usd_nanos: None,

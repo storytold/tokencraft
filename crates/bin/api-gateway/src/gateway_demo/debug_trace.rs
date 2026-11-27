@@ -12,6 +12,7 @@ use super::handlers::parse_request_id;
 use super::quote::{Quote, Reason, Workload};
 use super::requests::{self, EventKind, RequestStatus, RequestView, TimelineEvent};
 use super::routing_policy::{Setting, Source};
+use super::upstream_labels::{model_label, provider_label};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -20,7 +21,7 @@ pub(super) mod otlp;
 mod compute;
 mod provider_path;
 mod summary;
-use provider_path::{model_label, provider_label, ProviderPath};
+use provider_path::ProviderPath;
 
 #[derive(Serialize, utoipa::ToSchema)]
 #[schema(as = RequestTraceSnapshot)]
