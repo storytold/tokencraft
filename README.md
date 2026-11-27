@@ -16,6 +16,8 @@ Build the browser console from `frontend/` with `npm ci` and `npm run build`. Fo
 
 ## Quickstart
 
+Use a [native package](docs/setup.md#start-from-a-native-package) to run the bundled launcher, or use the steps below to build and run from source.
+
 Install Rust using the toolchain in [rust-toolchain.toml](rust-toolchain.toml) and the PostgreSQL 17 server tools. Put the server's bin directory or its `pg_config` on `PATH`.
 
 ```sh

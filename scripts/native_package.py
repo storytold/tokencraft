@@ -20,7 +20,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 import tomllib
 from urllib.error import URLError
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from postgres_tools import postgres_bin
@@ -57,17 +57,21 @@ OPERATIONS_FILES = (
     "web/tokencraft-mark.png",
 )
 SUPPORT_FILES = (
-    "LICENSE", "README.md", REFERENCE_CATALOG, "contracts/openapi.json",
+    "LICENSE", REFERENCE_CATALOG, "contracts/openapi.json", PRIMITIVE_SOURCE,
+    "docs/README.md", "docs/api-contracts.md", "docs/api-schema.md", "docs/capacity.md",
     "docs/setup.md", "docs/deployment.md", "docs/workflows.md", "docs/media-tools.md",
     "docs/provider-connectors.md", "docs/customer-data.md", "docs/event-archives.md",
-    "docs/chat-history.md", "docs/request-diagnostics.md", "examples/connector/catalog.json",
-    "examples/connector/bindings.json", "examples/connector/smoke.sh",
+    "docs/chat-history.md", "docs/request-diagnostics.md", "docs/provider-mapping.md",
+    "examples/connector/catalog.json", "examples/connector/bindings.json", "examples/connector/smoke.sh",
+    "examples/mapping/example-image.map.json", "examples/mapping/request.json", "examples/mapping/response.json",
+    "examples/mapping/custom-chat.map.json", "examples/mapping/chat-request.json", "examples/mapping/chat-response.json",
     "examples/postgres/export_to_postgres.py", "examples/postgres/postgres_usage_views.sql",
     "examples/postgres/grant_sync_role.sql", "examples/postgres/smoke.py",
+    "frontend/public/design/index.html", "sdk/rust/README.md", "sdk/typescript/README.md",
     "scripts/smoke_hosted_console.sh", "scripts/smoke_authenticated_gateway.py",
-    "deploy/postgres/grant-runtime.sql", "docs/capacity.md",
+    "deploy/postgres/grant-runtime.sql", "deploy/haproxy/cell-api.cfg",
     "deploy/autoscaling/collect.py", "deploy/autoscaling/controller.py", "deploy/autoscaling/signals.sql",
-    "plugins/providers/README.md", f"{INFERENCE}/README.md",
+    "plugins/providers/README.md", f"{INFERENCE}/README.md", "plugins/providers/compute/README.md",
     "plugins/providers/compute/examples/two-target-chat/catalog.json",
     "plugins/providers/compute/examples/two-target-chat/chat-bindings.json",
     *(f"{INFERENCE}/{provider}/{name}" for provider, files in PLUGIN_FILES.items() for name in (*PLUGIN_COMMON, *files)),
@@ -126,6 +130,7 @@ def archive_package(binary_dir, stage, name, metadata, console_dir=None):
             raise SystemExit(f"Missing executable {binary}")
     files.update({relative: (ROOT / relative, 0o755 if relative.endswith(".sh") else 0o644)
                   for relative in SUPPORT_FILES})
+    files["README.md"] = (ROOT / "docs/native-package.md", 0o644)
     files[PRIMITIVE_CONTRACT] = (ROOT / PRIMITIVE_SOURCE, 0o644)
     if console_dir is not None:
         for path in console_dir.rglob("*"):
@@ -201,6 +206,32 @@ def verify_migrations(package, state, pg_bin, db_port, env):
     print("PASS packaged admin-cli migrated a fresh database and matched the launcher migration checksums")
 
 
+def verify_documentation(package):
+    """Check relative inline links in the guides shipped with the native archive."""
+    documents = ("README.md", *(path for path in SUPPORT_FILES if path.endswith(".md")))
+    for path in documents:
+        document = package / path
+        for link in re.findall(r"\]\(([^()\s]+)\)", document.read_text(encoding="utf-8")):
+            url = urlsplit(link)
+            if url.scheme or url.netloc or not url.path or url.path.startswith("/"):
+                continue
+            target = (document.parent / unquote(url.path)).resolve()
+            if not target.is_relative_to(package) or not target.exists():
+                raise RuntimeError(f"Broken package link in {path}: {link}")
+    print("PASS packaged guides link to files in the extracted archive")
+
+
+def verify_mapping_example(package, env):
+    result = run(
+        [package / "bin/tokencraft", "mapping", "preview", "--file", "examples/mapping/example-image.map.json",
+         "--direction", "request", "--input", "examples/mapping/request.json"],
+        cwd=package, env=env, stdout=subprocess.PIPE, timeout=10,
+    )
+    if json.loads(result.stdout) != {"description": "Two colored samples", "layout": "Landscape", "outputs": 2}:
+        raise RuntimeError("The packaged image mapping preview did not match the documented fixture.")
+    print("PASS packaged CLI previewed the bundled image mapping")
+
+
 def smoke_package(archive, name, pg_bin):
     """Run the extracted launcher with an explicit tool PATH and disposable state."""
     with TemporaryDirectory(prefix="tc-package-") as temp:
@@ -208,6 +239,7 @@ def smoke_package(archive, name, pg_bin):
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(work, filter="data")
         package = work / name
+        verify_documentation(package.resolve())
         plugin_args = [argument for provider in PLUGIN_FILES
                        for argument in ("--plugin-catalog", package / INFERENCE / provider / "catalog.example.json")]
         run([package / "bin/api-gateway", "catalog", "check-reference", "--reference", package / REFERENCE_CATALOG,
@@ -229,6 +261,7 @@ def smoke_package(archive, name, pg_bin):
                 raise SystemExit(f"Install {tool} to verify the native package.")
             (tool_dir / tool).symlink_to(Path(path).resolve())
         env = {"PATH": os.pathsep.join(map(str, (tool_dir, pg_bin))), "LC_ALL": "C", "TMPDIR": temp}
+        verify_mapping_example(package, env)
         with ExitStack() as ports:
             listeners = [ports.enter_context(socket.socket()) for _ in range(4)]
             for listener in listeners:

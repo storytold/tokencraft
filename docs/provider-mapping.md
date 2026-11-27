@@ -6,16 +6,14 @@ The shared [primitive schema registry](../crates/core/provider-mapping/schemas/v
 
 ## Try the example
 
-Build the Rust CLI from the repository root. It can check and preview mappings without a gateway or a mapper model.
+From the native package directory, run the bundled CLI. From a source checkout, run `cargo build --locked -p tokencraft` and use `./target/debug/tokencraft` in the commands below. The examples run locally and need only the mapping and input files.
 
 ```sh
-cargo build --locked -p tokencraft
-export PATH="$PWD/target/debug:$PATH"
-tokencraft mapping schema --primitive image
-tokencraft mapping list --dir examples/mapping
-tokencraft mapping preview --file examples/mapping/example-image.map.json \
+./bin/tokencraft mapping schema --primitive image
+./bin/tokencraft mapping list --dir examples/mapping
+./bin/tokencraft mapping preview --file examples/mapping/example-image.map.json \
   --direction request --input examples/mapping/request.json
-tokencraft mapping preview --file examples/mapping/example-image.map.json \
+./bin/tokencraft mapping preview --file examples/mapping/example-image.map.json \
   --direction response --input examples/mapping/response.json
 ```
 

@@ -1,6 +1,6 @@
 # TokenCraft Operations
 
-Run this console from the open-source checkout on an operator host. One collector can observe multiple TokenCraft cells, provider plugin instances, self-hosted compute targets, and GPU exporters. The web console and its API run on their own loopback listener and use a dedicated operator credential. The runtime ships from this directory.
+Run this console from a native package or source checkout on an operator host. One collector can observe multiple TokenCraft cells, provider plugin instances, self-hosted compute targets, and GPU exporters. The web console and its API run on their own loopback listener and use a dedicated operator credential. The runtime ships from this directory.
 
 ## Start the console
 
@@ -120,4 +120,4 @@ Old Setup and Providers Operations browser links return users to the Providers p
 
 Use the new dashboard to check worker and provider failures in staging. A controlled worker pause should raise the eligible age while an intentionally unavailable fixture plugin should produce its own availability incident. Confirm that recovery resolves both after good samples. During a rollout, test alerts, fresh database sampling, steady-state database load and the deployment's own access boundaries.
 
-The repository's [workflow smoke](../../scripts/smoke_workflow_contract.py) exercises this console with a fresh PostgreSQL database and matching compiled gateway and admin binaries. It submits local chat fixture traffic, forces a pre-execution throttle on the primary, and checks PostgreSQL attribution and model probes for the standby and a second provider. It also checks that dashboard reads are disabled on the default gateway and excluded from the consumer contract.
+The source checkout's `scripts/smoke_workflow_contract.py` exercises this console with a fresh PostgreSQL database and matching compiled gateway and admin binaries. It submits local chat fixture traffic, forces a pre-execution throttle on the primary, and checks PostgreSQL attribution and model probes for the standby and a second provider. It also checks that dashboard reads are disabled on the default gateway and excluded from the consumer contract.

@@ -92,7 +92,7 @@ handle_event_once(&event.id, &event)?;
 
 For [workflow terminal events](../../docs/workflows.md#receive-terminal-events), use `verify_workflow_webhook` with the same arguments. Its verified data contains the workflow run ID, terminal state, relative status URL, and the optional `data.client_ref` supplied at invocation.
 
-`cargo test --locked -p tokencraft_sdk` runs the loopback HTTP and webhook tests. The restart example uses the disposable gateway described in the [demo guide](../../demo/README.md).
+`cargo test --locked -p tokencraft_sdk` runs the loopback HTTP and webhook tests from a source checkout. The restart example uses the disposable gateway described in the [setup guide](../../docs/setup.md).
 
 ## Inspect a request
 
