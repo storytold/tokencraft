@@ -401,7 +401,7 @@ Each worker runs up to four delivery attempts at a time. When three attempts tar
 
 A worker taking over an expired lease records that attempt and retries with the same event ID and body. Receivers should deduplicate by `webhook-id` because a successful delivery can be retried after a lost response or worker restart. Revocation prevents new attempts and redrives. An attempt already leased when revocation commits may finish.
 
-For retryable responses, the worker honors `Retry-After` in seconds or as an HTTP date, up to 60 seconds. It waits at least the normal backoff and retains the scheduled retry in PostgreSQL. A positive delay on HTTP `429` or `503` also pauses new claims for that saved receiver URL across workers. Destination aliases sharing the exact URL observe the same pause. Work already leased can finish, and other URLs can keep receiving events. [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
+For retryable responses, the worker honors `Retry-After` in seconds or as an HTTP date, up to 60 seconds. It waits at least the normal backoff and retains the scheduled retry in PostgreSQL. HTTP `429` and `503` also pause new claims for the saved receiver URL across workers. The shared pause uses the positive `Retry-After` delay when supplied and lasts two seconds otherwise. Destination aliases sharing the exact URL observe the same pause. Work already leased can finish, and other URLs can keep receiving events. [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
 
 ### Separate migration and runtime roles
 

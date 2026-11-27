@@ -273,7 +273,7 @@ function DeliveryAttempts({ scope, id, revision, disabled, redrive }: {
       {delivery.state === "pending" && <>
         <p className="text-muted">{nextAttempt ? `Eligible from ${date(nextAttempt)}` : "No further attempt scheduled"}</p>
         {delivery.receiver_available_after && <p className="text-muted">
-          Receiver requested a delay until {date(delivery.receiver_available_after)}
+          Delivery to this receiver is paused until {date(delivery.receiver_available_after)}
         </p>}
       </>}
       {delivery.last_error && <p className="text-muted">{delivery.last_error.replaceAll("_", " ")}</p>}

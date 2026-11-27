@@ -123,6 +123,8 @@ jobs:
         run: |
           python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli
           python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli --case cooldown
+          python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli --case overload
+          python3 -B scripts/smoke_webhook_recovery.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify scoped webhook signing key recovery
         run: python3 -B scripts/smoke_webhook_rotation.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify profiled media runners and workflow reuse

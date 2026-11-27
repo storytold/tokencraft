@@ -36,8 +36,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.received.put((self.path, fields, raw))
         if first and self.server.slow:
             self.server.release.wait(8)
-            self.send_response(503)
-            self.send_header("Retry-After", self.server.retry_after)
+            self.send_response(self.server.error_status)
+            if self.server.retry_after is not None:
+                self.send_header("Retry-After", self.server.retry_after)
         else:
             self.send_response(204)
         self.end_headers()
@@ -49,6 +50,7 @@ class Receiver(ThreadingHTTPServer):
     def __init__(self, *, slow=False):
         super().__init__((HOST, 0), Handler)
         self.slow = slow
+        self.error_status = 503
         self.retry_after = "1"
         self.release = Event()
         self.lock = Lock()
@@ -182,9 +184,12 @@ def verify(gateway, directory, settings, session, account, project, case):
                 eventually(recovered, "stalled receiver recovery")
             print("PASS the healthy receiver delivered during the stall and all retries kept their signed bytes")
 
-        if case == "cooldown":
-            slow.retry_after = "8"
+        if case in ("cooldown", "overload"):
+            cooldown_seconds = 8 if case == "cooldown" else 2
+            slow.error_status = 503 if case == "cooldown" else 429
+            slow.retry_after = str(cooldown_seconds) if case == "cooldown" else None
             slow.release.set()
+            alias = subscription(session, account, project, "same_url")
             original = enqueue(destinations["/a"])
             path = f"/v1/projects/{project}/webhook-deliveries?account_id={account}"
             with service("webhook-first-worker", [gateway], directory, worker, lambda: ready(worker_port)):
@@ -200,7 +205,6 @@ def verify(gateway, directory, settings, session, account, project, case):
                 eventually(retry_recorded, "the receiver's retry delay", timeout=4)
 
             slow.slow = False
-            alias = subscription(session, account, project, "same_url")
             queued = enqueue(alias)
             independent = enqueue(destinations["/b"])
             healthy_request = enqueue(healthy)
@@ -248,7 +252,7 @@ def verify(gateway, directory, settings, session, account, project, case):
                     sub = destinations["/a"][0] if request == original else alias[0]
                     resume[request] = verify_event(sample, sub, project, request)
                 assert set(resume) == {original, queued} and resume[original] == signed
-                assert all(slow.received_at[event[0]] - first_received >= 8 for event in resume.values())
+                assert all(slow.received_at[event[0]] - first_received >= cooldown_seconds for event in resume.values())
 
                 def schedules_cleared():
                     results, _ = call(api, path, 200, headers=session)
@@ -266,7 +270,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gateway", type=Path)
     parser.add_argument("admin", type=Path)
-    parser.add_argument("--case", choices=("both", "expired", "stall", "cooldown"), default="both")
+    parser.add_argument("--case", choices=("both", "expired", "stall", "cooldown", "overload"), default="both")
     args = parser.parse_args()
     with TemporaryDirectory(prefix="tokencraft-webhook-backlog-") as temporary:
         rehearse(args.gateway.resolve(strict=True), args.admin.resolve(strict=True), Path(temporary),

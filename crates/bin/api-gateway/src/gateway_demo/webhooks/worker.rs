@@ -13,6 +13,7 @@ use super::config::WebhookConfig;
 const MAX_IN_FLIGHT: usize = 4;
 const MAX_CLAIMS_PER_TICK: usize = 16;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+const OVERLOAD_COOLDOWN_MS: i32 = 2_000;
 
 pub(in crate::gateway_demo) fn spawn(pool: db::PgPool, config: Arc<WebhookConfig>, readiness: Arc<Readiness>) {
     tokio::spawn(async move {
@@ -137,10 +138,11 @@ async fn send(config: &WebhookConfig, claim: &Claim) -> DeliveryResult {
     } else {
         0
     };
+    let receiver_wait = if requested > 0 { requested } else { OVERLOAD_COOLDOWN_MS };
     DeliveryResult::HttpError {
         status: code,
         retry_after_ms: retryable.then_some(backoff.max(requested)),
-        receiver_cooldown_ms: (matches!(code, 429 | 503) && requested > 0).then_some(requested),
+        receiver_cooldown_ms: matches!(code, 429 | 503).then_some(receiver_wait),
     }
 }
 
