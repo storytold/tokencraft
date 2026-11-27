@@ -66,9 +66,15 @@ def gateway(base, token, path, body=None):
     request = urllib.request.Request(base + path, data=encoded, headers=headers)
     try:
         with OPENER.open(request, timeout=20) as response:
+            expected_size = response.length
+            if expected_size is not None and expected_size > PAGE_BYTES:
+                raise SyncError("Gateway returned an oversized export page.")
             payload = response.read(PAGE_BYTES + 1)
             if len(payload) > PAGE_BYTES:
                 raise SyncError("Gateway returned an oversized export page.")
+            # A bounded HTTPResponse read can return a short body without raising IncompleteRead.
+            if expected_size is not None and len(payload) < expected_size:
+                raise SyncError("The gateway interrupted the export response.", retryable=True)
             return payload, response.headers
     except urllib.error.HTTPError as error:
         with error:

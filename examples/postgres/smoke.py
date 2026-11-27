@@ -1,12 +1,16 @@
 """Exercise snapshot import and continuous sync using a disposable connector demo."""
 
+from contextlib import contextmanager
 from hashlib import sha256
+from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 from secrets import token_hex, token_urlsafe
 import subprocess
 import sys
+from threading import Event, Thread
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
@@ -69,6 +73,65 @@ def execute(token, app):
     return receipt["id"]
 
 
+@contextmanager
+def interrupt_live_export(origin):
+    armed = Event()
+    interrupted = Event()
+    retry_started = Event()
+    release_retry = Event()
+    affected_paths = []
+
+    class Relay(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def forward(self):
+            assert self.path.startswith("/v1/exports")
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            headers = {name: value for name, value in self.headers.items()
+                       if name.lower() not in {"host", "connection"}}
+            upstream = HTTPConnection(origin.hostname, origin.port, timeout=10)
+            try:
+                upstream.request(self.command, self.path, body=body, headers=headers)
+                reply = upstream.getresponse()
+                payload = reply.read()
+                status = reply.status
+                response_headers = reply.getheaders()
+            finally:
+                upstream.close()
+            size = len(payload)
+            if armed.is_set() and self.path.startswith("/v1/exports/events?") and status == 200 and payload:
+                if not interrupted.is_set():
+                    affected_paths.append(self.path)
+                    payload = payload[:size // 2]
+                    interrupted.set()
+                elif not retry_started.is_set():
+                    affected_paths.append(self.path)
+                    retry_started.set()
+                    release_retry.wait(timeout=8)
+            self.send_response(status)
+            for name, value in response_headers:
+                if name.lower() not in {"connection", "content-length", "transfer-encoding", "date", "server"}:
+                    self.send_header(name, value)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        do_GET = forward
+        do_POST = forward
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Relay) as server:
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}", armed, retry_started, release_retry, affected_paths
+        finally:
+            release_retry.set()
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 def main():
     origin = urlsplit(BASE)
     assert __debug__ and origin.scheme == "http" and origin.hostname in ("127.0.0.1", "localhost", "::1")
@@ -77,7 +140,11 @@ def main():
     assert importer.postgres(
         "SELECT to_regnamespace('tokencraft_export') IS NULL AND to_regclass('gateway_requests') IS NULL;", {}
     ) == "t", "Point the smoke at a fresh disposable destination database."
+    with interrupt_live_export(origin) as relay:
+        verify_import(*relay)
 
+
+def verify_import(source, armed, retry_started, release_retry, affected_paths):
     _, headers = http("/v1/auth/signup", 201, body={
         "email": f"export-{token_hex(8)}@example.test",
         "password": token_urlsafe(24),
@@ -114,7 +181,7 @@ def main():
     http(f"/v1/exports/events?{scope}", 403, token=art)
     http(f"/v1/exports/events?project_id={project_id}&client_ref=film-client", 404, token=export_key)
 
-    env = dict(os.environ, TOKENCRAFT_EXPORT_API_URL=BASE, TOKENCRAFT_EXPORT_PROJECT=project_id,
+    env = dict(os.environ, TOKENCRAFT_EXPORT_API_URL=source, TOKENCRAFT_EXPORT_PROJECT=project_id,
                TOKENCRAFT_EXPORT_API_KEY=export_key, TOKENCRAFT_EXPORT_CLIENT_REF="art-client")
     command = [sys.executable, "-B", str(HERE / "export_to_postgres.py")]
 
@@ -146,7 +213,18 @@ def main():
     try:
         wait_for(lambda: status()["caught_up_as_of"], "watcher startup")
         assert status()["after_event_id"] == snapshot["after_event_id"]
+        armed.set()
         settle(art_request, corrected, 1)
+
+        def retried():
+            assert watcher.poll() is None, "Watcher exited after the interrupted page"
+            return retry_started.is_set()
+
+        wait_for(retried, "retry of the interrupted event page")
+        assert len(affected_paths) == 2 and affected_paths[0] == affected_paths[1]
+        assert status()["after_event_id"] == snapshot["after_event_id"]
+        assert importer.postgres("SELECT count(*) FROM tokencraft_export.events;", {}) == str(len(local_events))
+        release_retry.set()
 
         def checkpoint_advanced():
             value = status()
@@ -157,6 +235,7 @@ def main():
 
         final = wait_for(checkpoint_advanced, "settlement checkpoint")
     finally:
+        release_retry.set()
         watcher.terminate()
         watcher.wait(timeout=5)
     assert run("--no-init") == "Imported 0 new events."
@@ -172,9 +251,9 @@ def main():
     assert usage["supplier_settled_usd_nanos"] == int(live["supplier_settled_usd_nanos"]) == corrected
     assert usage["estimated_usd_nanos"] == int(live["estimated_usd_nanos"])
     assert usage["completed_outputs"] == live["completed_outputs"] == 1
-    print("PASS Watcher resumed the snapshot checkpoint and reconciled an exact supplier correction.", flush=True)
+    print("PASS Watcher retried the interrupted page from the same cursor and reconciled the correction once.", flush=True)
 
-    binding = {"source": BASE, "project": project_id, "client": "art-client"}
+    binding = {"source": source, "project": project_id, "client": "art-client"}
     cursor = final["after_event_id"]
     current = status()
     count = importer.import_page([], binding, cursor, cursor, as_of="2000-01-01T00:00:00Z",

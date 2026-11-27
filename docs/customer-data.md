@@ -36,7 +36,7 @@ Point libpq at the sync login and use `--no-init`. The grants let it insert and 
 python3 -B examples/postgres/export_to_postgres.py --no-init --watch --interval 30
 ```
 
-The watcher drains available pages, polls when caught up, and retries temporary failures with backoff. If the next events are in cold storage, [restore the archive](event-archives.md#recover-an-export-or-sync) to let the watcher continue from the same checkpoint. Unsupported schema versions fail before a page is committed. `--status` needs only the destination connection and feed identity. It returns the last committed event ID, the last successful feed observation, the last observation with no outstanding work, and pagination and publication flags.
+The watcher drains available pages, polls when caught up, and retries temporary failures with backoff. If a connection drops partway through a response, it retries from the last committed cursor. A complete page with a mismatched checksum or unsupported schema version fails before import. If the next events are in cold storage, restore the archive to let the watcher continue from the same checkpoint. `--status` needs only the destination connection and feed identity. It returns the last committed event ID, the last successful feed observation, the last observation with no outstanding work, and pagination and publication flags. [Recover an export or sync](event-archives.md#recover-an-export-or-sync)
 
 To implement another destination, use the same contract.
 
