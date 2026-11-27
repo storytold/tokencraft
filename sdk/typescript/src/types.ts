@@ -173,7 +173,7 @@ export interface ClientOptions {
   baseUrl: string | URL;
   apiKey?: string;
   timeoutMs?: number;
-  /** Total attempts for a native submission, including the first. Defaults to 1. */
+  /** Total attempts for native submissions and workflow invocations, including the first. Defaults to 1. */
   submitMaxAttempts?: number;
   fetch?: typeof fetch;
 }

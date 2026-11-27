@@ -1,3 +1,5 @@
+use std::error::Error as _;
+
 use reqwest::StatusCode;
 
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +54,12 @@ impl Error {
         if source.is_timeout() {
             return Self::Timeout { request_id };
         }
-        if source.is_decode() {
+        // Reqwest wraps body transfer errors in its JSON decoder's error type.
+        let interrupted_body = source
+            .source()
+            .and_then(|error| error.downcast_ref::<reqwest::Error>())
+            .is_some_and(reqwest::Error::is_body);
+        if source.is_decode() && !interrupted_body {
             return Self::Response { source, request_id };
         }
         Self::Transport { source, request_id }

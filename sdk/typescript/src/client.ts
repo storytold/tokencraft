@@ -305,7 +305,10 @@ export class TokenCraft {
   #read<T>(method: string, path: string, options: WireOptions, validator: string | null): Promise<GatewayRead<T | null>>;
   #read<T>(method: string, path: string, options: WireOptions, validator?: string | null): Promise<GatewayRead<T | null>> {
     return this.#exchange(method, path, options, async (response, requestId) => {
-      const payload: unknown = await response.json().catch(() => null);
+      const payload: unknown = await response.json().catch((error: unknown) => {
+        if (error instanceof SyntaxError) return null;
+        throw error;
+      });
       if (!object(payload)) throw new TokenCraftError(response.status, "invalid_response", "The gateway did not return a JSON object.", requestId);
       return payload as T;
     }, validator);
@@ -340,35 +343,40 @@ export class TokenCraft {
     try {
       for (let attempt = 1; ; attempt++) {
         request.signal.throwIfAborted();
-        const response = await this.#fetch(new URL(path, this.#base), {
-          method, headers: new Headers(headers), body: encoded,
-          signal: request.signal, credentials: "omit", redirect: "error", cache,
-        });
-        const observedId = ["tokencraft-request-id", "x-request-id"]
-          .map((name) => response.headers.get(name)).find(isRequestId);
-        if (observedId) id = observedId;
-        request.signal.throwIfAborted();
-        const delay = response.status === 429 || response.status === 503 ? retryAfter(response.headers) : undefined;
-        if (response.status === 304 && typeof validator === "string") {
-          return { value: null, headers: response.headers };
-        }
-        if (delay !== undefined && (polling || attempt < maxAttempts)) {
-          void response.body?.cancel().catch(() => {});
-          if (polling) return { value: null, headers: response.headers };
-          await pause(Math.min(delay, this.#timeout), request.signal);
-          continue;
-        }
-        if (!response.ok) {
-          const payload: unknown = await response.json().catch(() => null);
+        try {
+          const response = await this.#fetch(new URL(path, this.#base), {
+            method, headers: new Headers(headers), body: encoded,
+            signal: request.signal, credentials: "omit", redirect: "error", cache,
+          });
+          const observedId = ["tokencraft-request-id", "x-request-id"]
+            .map((name) => response.headers.get(name)).find(isRequestId);
+          if (observedId) id = observedId;
           request.signal.throwIfAborted();
-          const error = object(payload) && object(payload.error) ? payload.error : {};
-          const code = typeof error.code === "string" ? error.code : "http_error";
-          const message = typeof error.message === "string" ? error.message : `Gateway returned HTTP ${response.status}.`;
-          throw new TokenCraftError(response.status, code, message, id);
+          const delay = response.status === 429 || response.status === 503 ? retryAfter(response.headers) : undefined;
+          if (response.status === 304 && typeof validator === "string") {
+            return { value: null, headers: response.headers };
+          }
+          if (delay !== undefined && (polling || attempt < maxAttempts)) {
+            void response.body?.cancel().catch(() => {});
+            if (polling) return { value: null, headers: response.headers };
+            await pause(Math.min(delay, this.#timeout), request.signal);
+            continue;
+          }
+          if (!response.ok) {
+            const payload: unknown = await response.json().catch(() => null);
+            request.signal.throwIfAborted();
+            const error = object(payload) && object(payload.error) ? payload.error : {};
+            const code = typeof error.code === "string" ? error.code : "http_error";
+            const message = typeof error.message === "string" ? error.message : `Gateway returned HTTP ${response.status}.`;
+            throw new TokenCraftError(response.status, code, message, id);
+          }
+          const value = await consume(response, id);
+          request.signal.throwIfAborted();
+          return { value, headers: response.headers };
+        } catch (error) {
+          if (!(error instanceof TypeError) || attempt >= maxAttempts) throw error;
+          await pause(Math.min(100 * 2 ** (attempt - 1), 1000), request.signal);
         }
-        const value = await consume(response, id);
-        request.signal.throwIfAborted();
-        return { value, headers: response.headers };
       }
     } catch (error) {
       request.signal.throwIfAborted();

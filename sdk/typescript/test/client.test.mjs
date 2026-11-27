@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import test from "node:test";
 import {
   TokenCraft, TokenCraftError, TokenCraftTimeoutError, planOfferComparison, refreshOfferComparison, runOfferComparison,
@@ -193,6 +195,61 @@ test("opt-in submission retries reuse the serialized intent and idempotency key"
   assert.equal(body.pinned_offer_id, "fal_image");
   assert.equal(body.client_ref, "customer-1");
   assert.equal(body.app_ref, "studio");
+});
+
+test("opt-in submission recovers a receipt after connection loss", async (t) => {
+  const sent = [];
+  const receipt = JSON.stringify({ id: requestId });
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    sent.push({
+      method: request.method, path: request.url, key: request.headers["idempotency-key"],
+      authorization: request.headers.authorization, traceparent: request.headers.traceparent,
+      body: Buffer.concat(chunks).toString(),
+    });
+    if (sent.length === 1) {
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(sent.length === 2 ? 202 : 200, {
+      "Content-Type": "application/json", "Content-Length": Buffer.byteLength(receipt),
+      "TokenCraft-Request-Id": requestId, Connection: "close",
+    });
+    response.end(sent.length === 2 ? receipt.slice(0, -8) : receipt);
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  await once(server, "listening");
+  const client = new TokenCraft({
+    ...options, baseUrl: `http://127.0.0.1:${server.address().port}/edge/`, submitMaxAttempts: 3, timeoutMs: 2000,
+  });
+  const quote = { id: "quo_fixture", input: image, pinned_offer_id: "fal_image" };
+  const submission = { idempotencyKey: "fixture-recover", clientRef: "customer-1", traceparent };
+  assert.equal((await client.submit(quote, submission)).id, requestId);
+  assert.deepEqual(sent, [sent[0], sent[0], sent[0]]);
+  assert.equal(sent[0].method, "POST");
+  assert.equal(sent[0].path, "/edge/v1/requests");
+  assert.equal(sent[0].key, "fixture-recover");
+  assert.equal(sent[0].authorization, "Bearer fixture_key");
+  assert.equal(sent[0].traceparent, traceparent);
+  assert.equal(JSON.parse(sent[0].body).client_ref, "customer-1");
+});
+
+test("submission leaves complete invalid receipts terminal", async () => {
+  let calls = 0;
+  const client = new TokenCraft({ ...options, submitMaxAttempts: 3, fetch: async () => {
+    calls++;
+    return new Response("{", { status: 202, headers: { "TokenCraft-Request-Id": requestId } });
+  } });
+  const quote = { id: "quo_fixture", input: image };
+  await assert.rejects(client.submit(quote, { idempotencyKey: "fixture-invalid" }), {
+    code: "invalid_response", requestId,
+  });
+  assert.equal(calls, 1);
 });
 
 test("validates caller trace context and keeps it local to the supplied submission", async () => {

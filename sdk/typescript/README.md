@@ -23,7 +23,7 @@ const otlpJson = JSON.stringify(await client.traceOtlp(requestId));
 
 Read the [request diagnostics guide](../../docs/request-diagnostics.md) for scopes and baseline criteria. Provider IDs are the strings declared in the gateway catalog.
 
-Native submission defaults to one attempt. Set `submitMaxAttempts: 3` in the client options to retry a `429` or `503` that carries a valid `Retry-After` in seconds or as an HTTP date. The limit includes the first attempt, and the client reuses the same serialized body and idempotency key. All attempts and delays share `timeoutMs`. Persist the quote, submission options, and key so you can explicitly replay the same intent after an interruption. During polling, `wait` follows the same hints within its own deadline and retains the last request validator.
+Native submissions and published workflow invocations make one attempt by default. Set `submitMaxAttempts: 3` to enable retries after a connection error, an interrupted success response, or a `429` or `503` with a valid `Retry-After` in seconds or as an HTTP date. The limit includes the first attempt. Every retry uses the same serialized body and idempotency key within the original `timeoutMs`. Persist the quote, submission options, and key so you can replay the same intent if the client exhausts its attempts. During polling, `wait` follows the same HTTP hints within its own deadline and retains the last request validator.
 
 To link the active span of your application, pass its trace header to `submit(quote, { idempotencyKey, traceparent })`. Call `trace(receipt.id)` to read the stored correlation, or use `list({ traceId: callerTraceId })` to find the request by the caller's trace ID. [Trace correlation](../../docs/request-diagnostics.md#link-a-caller-trace)
 

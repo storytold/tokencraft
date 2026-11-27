@@ -190,9 +190,10 @@ impl TokenCraftClient {
         Ok(self)
     }
 
-    /// Allow up to 8 attempts on native submissions, including the first.
+    /// Allow up to 8 attempts on native submissions and workflow invocations, including the first.
     ///
-    /// Retries require a 429 or 503 with a delay in seconds and share the client's timeout.
+    /// Retries share the client's timeout and reuse the same body and idempotency key.
+    /// They cover interrupted transfers and HTTP 429 or 503 with a valid Retry-After.
     pub fn with_submit_max_attempts(mut self, attempts: u8) -> Result<Self, Error> {
         if !(1..=8).contains(&attempts) {
             return Err(Error::InvalidInput("supply 1 to 8 submission attempts"));
@@ -312,24 +313,42 @@ impl TokenCraftClient {
         let request = request.build().map_err(|source| Error::from_http(source, None))?;
         let mut remaining = self.submit_max_attempts;
         let mut request_id = None;
-        let result = tokio::time::timeout(self.timeout, async {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let result = tokio::time::timeout_at(deadline, async {
             loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(Error::Timeout { request_id: request_id.clone() });
+                }
+                remaining -= 1;
+                let may_retry = remaining > 0;
+                let attempt_number = self.submit_max_attempts - remaining;
                 let attempt = request.try_clone()
                     .ok_or(Error::InvalidInput("submission body cannot be replayed"))?;
-                let response = self.http.execute(attempt).await
-                    .map_err(|source| Error::from_http(source, request_id.clone()))?;
+                let response = match self.http.execute(attempt).await {
+                    Ok(response) => response,
+                    Err(source) if may_retry && source.is_request() && !source.is_timeout() => {
+                        tokio::time::sleep(submission_backoff(attempt_number)).await;
+                        continue;
+                    }
+                    Err(source) => return Err(Error::from_http(source, request_id.clone())),
+                };
                 if let Some(id) = response_request_id(&response) {
                     request_id = Some(id.to_owned());
                 }
-                remaining -= 1;
-                if remaining > 0 && retryable(response.status()) {
+                if may_retry && retryable(response.status()) {
                     if let Some(delay) = retry_after(&response) {
                         drop(response);
                         tokio::time::sleep(delay.min(self.timeout)).await;
                         continue;
                     }
                 }
-                return Self::decode(response, request_id.as_deref()).await;
+                let successful = response.status().is_success();
+                match Self::decode(response, request_id.as_deref()).await {
+                    Err(Error::Transport { .. }) if successful && may_retry => {
+                        tokio::time::sleep(submission_backoff(attempt_number)).await;
+                    }
+                    result => return result,
+                }
             }
         }).await;
         result.map_err(|_| Error::Timeout { request_id })?
@@ -604,6 +623,10 @@ fn response_request_id(response: &Response) -> Option<&str> {
 
 fn retryable(status: StatusCode) -> bool {
     matches!(status, StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE)
+}
+
+fn submission_backoff(attempt_number: u8) -> Duration {
+    Duration::from_millis((100 << (attempt_number - 1)).min(1_000))
 }
 
 fn retry_after(response: &Response) -> Option<Duration> {

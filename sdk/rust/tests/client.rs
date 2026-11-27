@@ -477,6 +477,54 @@ async fn submission_reuses_the_same_wire_intent_after_hinted_failures() {
 }
 
 #[tokio::test]
+async fn submission_recovers_a_receipt_after_connection_loss() {
+    use tokencraft_sdk::SubmitOptions;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let body = json!({
+            "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
+        }).to_string();
+        let headers = format!("TokenCraft-Request-Id: {REQUEST}\r\n");
+        let admitted = wire_response("202 Accepted", &headers, &body);
+        let replay = wire_response("200 OK", &headers, &body);
+        let first = capture_and_reply(&listener, "").await;
+        let second = capture_and_reply(&listener, &admitted[..admitted.len() - 8]).await;
+        let third = capture_and_reply(&listener, &replay).await;
+        assert_eq!(first, second);
+        assert_eq!(first, third);
+        assert!(first.0.starts_with("post /v1/requests http/1.1"));
+        assert!(first.0.contains("idempotency-key: fixture-recover\r\n"));
+        assert!(first.0.contains("authorization: bearer fixture\r\n"));
+        assert!(first.0.contains(&format!("traceparent: {TRACEPARENT}\r\n")));
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_secs(2))
+        .unwrap()
+        .with_submit_max_attempts(3).unwrap()
+        .with_submit_traceparent(TRACEPARENT).unwrap();
+    let mut options = SubmitOptions::new("fixture-recover");
+    options.client_ref = Some("customer-1");
+    assert_eq!(client.submit(&quote_fixture(), options).await.unwrap().id, REQUEST);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn submission_leaves_complete_invalid_receipts_terminal() {
+    use tokencraft_sdk::SubmitOptions;
+
+    let headers = format!("TokenCraft-Request-Id: {REQUEST}\r\n");
+    let (origin, captured) = reply("202 Accepted", &headers, "{").await;
+    let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap()
+        .with_submit_max_attempts(3).unwrap();
+    let error = client.submit(&quote_fixture(), SubmitOptions::new("fixture-invalid"))
+        .await.unwrap_err();
+    assert!(matches!(error, Error::Response { .. }));
+    assert_eq!(error.request_id(), Some(REQUEST));
+    captured.await.unwrap();
+}
+
+#[tokio::test]
 async fn caller_context_is_validated_and_applies_only_to_the_scoped_client_submissions() {
     use tokencraft_sdk::SubmitOptions;
 
