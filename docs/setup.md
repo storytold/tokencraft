@@ -136,7 +136,7 @@ npm ci --ignore-scripts
 VITE_TOKENCRAFT_DEMO=true VITE_TOKENCRAFT_PACKAGED=true VITE_API_BASE_URL= npm run build
 ```
 
-Point `tokencraft dev --console-dir` at the resulting `dist/` directory. The launcher serves it on the web port and supplies the active API port to the frontend. Use that compiled directory with `scripts/native_package.py --console-dir ./path/to/dist` to include the console in a native package. When packaging with `--source-revision`, set `TOKENCRAFT_SOURCE_REVISION` to the same commit when building the console. Packaging checks the console's embedded OpenAPI and catalog bytes and, for stamped packages, its source revision.
+Point `tokencraft dev --console-dir` at the resulting `dist/` directory. The launcher serves it on the web port and supplies the active API port to the frontend. Use that compiled directory with `scripts/native_package.py --console-dir ./path/to/dist` to include the console in a native package. When packaging with `--source-revision`, set `TOKENCRAFT_SOURCE_REVISION` to the same commit when building the console. Packaging checks the launcher API setting in `release.json`, the console's embedded OpenAPI and catalog bytes, and the source revision for stamped packages.
 
 For frontend development, run these commands from `frontend/` with the gateway already running.
 

@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFile, readFileSync } from "node:fs";
 import path from "node:path";
@@ -8,38 +8,49 @@ const releaseAssets = [
   { fileName: "catalog/artcraft-v1.json", source: path.resolve(__dirname, "../catalog/artcraft-v1.json") },
 ];
 
+function releaseAssetPlugin(): Plugin {
+  let launcherApi = false;
+  return {
+    name: "release-assets",
+    apply: "build",
+    configResolved({ env }) {
+      launcherApi = env.VITE_TOKENCRAFT_PACKAGED === "true";
+      if (launcherApi && env.VITE_API_BASE_URL) {
+        throw new Error("A packaged console uses the launcher API port. Clear VITE_API_BASE_URL.");
+      }
+    },
+    buildStart() {
+      const configuredRevision = process.env.TOKENCRAFT_SOURCE_REVISION;
+      const deploymentRevision = process.env.VERCEL_GIT_COMMIT_SHA;
+      const revision = configuredRevision || deploymentRevision;
+      if (configuredRevision && deploymentRevision && configuredRevision !== deploymentRevision) {
+        this.error("TOKENCRAFT_SOURCE_REVISION and VERCEL_GIT_COMMIT_SHA must match.");
+      }
+      if (!revision && process.env.TOKENCRAFT_REQUIRE_SOURCE_REVISION === "1") {
+        this.error("A hosted console build needs a source revision. Expose Vercel system variables or set TOKENCRAFT_SOURCE_REVISION.");
+      }
+      if (revision && (revision.length !== 40 || !/^[a-f0-9]{40}$/.test(revision))) {
+        this.error("Use a full lowercase Git SHA for the source revision.");
+      }
+      for (const { fileName, source } of releaseAssets) {
+        this.addWatchFile(source);
+        this.emitFile({ type: "asset", fileName, source: readFileSync(source) });
+      }
+      if (revision || launcherApi) {
+        this.emitFile({
+          type: "asset",
+          fileName: "release.json",
+          source: JSON.stringify({ source_revision: revision || undefined, launcher_api: launcherApi || undefined }) + "\n",
+        });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     react(),
-    {
-      name: "release-assets",
-      apply: "build",
-      buildStart() {
-        const configuredRevision = process.env.TOKENCRAFT_SOURCE_REVISION;
-        const deploymentRevision = process.env.VERCEL_GIT_COMMIT_SHA;
-        const revision = configuredRevision || deploymentRevision;
-        if (configuredRevision && deploymentRevision && configuredRevision !== deploymentRevision) {
-          this.error("TOKENCRAFT_SOURCE_REVISION and VERCEL_GIT_COMMIT_SHA must match.");
-        }
-        if (!revision && process.env.TOKENCRAFT_REQUIRE_SOURCE_REVISION === "1") {
-          this.error("A hosted console build needs a source revision. Expose Vercel system variables or set TOKENCRAFT_SOURCE_REVISION.");
-        }
-        if (revision && (revision.length !== 40 || !/^[a-f0-9]{40}$/.test(revision))) {
-          this.error("Use a full lowercase Git SHA for the source revision.");
-        }
-        for (const { fileName, source } of releaseAssets) {
-          this.addWatchFile(source);
-          this.emitFile({ type: "asset", fileName, source: readFileSync(source) });
-        }
-        if (revision) {
-          this.emitFile({
-            type: "asset",
-            fileName: "release.json",
-            source: JSON.stringify({ source_revision: revision }) + "\n",
-          });
-        }
-      },
-    },
+    releaseAssetPlugin(),
     {
       name: "serve-release-assets",
       configureServer(server) {

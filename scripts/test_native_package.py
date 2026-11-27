@@ -1,5 +1,7 @@
 """Check the native package before its services start."""
 
+from contextlib import redirect_stderr
+from io import StringIO
 import json
 from pathlib import Path
 import sys
@@ -10,7 +12,7 @@ from unittest.mock import patch
 
 import native_package
 from native_package import (
-    BINARIES, archive_package, smoke_package, verify_binary_versions, verify_documentation,
+    BINARIES, archive_package, smoke_package, verify_binary_versions, verify_console_manifest, verify_documentation,
 )
 
 
@@ -48,6 +50,35 @@ class NativePackageDocumentationTest(unittest.TestCase):
             with tarfile.open(archive, "r:gz") as tar:
                 tar.extractall(work, filter="data")
             verify_documentation((work / package).resolve())
+
+
+class NativeConsoleBuildTest(unittest.TestCase):
+    def test_rejects_a_hosted_console_with_the_correct_revision_before_building(self):
+        revision = "a" * 40
+        with TemporaryDirectory() as directory:
+            console = Path(directory)
+            (console / "release.json").write_text(json.dumps({"source_revision": revision}), encoding="utf-8")
+            argv = ["native_package.py", "--console-dir", str(console),
+                    "--source-revision", revision, "--output", str(console / "packages")]
+            messages = StringIO()
+            with (patch.object(sys, "argv", argv),
+                  patch.object(native_package, "postgres_bin") as postgres_bin,
+                  redirect_stderr(messages), self.assertRaises(SystemExit) as failure):
+                native_package.main()
+            self.assertEqual(failure.exception.code, 2)
+            self.assertIn("VITE_TOKENCRAFT_PACKAGED=true", messages.getvalue())
+            postgres_bin.assert_not_called()
+            self.assertFalse((console / "packages").exists())
+
+    def test_requires_launcher_api_and_validates_stamped_and_unstamped_builds(self):
+        revision = "a" * 40
+        unstamped = b'{"launcher_api":true}'
+        verify_console_manifest(unstamped, None)
+        verify_console_manifest(json.dumps({"launcher_api": True, "source_revision": revision}), revision)
+        with self.assertRaisesRegex(RuntimeError, "source revision differs"):
+            verify_console_manifest(unstamped, revision)
+        with self.assertRaisesRegex(RuntimeError, "manifest is invalid"):
+            verify_console_manifest(b"<html>", None)
 
 
 class NativeBinaryVersionsTest(unittest.TestCase):

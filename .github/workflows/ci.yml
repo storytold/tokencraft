@@ -184,6 +184,17 @@ jobs:
             exit 1
           fi
           grep -F 'A hosted console build needs a source revision.' "$log"
+      - name: Reject a native console with a fixed API origin
+        env:
+          VITE_TOKENCRAFT_PACKAGED: "true"
+          VITE_API_BASE_URL: http://localhost:4000
+        run: |
+          log="$RUNNER_TEMP/console-fixed-api.log"
+          if ./node_modules/.bin/vite build >"$log" 2>&1; then
+            echo 'Native console build succeeded with a fixed API origin' >&2
+            exit 1
+          fi
+          grep -F 'A packaged console uses the launcher API port.' "$log"
       - run: npm run build
         env:
           VITE_API_BASE_URL: /

@@ -182,6 +182,17 @@ def archive_package(binary_dir, stage, name, metadata, console_dir=None):
     return archive
 
 
+def verify_console_manifest(contents, revision):
+    try:
+        manifest = json.loads(contents)
+    except ValueError as error:
+        raise RuntimeError("The console release manifest is invalid.") from error
+    if not isinstance(manifest, dict) or manifest.get("launcher_api") is not True:
+        raise RuntimeError("Build the native console with VITE_TOKENCRAFT_PACKAGED=true and an empty VITE_API_BASE_URL.")
+    if revision is not None and manifest.get("source_revision") != revision:
+        raise RuntimeError("The packaged console source revision differs from VERSION.json.")
+
+
 def verify_console(opener, origin, package, api_port, revision):
     route = Request(origin + "/pricing", headers={"Accept": "text/html"})
     with opener.open(route, timeout=3) as result:
@@ -194,11 +205,8 @@ def verify_console(opener, origin, package, api_port, revision):
         with opener.open(f"{origin}/{route}", timeout=3) as result:
             if result.read(len(asset) + 1) != asset:
                 raise RuntimeError(f"The packaged console {route} differs from the release asset.")
-    if revision is not None:
-        with opener.open(origin + "/release.json", timeout=3) as result:
-            manifest = json.load(result)
-            if not isinstance(manifest, dict) or manifest.get("source_revision") != revision:
-                raise RuntimeError("The packaged console source revision differs from VERSION.json.")
+    with opener.open(origin + "/release.json", timeout=3) as result:
+        verify_console_manifest(result.read(), revision)
 
 
 def verify_migrations(package, state, pg_bin, db_port, env):
@@ -408,6 +416,14 @@ def main():
     if args.source_revision is not None and not re.fullmatch(r"[0-9a-f]{40}", args.source_revision):
         parser.error("--source-revision must be a full Git commit SHA")
     check_package_inputs()
+    if args.console_dir is not None:
+        try:
+            manifest = (args.console_dir / "release.json").read_bytes()
+            verify_console_manifest(manifest, args.source_revision)
+        except FileNotFoundError:
+            parser.error("The console build has no release.json. Build it with VITE_TOKENCRAFT_PACKAGED=true.")
+        except (OSError, RuntimeError) as error:
+            parser.error(str(error))
     pg_bin = postgres_bin()
     version = tomllib.loads((ROOT / "crates/bin/tokencraft/Cargo.toml").read_text())["package"]["version"]
     host = host_identifier()

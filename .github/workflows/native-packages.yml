@@ -35,6 +35,9 @@ jobs:
         working-directory: frontend
         env:
           TOKENCRAFT_SOURCE_REVISION: ${{ github.sha }}
+          VITE_TOKENCRAFT_DEMO: "true"
+          VITE_TOKENCRAFT_PACKAGED: "true"
+          VITE_API_BASE_URL: ""
         run: |
           npm ci --ignore-scripts
           npm run build
