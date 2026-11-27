@@ -445,6 +445,71 @@ test("wait reuses the validator across a rollout response and an empty 304", asy
   assert.equal(reads.length, 0);
 });
 
+test("wait resumes after disconnected, truncated, and stalled status reads", { timeout: 5_000 }, async (t) => {
+  const reads = [];
+  const server = createServer((request, response) => {
+    reads.push({ path: request.url, method: request.method, validator: request.headers["if-none-match"] });
+    const complete = (status, headers = {}) => {
+      response.writeHead(200, { "Content-Type": "application/json", Connection: "close", ...headers });
+      response.end(JSON.stringify({ id: requestId, status }));
+    };
+    if (reads.length === 1) return complete("queued", { ETag: 'W/"queued"' });
+    if (reads.length === 2) return request.socket.destroy();
+    if (reads.length === 3 || reads.length === 4) {
+      response.writeHead(200, { "Content-Type": "application/json", Connection: "close",
+        "Content-Length": "80", ETag: '"invalidated"' });
+      if (reads.length === 3) return response.end("{");
+      response.write("{");
+      return;
+    }
+    if (reads.length === 5) {
+      response.writeHead(304, { Connection: "close" });
+      return response.end();
+    }
+    complete("succeeded");
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  await once(server, "listening");
+  const client = new TokenCraft({
+    ...options, baseUrl: "http://127.0.0.1:" + server.address().port, timeoutMs: 300,
+  });
+
+  assert.equal((await client.wait(requestId, { pollIntervalMs: 5, timeoutMs: 3_000 })).status, "succeeded");
+  assert.equal(reads.length, 6);
+  assert.equal(reads[0].validator, undefined);
+  assert.ok(reads.every(({ path, method }) => path === "/v1/requests/" + requestId && method === "GET"));
+  assert.ok(reads.slice(1).every(({ validator }) => validator === 'W/"queued"'));
+});
+
+test("wait returns invalid status documents once", async () => {
+  let reads = 0;
+  const client = new TokenCraft({ ...options, fetch: async () => {
+    reads++;
+    return new Response("{", { status: 200 });
+  } });
+  await assert.rejects(client.wait(requestId), { code: "invalid_response", requestId });
+  assert.equal(reads, 1);
+});
+
+test("wait stops at a denied status even if its error body stalls", async () => {
+  let reads = 0;
+  let canceled = false;
+  const client = new TokenCraft({ ...options, timeoutMs: 100, fetch: async () => {
+    reads++;
+    const body = new ReadableStream({ cancel() { canceled = true; } });
+    return new Response(body, { status: 403 });
+  } });
+  await assert.rejects(client.wait(requestId, { timeoutMs: 1_000, pollIntervalMs: 5 }), {
+    status: 403, code: "http_error", requestId,
+  });
+  assert.equal(reads, 1);
+  assert.equal(canceled, true);
+});
+
 test("wait reports a 503 without a retry hint", async () => {
   const client = new TokenCraft({ ...options, fetch: async () => Response.json({}, { status: 503 }) });
   await assert.rejects(client.wait(requestId), { name: "TokenCraftError", status: 503, requestId });

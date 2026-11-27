@@ -4,7 +4,7 @@ use serde_json::json;
 use tokencraft_sdk::{Error, Provider, Quote, QuoteInput, RequestStatus, TokenCraftClient, WaitOptions, Workload};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     task::JoinHandle,
     time::timeout,
 };
@@ -52,6 +52,12 @@ fn wire_response(status: &str, headers: &str, body: &str) -> String {
 }
 
 async fn capture_and_reply(listener: &TcpListener, response: &str) -> (String, String) {
+    let (mut socket, head, body) = capture_request(listener).await;
+    socket.write_all(response.as_bytes()).await.unwrap();
+    (head, body)
+}
+
+async fn capture_request(listener: &TcpListener) -> (TcpStream, String, String) {
     let (socket, _) = listener.accept().await.unwrap();
     let mut socket = BufReader::new(socket);
     let mut head = String::new();
@@ -73,12 +79,7 @@ async fn capture_and_reply(listener: &TcpListener, response: &str) -> (String, S
         .unwrap_or(0);
     let mut body = vec![0; length];
     socket.read_exact(&mut body).await.unwrap();
-    socket
-        .get_mut()
-        .write_all(response.as_bytes())
-        .await
-        .unwrap();
-    (head.to_lowercase(), String::from_utf8(body).unwrap())
+    (socket.into_inner(), head.to_lowercase(), String::from_utf8(body).unwrap())
 }
 
 #[tokio::test]
@@ -831,6 +832,83 @@ async fn wait_reuses_validator_through_rollout_and_respects_poll_hint() {
         assert!(head.contains("if-none-match: w/\"queued\""));
     }
     assert!(elapsed >= Duration::from_millis(900));
+}
+
+#[tokio::test]
+async fn wait_resumes_after_disconnected_truncated_and_stalled_reads() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let trace = |status| {
+        json!({
+            "id": REQUEST, "project_id": "fixture", "status": status, "events": [],
+            "quote": quote_fixture()
+        })
+        .to_string()
+    };
+    let captured = tokio::spawn(async move {
+        let queued = wire_response("200 OK", "ETag: W/\"queued\"\r\n", &trace("queued"));
+        let (first, _) = capture_and_reply(&listener, &queued).await;
+        let (disconnected, _) = capture_and_reply(&listener, "").await;
+        let partial = "HTTP/1.1 200 OK\r\nContent-Length: 80\r\nConnection: close\r\nETag: \"invalidated\"\r\n\r\n{";
+        let (truncated, _) = capture_and_reply(&listener, partial).await;
+        let (mut held, stalled, _) = capture_request(&listener).await;
+        held.write_all(partial.as_bytes()).await.unwrap();
+        let unchanged = wire_response("304 Not Modified", "", "");
+        let (validated, _) = capture_and_reply(&listener, &unchanged).await;
+        drop(held);
+        let complete = wire_response("200 OK", "", &trace("succeeded"));
+        let (last, _) = capture_and_reply(&listener, &complete).await;
+        (first, [disconnected, truncated, stalled, validated, last])
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_millis(300)).unwrap();
+    let result = client.wait(REQUEST, WaitOptions {
+        timeout: Duration::from_secs(3),
+        poll_interval: Duration::from_millis(5),
+    }).await.unwrap();
+    assert_eq!(result.status, RequestStatus::Succeeded);
+    let (first, later) = captured.await.unwrap();
+    assert!(!first.contains("if-none-match:"));
+    for head in std::iter::once(&first).chain(later.iter()) {
+        assert!(head.starts_with(&format!("get /v1/requests/{REQUEST} ")));
+    }
+    for head in later {
+        assert!(head.contains("if-none-match: w/\"queued\""));
+    }
+}
+
+#[tokio::test]
+async fn wait_returns_invalid_status_documents() {
+    let (origin, captured) = reply("200 OK", "", "{").await;
+    let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+    let error = client.wait(REQUEST, WaitOptions {
+        timeout: Duration::from_secs(1),
+        poll_interval: Duration::from_millis(5),
+    }).await.unwrap_err();
+    assert!(matches!(error, Error::Response { request_id: Some(id), .. } if id == REQUEST));
+    captured.await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_stops_at_a_denied_status_even_if_its_error_body_stalls() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _, _) = capture_request(&listener).await;
+        socket
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 32\r\n\r\n{")
+            .await
+            .unwrap();
+        // Hold the body while watching for an unexpected second read.
+        assert!(timeout(Duration::from_millis(200), listener.accept()).await.is_err());
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_millis(100)).unwrap();
+    let error = client.wait(REQUEST, WaitOptions {
+        timeout: Duration::from_secs(1),
+        poll_interval: Duration::from_millis(5),
+    }).await.unwrap_err();
+    assert_eq!(error.status().map(|status| status.as_u16()), Some(403));
+    assert_eq!(error.request_id(), Some(REQUEST));
+    server.await.unwrap();
 }
 
 #[tokio::test]

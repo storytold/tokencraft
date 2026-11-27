@@ -579,22 +579,13 @@ impl TokenCraftClient {
                 if let Some(tag) = &validator {
                     request = request.header(IF_NONE_MATCH, tag.clone());
                 }
-                let response = request.send().await
-                    .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
-                let status = response.status();
-                let suggested_delay = retry_after(&response);
-                let unchanged = status == StatusCode::NOT_MODIFIED && validator.is_some();
-                let unavailable = retryable(status) && suggested_delay.is_some();
-                if unchanged || unavailable {
-                    drop(response);
-                } else {
-                    validator = response.headers().get(ETAG).cloned();
-                    let value = Self::decode(response, Some(id)).await?;
-                    if done(&value)? {
-                        return Ok(value);
-                    }
-                }
-                let delay = options.poll_interval.max(suggested_delay.unwrap_or_default());
+                let suggested_delay = match Self::poll_once::<T>(request, id, &mut validator).await {
+                    Ok((Some(value), _)) if done(&value)? => return Ok(value),
+                    Ok((_, delay)) => delay,
+                    Err(Error::Transport { .. } | Error::Timeout { .. }) => Duration::ZERO,
+                    Err(error) => return Err(error),
+                };
+                let delay = options.poll_interval.max(suggested_delay);
                 tokio::time::sleep(delay.min(options.timeout)).await;
             }
         })
@@ -602,6 +593,29 @@ impl TokenCraftClient {
         .map_err(|_| Error::Timeout {
             request_id: Some(id.to_owned()),
         })?
+    }
+
+    async fn poll_once<T: DeserializeOwned>(
+        request: RequestBuilder,
+        id: &str,
+        validator: &mut Option<HeaderValue>,
+    ) -> Result<(Option<T>, Duration), Error> {
+        let response = request
+            .send()
+            .await
+            .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
+        let status = response.status();
+        let suggested_delay = retry_after(&response);
+        let unchanged = status == StatusCode::NOT_MODIFIED && validator.is_some();
+        let unavailable = retryable(status) && suggested_delay.is_some();
+        let delay = suggested_delay.unwrap_or_default();
+        if unchanged || unavailable {
+            return Ok((None, delay));
+        }
+        let tag = response.headers().get(ETAG).cloned();
+        let value = Self::decode(response, Some(id)).await?;
+        *validator = tag;
+        Ok((Some(value), delay))
     }
 
     pub(super) fn request_for(&self, method: Method, id: &str, suffix: &str) -> Result<RequestBuilder, Error> {

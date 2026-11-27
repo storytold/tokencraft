@@ -1,7 +1,7 @@
 import { ArtifactTransferError, readArtifact, readVerifiedContent, sha256, validContentType, validateArtifactRef } from "./content.js";
 import type { ContentMetadata, DownloadOptions, RetainedContent, VerifiedArtifact } from "./content.js";
 import {
-  deadline, gatewayError, hasIdPrefix, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError,
+  deadline, gatewayError, hasIdPrefix, isRequestId, milliseconds, object, pause, retryAfter, TokenCraftError, TokenCraftTimeoutError,
 } from "./http.js";
 import { validateTraceparent } from "./trace.js";
 import type { OtlpTrace, RequestTraceSnapshot, TraceBaseline } from "./trace.js";
@@ -289,14 +289,21 @@ export class TokenCraft {
     try {
       let validator: string | null = null;
       for (;;) {
-        const { value, headers }: GatewayRead<T | null> = await this.#read<T>(
-          "GET", path, { signal: poll.signal, auth: true, requestId, cache: "no-store" }, validator,
-        );
-        if (value) {
-          if (done(value)) return value;
-          validator = headers.get("etag");
+        let suggestedDelay = 0;
+        try {
+          const { value, headers }: GatewayRead<T | null> = await this.#read<T>(
+            "GET", path, { signal: poll.signal, auth: true, requestId, cache: "no-store" }, validator,
+          );
+          if (value) {
+            if (done(value)) return value;
+            validator = headers.get("etag");
+          }
+          suggestedDelay = retryAfter(headers) ?? 0;
+        } catch (error) {
+          poll.signal.throwIfAborted();
+          const interrupted = error instanceof TokenCraftError && error.status === 0 && error.code === "transport_error";
+          if (!interrupted && !(error instanceof TokenCraftTimeoutError)) throw error;
         }
-        const suggestedDelay = retryAfter(headers) ?? 0;
         await pause(Math.min(timeout, Math.max(interval, suggestedDelay)), poll.signal);
       }
     } finally {
@@ -372,9 +379,7 @@ export class TokenCraft {
             continue;
           }
           if (!response.ok) {
-            const error = await gatewayError(response, request.signal, id);
-            request.signal.throwIfAborted();
-            throw error;
+            throw await gatewayError(response, request.signal, id);
           }
           const value = await consume(response, id);
           request.signal.throwIfAborted();
@@ -388,6 +393,9 @@ export class TokenCraft {
         }
       }
     } catch (error) {
+      signal?.throwIfAborted();
+      // An expired detail read can still report the known HTTP status.
+      if (error instanceof TokenCraftError && error.status >= 300) throw error;
       request.signal.throwIfAborted();
       if (error instanceof TokenCraftError) throw error;
       const cause = error instanceof ArtifactTransferError ? error.cause : error;
