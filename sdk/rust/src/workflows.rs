@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::client::validate_idempotency_key;
-use crate::content::{download_verified, valid_content_type, SHA256_HEADER};
+use crate::content::{valid_content_type, SHA256_HEADER};
 use crate::{valid_id, Error, TokenCraftClient, VerifiedArtifact, WaitOptions};
 
 const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
@@ -283,7 +283,7 @@ impl WorkflowEndpoint<'_> {
             Method::GET,
             &format!("{}/outputs/{name}", self.run_path(id)?),
         )?;
-        download_verified(request, id, None, MAX_FILE_BYTES).await
+        self.client.download_verified(request, id, None, MAX_FILE_BYTES).await
     }
 
     fn run_path(&self, id: &str) -> Result<String, Error> {

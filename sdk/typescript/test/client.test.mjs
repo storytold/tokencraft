@@ -728,6 +728,79 @@ test("downloads only bounded artifacts matching their saved references", async (
   await assert.rejects(client.downloadArtifact(requestId, reference, location), { code: "archive_retrieval_required", requestId });
 });
 
+test("opted-in downloads retry scoped backpressure and verify the returned bytes", async () => {
+  const bytes = new TextEncoder().encode("abc");
+  const reference = { slot: 1, byte_length: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  const project = requestId.replace("req_", "proj_");
+  const workflow = requestId.replace("req_", "wf_");
+  const run = requestId.replace("req_", "wfr_");
+  const routes = [
+    `/edge/v1/requests/${requestId}/artifacts/1`,
+    `/edge/v1/requests/${requestId}/content/artifacts/1`,
+    `/edge/v1/projects/${project}/workflow-endpoints/${workflow}/runs/${run}/outputs/captions`,
+  ];
+  const seen = [];
+  const client = new TokenCraft({ ...options, downloadMaxAttempts: 2, fetch: async (url, init) => {
+    const index = seen.length;
+    seen.push(url.pathname);
+    assert.equal(init.method, "GET");
+    assert.equal(init.body, undefined);
+    assert.equal(init.headers.get("Authorization"), "Bearer fixture_key");
+    assert.equal(init.headers.get("Accept"), "application/octet-stream");
+    assert.equal(init.cache, "no-store");
+    if (index % 2 === 0) {
+      return Response.json({ error: { code: "artifact_download_capacity" } }, {
+        status: index === 2 ? 429 : 503,
+        headers: { "Retry-After": index === 4 ? "Sun, 06 Nov 1994 08:49:37 GMT" : "0" },
+      });
+    }
+    return new Response(bytes, { headers: {
+      "Content-Type": index === 5 ? "text/vtt" : "image/png",
+      "X-TokenCraft-Content-Sha256": reference.sha256,
+    } });
+  } });
+  assert.deepEqual(await client.downloadArtifact(requestId, reference), { contentType: "image/png", bytes });
+  assert.deepEqual(await client.downloadArtifact(requestId, reference, { location: "archived" }), { contentType: "image/png", bytes });
+  assert.deepEqual(await client.workflow(project, workflow).downloadOutput(run, "captions"), { contentType: "text/vtt", bytes });
+  assert.deepEqual(seen, routes.flatMap((route) => [route, route]));
+});
+
+test("downloads honor attempt limits, valid retry hints, and cancellation", async () => {
+  const reference = { slot: 0, byte_length: 3, sha256: "a".repeat(64) };
+  for (const [downloadMaxAttempts, status, hint, expectedCalls] of [
+    [undefined, 503, "0", 1], [2, 503, undefined, 1], [2, 503, "0, 1", 1],
+    [2, 409, "0", 1], [2, 503, "0", 2],
+  ]) {
+    let calls = 0;
+    const client = new TokenCraft({ ...options, downloadMaxAttempts, submitMaxAttempts: 3, fetch: async () => {
+      calls++;
+      return Response.json({ error: { code: "fixture" } }, { status, headers: hint ? { "Retry-After": hint } : {} });
+    } });
+    await assert.rejects(client.downloadArtifact(requestId, reference), { code: "fixture", status, requestId });
+    assert.equal(calls, expectedCalls);
+  }
+  assert.throws(() => new TokenCraft({ ...options, downloadMaxAttempts: 9 }), RangeError);
+
+  let transportCalls = 0;
+  const transport = new TokenCraft({ ...options, downloadMaxAttempts: 2, fetch: async () => {
+    transportCalls++;
+    throw new TypeError("fixture connection closed");
+  } });
+  await assert.rejects(transport.downloadArtifact(requestId, reference), { code: "transport_error", requestId });
+  assert.equal(transportCalls, 1);
+
+  const controller = new AbortController();
+  const reason = new Error("stop waiting for output");
+  let calls = 0;
+  const client = new TokenCraft({ ...options, downloadMaxAttempts: 2, timeoutMs: 50, fetch: async () => {
+    if (++calls === 2) setTimeout(() => controller.abort(reason), 0);
+    return Response.json({}, { status: 503, headers: { "Retry-After": "60" } });
+  } });
+  await assert.rejects(client.downloadArtifact(requestId, reference), { name: "TokenCraftTimeoutError", requestId });
+  await assert.rejects(client.downloadArtifact(requestId, reference, { signal: controller.signal }), (error) => error === reason);
+  assert.equal(calls, 2);
+});
+
 test("published workflows replay the same intent and poll through reconciliation", async () => {
   const project = requestId.replace("req_", "proj_");
   const workflow = requestId.replace("req_", "wf_");

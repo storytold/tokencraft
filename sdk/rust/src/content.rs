@@ -1,5 +1,5 @@
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CACHE_CONTROL, CONTENT_TYPE};
-use reqwest::{Method, RequestBuilder, StatusCode};
+use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE};
+use reqwest::{Method, Response, StatusCode};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -125,7 +125,7 @@ impl TokenCraftClient {
             ArtifactLocation::Archived => "/content/artifacts",
         };
         let request = self.request_for(Method::GET, id, &format!("{prefix}/{}", artifact.slot))?;
-        download_verified(request, id, Some(artifact), MAX_ARTIFACT_BYTES as usize).await
+        self.download_verified(request, id, Some(artifact), MAX_ARTIFACT_BYTES as usize).await
     }
 }
 
@@ -141,20 +141,12 @@ pub(super) fn valid_content_type(value: &str) -> bool {
     })
 }
 
-pub(super) async fn download_verified(
-    request: RequestBuilder,
+pub(super) async fn verify_download(
+    response: Response,
     id: &str,
     reference: Option<&ArtifactRef>,
     max_bytes: usize,
 ) -> Result<VerifiedArtifact, Error> {
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
-    let response = request
-        .headers(headers)
-        .header(CACHE_CONTROL, "no-store")
-        .send()
-        .await
-        .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
     let (mut response, request_id) = TokenCraftClient::checked_response(response, Some(id)).await?;
     let response_status = response.status();
     let invalid = || Error::Gateway {

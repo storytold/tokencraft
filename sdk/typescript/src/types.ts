@@ -181,6 +181,8 @@ export interface ClientOptions {
   timeoutMs?: number;
   /** Total attempts for native submissions and workflow invocations, including the first. Defaults to 1. */
   submitMaxAttempts?: number;
+  /** Total attempts for artifact and workflow output downloads, including the first. Defaults to 1. */
+  downloadMaxAttempts?: number;
   fetch?: typeof fetch;
 }
 

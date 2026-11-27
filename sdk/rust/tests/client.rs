@@ -876,6 +876,110 @@ async fn artifact_download_checks_slot_size_digest_and_scoped_gateway_errors() {
 }
 
 #[tokio::test]
+async fn downloads_retry_backpressure_on_the_same_scoped_route_and_verify_the_bytes() {
+    use tokencraft_sdk::{ArtifactLocation, ArtifactRef};
+
+    const SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let project = REQUEST.replace("req_", "proj_");
+    let workflow = REQUEST.replace("req_", "wf_");
+    let run = REQUEST.replace("req_", "wfr_");
+    let routes = [
+        format!("/v1/requests/{REQUEST}/artifacts/1"),
+        format!("/v1/requests/{REQUEST}/content/artifacts/1"),
+        format!("/v1/projects/{project}/workflow-endpoints/{workflow}/runs/{run}/outputs/captions"),
+    ];
+    let server = tokio::spawn(async move {
+        for (path, status, delay, mime) in [
+            (&routes[0], "503 Service Unavailable", "1", "image/png"),
+            (&routes[1], "429 Too Many Requests", "0", "image/png"),
+            (&routes[2], "503 Service Unavailable", "Sun, 06 Nov 1994 08:49:37 GMT", "text/vtt"),
+        ] {
+            let busy = wire_response(
+                status,
+                &format!("Retry-After: {delay}\r\n"),
+                r#"{"error":{"code":"artifact_download_capacity"}}"#,
+            );
+            let first = capture_and_reply(&listener, &busy).await;
+            let started = std::time::Instant::now();
+            let ok = format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: 3\r\nX-TokenCraft-Content-Sha256: {SHA}\r\nConnection: close\r\n\r\nabc");
+            let second = capture_and_reply(&listener, &ok).await;
+            if delay == "1" {
+                assert!(started.elapsed() >= Duration::from_millis(900));
+            }
+            for (head, body) in [first, second] {
+                assert!(head.starts_with(&format!("get {path} ")));
+                assert!(head.contains("authorization: bearer fixture\r\n"));
+                assert!(head.contains("accept: application/octet-stream\r\n"));
+                assert!(head.contains("cache-control: no-store\r\n"));
+                assert!(body.is_empty());
+            }
+        }
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_secs(4))
+        .unwrap().with_download_max_attempts(2).unwrap();
+    let reference = ArtifactRef { slot: 1, byte_length: 3, sha256: SHA.into() };
+    for location in [ArtifactLocation::Warm, ArtifactLocation::Archived] {
+        assert_eq!(client.download_artifact(REQUEST, &reference, location).await.unwrap().bytes, b"abc");
+    }
+    let endpoint = client.workflow(&project, &workflow).unwrap();
+    assert_eq!(endpoint.download_output(&run, "captions").await.unwrap().bytes, b"abc");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn download_retries_require_opt_in_and_a_valid_hint_and_share_the_deadline() {
+    use tokencraft_sdk::{ArtifactLocation, ArtifactRef};
+
+    let reference = ArtifactRef { slot: 0, byte_length: 3, sha256: "a".repeat(64) };
+    let unavailable = "503 Service Unavailable";
+    let problem = r#"{"error":{"code":"artifact_download_capacity"}}"#;
+    for (attempts, status, hint, expected) in [
+        (None, unavailable, "Retry-After: 0\r\n", 503),
+        (Some(2), unavailable, "", 503),
+        (Some(2), unavailable, "Retry-After: 0\r\nRetry-After: 1\r\n", 503),
+        (Some(2), "409 Conflict", "Retry-After: 0\r\n", 409),
+    ] {
+        let (origin, captured) = reply(status, hint, problem).await;
+        let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        let client = match attempts {
+            Some(attempts) => client.with_download_max_attempts(attempts).unwrap(),
+            None => client,
+        };
+        let download = client.download_artifact(REQUEST, &reference, ArtifactLocation::Warm).await;
+        assert!(matches!(download, Err(Error::Gateway { status, code, .. })
+            if status.as_u16() == expected && code == "artifact_download_capacity"));
+        captured.await.unwrap();
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let busy = wire_response(unavailable, "Retry-After: 0\r\n", problem);
+        for _ in 0..2 {
+            capture_and_reply(&listener, &busy).await;
+        }
+        assert!(timeout(Duration::from_millis(30), listener.accept()).await.is_err());
+    });
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_secs(2))
+        .unwrap().with_download_max_attempts(2).unwrap();
+    let download = client.download_artifact(REQUEST, &reference, ArtifactLocation::Warm).await;
+    assert!(matches!(download, Err(Error::Gateway { status, code, .. })
+        if status.as_u16() == 503 && code == "artifact_download_capacity"));
+    server.await.unwrap();
+
+    let (origin, captured) = reply(unavailable, "Retry-After: 60\r\n", problem).await;
+    let client = TokenCraftClient::with_timeout(&origin, Some("fixture"), Duration::from_millis(150))
+        .unwrap().with_download_max_attempts(2).unwrap();
+    let download = timeout(Duration::from_secs(2),
+        client.download_artifact(REQUEST, &reference, ArtifactLocation::Warm)).await.unwrap();
+    assert!(matches!(download, Err(Error::Timeout { request_id: Some(id) }) if id == REQUEST));
+    assert!(client.with_download_max_attempts(9).is_err());
+    captured.await.unwrap();
+}
+
+#[tokio::test]
 async fn published_workflow_retries_and_polls_the_same_scoped_run() {
     use tokencraft_sdk::{WorkflowInput, WorkflowInvokeOptions, WorkflowRunStatus};
 

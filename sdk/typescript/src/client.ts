@@ -17,6 +17,7 @@ import type {
 const inspectable = new Set(["succeeded", "failed", "canceled", "awaiting_reconciliation"]);
 
 type GatewayRead<T> = { value: T; headers: Headers };
+type RetryOperation = "submission" | "download";
 
 interface WireOptions extends CallOptions {
   auth?: boolean;
@@ -26,7 +27,7 @@ interface WireOptions extends CallOptions {
   requestId?: string;
   cache?: RequestCache;
   accept?: string;
-  retrySubmission?: boolean;
+  retry?: RetryOperation;
   traceparent?: string;
 }
 
@@ -34,7 +35,7 @@ export class TokenCraft {
   readonly #base: URL;
   readonly #apiKey?: string;
   readonly #timeout: number;
-  readonly #submitMaxAttempts: number;
+  readonly #maxAttempts: Record<RetryOperation, number>;
   readonly #fetch: typeof fetch;
 
   constructor(options: ClientOptions) {
@@ -50,10 +51,10 @@ export class TokenCraft {
     this.#base = url;
     this.#apiKey = options.apiKey;
     this.#timeout = milliseconds(options.timeoutMs ?? 30_000, "timeoutMs");
-    this.#submitMaxAttempts = options.submitMaxAttempts ?? 1;
-    if (!Number.isInteger(this.#submitMaxAttempts) || this.#submitMaxAttempts < 1 || this.#submitMaxAttempts > 8) {
-      throw new RangeError("submitMaxAttempts must be an integer from 1 to 8.");
-    }
+    this.#maxAttempts = {
+      submission: attemptLimit(options.submitMaxAttempts ?? 1, "submitMaxAttempts"),
+      download: attemptLimit(options.downloadMaxAttempts ?? 1, "downloadMaxAttempts"),
+    };
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -85,7 +86,7 @@ export class TokenCraft {
     validateIdempotencyKey(options.idempotencyKey);
     return this.#call("POST", "v1/requests", {
       auth: true, key: options.idempotencyKey, signal: options.signal,
-      retrySubmission: true,
+      retry: "submission",
       traceparent: options.traceparent === undefined ? undefined : validateTraceparent(options.traceparent),
       body: {
         quote_id: quote.id,
@@ -181,7 +182,7 @@ export class TokenCraft {
     if (location !== "warm" && location !== "archived") throw new TypeError("Use warm or archived artifact storage.");
     const prefix = location === "archived" ? "content/artifacts" : "artifacts";
     const { value } = await this.#exchange("GET", `${requestPath(requestId)}/${prefix}/${reference.slot}`, {
-      auth: true, requestId, signal: options.signal, cache: "no-store", accept: "application/octet-stream",
+      auth: true, requestId, signal: options.signal, cache: "no-store", accept: "application/octet-stream", retry: "download",
     }, (response, id) => readArtifact(response, reference, id));
     return value;
   }
@@ -235,7 +236,7 @@ export class TokenCraft {
         validateIdempotencyKey(options.idempotencyKey);
         if (options.reuseRunId !== undefined) runPath(options.reuseRunId);
         const receipt = await this.#call<WorkflowReceipt>("POST", `${path}/runs`, {
-          ...privateCall, signal: options.signal, key: options.idempotencyKey, retrySubmission: true,
+          ...privateCall, signal: options.signal, key: options.idempotencyKey, retry: "submission",
           body: { inputs: workflowInputs(inputs), client_ref: options.clientRef, reuse_run_id: options.reuseRunId },
         });
         if (!hasIdPrefix(receipt.id, "wfr_") || receipt.status_url !== `/${runPath(receipt.id)}`
@@ -260,7 +261,7 @@ export class TokenCraft {
       },
       downloadOutput: async (runId, name, options = {}) => {
         const { value } = await this.#exchange("GET", workflowOutputPath(runPath(runId), name), {
-          ...options, ...privateCall, requestId: runId, accept: "application/octet-stream",
+          ...options, ...privateCall, requestId: runId, accept: "application/octet-stream", retry: "download",
         }, (response) => readVerifiedContent(response, maxWorkflowFileBytes, runId));
         return value;
       },
@@ -320,7 +321,7 @@ export class TokenCraft {
     consume: (response: Response, id?: string) => Promise<T>, validator: string | null | undefined): Promise<GatewayRead<T | null>>;
   async #exchange<T>(method: string, path: string, options: WireOptions,
     consume: (response: Response, id?: string) => Promise<T>, validator?: string | null): Promise<GatewayRead<T | null>> {
-    const { auth, body, binary, key, requestId, signal, cache, accept, retrySubmission, traceparent } = options;
+    const { auth, body, binary, key, requestId, signal, cache, accept, retry, traceparent } = options;
     const headers = new Headers({ Accept: accept ?? "application/json" });
     if (auth) {
       if (!this.#apiKey) throw new TokenCraftError(0, "missing_key", "This operation requires a TokenCraft API key.", requestId);
@@ -336,7 +337,7 @@ export class TokenCraft {
     if (traceparent !== undefined) headers.set("traceparent", traceparent);
     if (typeof validator === "string") headers.set("If-None-Match", validator);
     const encoded = binary?.bytes ?? (body === undefined ? undefined : JSON.stringify(body));
-    const maxAttempts = retrySubmission ? this.#submitMaxAttempts : 1;
+    const maxAttempts = retry ? this.#maxAttempts[retry] : 1;
     const polling = validator !== undefined;
     let id = requestId;
     const request = deadline(signal, this.#timeout, () => id);
@@ -374,7 +375,7 @@ export class TokenCraft {
           request.signal.throwIfAborted();
           return { value, headers: response.headers };
         } catch (error) {
-          if (!(error instanceof TypeError) || attempt >= maxAttempts) throw error;
+          if (retry !== "submission" || !(error instanceof TypeError) || attempt >= maxAttempts) throw error;
           await pause(Math.min(100 * 2 ** (attempt - 1), 1000), request.signal);
         }
       }
@@ -386,6 +387,13 @@ export class TokenCraft {
       request.close();
     }
   }
+}
+
+function attemptLimit(attempts: number, option: string): number {
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 8) {
+    throw new RangeError(`${option} must be an integer from 1 to 8.`);
+  }
+  return attempts;
 }
 
 function validateIdempotencyKey(key: string): void {

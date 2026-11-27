@@ -1,15 +1,19 @@
 use std::time::{Duration, Instant, SystemTime};
 
-use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, RETRY_AFTER};
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CACHE_CONTROL, ETAG, IF_NONE_MATCH, RETRY_AFTER,
+};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use crate::content::verify_download;
 use crate::trace::{submit_traceparent, OtlpTrace, RequestTraceSnapshot, TraceBaseline};
 use crate::{
-    valid_id, AudioProviderResult, Catalog, ChatOptions, Error, ImageProviderResult, ListOptions,
-    MeshProviderResult, Message, ModelCatalog, PolicySetting, Provider, ProviderPath, ProviderResult, Quote, QuoteInput, QuoteOptions, Receipt, RequestEvents,
-    RequestFilters, RequestPage, RequestStatus, RequestTrace, RoutePreview, RoutePreviewOptions, SubmitOptions, UsageOptions, UsageReport,
-    VideoProviderResult, WaitOptions,
+    valid_id, ArtifactRef, AudioProviderResult, Catalog, ChatOptions, Error, ImageProviderResult,
+    ListOptions, MeshProviderResult, Message, ModelCatalog, PolicySetting, Provider, ProviderPath,
+    ProviderResult, Quote, QuoteInput, QuoteOptions, Receipt, RequestEvents, RequestFilters,
+    RequestPage, RequestStatus, RequestTrace, RoutePreview, RoutePreviewOptions, SubmitOptions,
+    UsageOptions, UsageReport, VerifiedArtifact, VideoProviderResult, WaitOptions,
 };
 
 #[derive(Clone)]
@@ -21,6 +25,7 @@ pub struct TokenCraftClient {
     submit_traceparent: Option<HeaderValue>,
     timeout: Duration,
     submit_max_attempts: u8,
+    download_max_attempts: u8,
 }
 
 impl TokenCraftClient {
@@ -90,6 +95,7 @@ impl TokenCraftClient {
             submit_traceparent: None,
             timeout,
             submit_max_attempts: 1,
+            download_max_attempts: 1,
         })
     }
 
@@ -226,6 +232,18 @@ impl TokenCraftClient {
             return Err(Error::InvalidInput("supply 1 to 8 submission attempts"));
         }
         self.submit_max_attempts = attempts;
+        Ok(self)
+    }
+
+    /// Allow up to 8 attempts for artifact and workflow output downloads, including the first.
+    ///
+    /// Retries follow HTTP 429 or 503 with a valid Retry-After. All attempts and the final
+    /// verified transfer share the client's timeout. The default is one attempt.
+    pub fn with_download_max_attempts(mut self, attempts: u8) -> Result<Self, Error> {
+        if !(1..=8).contains(&attempts) {
+            return Err(Error::InvalidInput("supply 1 to 8 download attempts"));
+        }
+        self.download_max_attempts = attempts;
         Ok(self)
     }
 
@@ -614,6 +632,50 @@ impl TokenCraftClient {
             .await
             .map_err(|source| Error::from_http(source, id_hint.map(str::to_owned)))?;
         Self::decode(response, id_hint).await
+    }
+
+    pub(super) async fn download_verified(
+        &self,
+        request: RequestBuilder,
+        id: &str,
+        reference: Option<&ArtifactRef>,
+        max_bytes: usize,
+    ) -> Result<VerifiedArtifact, Error> {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        let request = request.headers(headers);
+
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let timeout = || Error::Timeout {
+            request_id: Some(id.to_owned()),
+        };
+        let mut remaining = self.download_max_attempts;
+        tokio::time::timeout_at(deadline, async {
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(timeout());
+                }
+                let attempt = request
+                    .try_clone()
+                    .ok_or(Error::InvalidInput("download request cannot be replayed"))?;
+                let response = attempt
+                    .send()
+                    .await
+                    .map_err(|source| Error::from_http(source, Some(id.to_owned())))?;
+                remaining -= 1;
+                if remaining > 0 && retryable(response.status()) {
+                    if let Some(delay) = retry_after(&response) {
+                        drop(response);
+                        tokio::time::sleep(delay.min(self.timeout)).await;
+                        continue;
+                    }
+                }
+                return verify_download(response, id, reference, max_bytes).await;
+            }
+        })
+        .await
+        .map_err(|_| timeout())?
     }
 
     async fn decode<T: DeserializeOwned>(
