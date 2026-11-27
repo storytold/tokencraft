@@ -60,8 +60,7 @@ class Gateway:
                 raise RuntimeError(f"{path.split('?')[0]} returned HTTP {response.status}, expected {expected}")
             if self.private_api and path.startswith("/v1/"):
                 policies = response.headers.get_all("Cache-Control", [])
-                directives = {part.strip().lower() for value in policies for part in value.split(",")}
-                require(len(policies) == 1 and {"private", "no-store"} <= directives,
+                require(len(policies) == 1 and {"private", "no-store"} <= cache_directives(policies[0]),
                         f"{path.split('?')[0]} did not return a private, non-storable response")
             raw = response.read(max_bytes + 1)
             if len(raw) > max_bytes:
@@ -81,12 +80,23 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def cache_directives(policy):
+    return {part.strip().lower() for part in policy.split(",")}
+
+
 def verify_revision(address, tls, revision):
     state, headers = Gateway(address, None, tls).json("/ready")
     require(
         isinstance(state, dict) and state.get("ready") is True
         and headers.get_all("TokenCraft-Source-Revision") == [revision],
         f"{address.netloc} did not report the expected gateway source revision",
+    )
+    policies = headers.get_all("Cache-Control", [])
+    age = headers.get_all("Age", [])
+    require(
+        len(policies) == 1 and "no-store" in cache_directives(policies[0])
+        and len(age) <= 1 and all(re.fullmatch(r"0+", value.strip()) for value in age),
+        f"{address.netloc} did not return a fresh, non-storable readiness response",
     )
 
 

@@ -13,6 +13,8 @@ jobs:
           persist-credentials: false
       - name: Verify the native package manifest and guides
         run: python3 -B -m unittest discover -s scripts -p test_native_package.py
+      - name: Verify the authenticated smoke check readiness guard
+        run: python3 -B -m unittest discover -s scripts -p test_smoke_authenticated_gateway.py
       - name: Install PostgreSQL 17 and jq
         run: bash .github/scripts/install-postgresql17-ubuntu.sh
       - name: Install Rust and verify PostgreSQL tools

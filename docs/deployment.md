@@ -384,7 +384,7 @@ python3 -B scripts/smoke_authenticated_gateway.py \
   --api https://api.example.com --peer https://console.example.com --revision "$source_revision"
 ```
 
-With the revision set, the check verifies both origins without sending the scoped key. It then submits one synthetic image with a zero-cost cap and replays its receipt. It verifies the PNG digest, connector trace, and one usage record scoped to the run. Inject the scoped project key into the process environment from your secret manager. For a private HTTPS ingress, supply its trusted CA bundle with `--ca`.
+With the revision set, the check requires each origin to report the expected revision on a fresh, non-storable readiness response before sending the scoped key. It then submits one synthetic image with a zero-cost cap and replays its receipt. It verifies the PNG digest, connector trace, and one usage record scoped to the run. Inject the scoped project key into the process environment from your secret manager. For a private HTTPS ingress, supply its trusted CA bundle with `--ca`.
 
 To deliver signed customer webhooks, set `TOKENCRAFT_DEMO_WEBHOOK_CONFIG` to an operator-maintained JSON registry such as `{"destinations":{"customer_updates":"https://events.example.com/tokencraft"}}`. Give the API and workers the same independent 32-byte hex `TOKENCRAFT_DEMO_WEBHOOK_KEY`. Hosts use the standard public certificate roots by default. Set `TOKENCRAFT_WEBHOOK_CA_FILE` to an operator-managed PEM bundle to use a private trust store for all webhook destinations. Tenants select a registry entry by ID. Register reviewed HTTPS destinations and set egress policy for the hosts you allow. TLS verifies the destination hostname and the client rejects redirects.
 
