@@ -131,28 +131,36 @@ async fn send(config: &WebhookConfig, claim: &Claim) -> DeliveryResult {
     if status.is_success() {
         return DeliveryResult::Delivered(code);
     }
-    let retry_after_ms = (status.is_server_error() || matches!(code, 408 | 425 | 429)).then(|| {
-        let requested = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|header| header.to_str().ok())
-            .map_or(0, |value| retry_after_ms(value, SystemTime::now()));
-        backoff.max(requested)
-    });
+    let retryable = status.is_server_error() || matches!(code, 408 | 425 | 429);
+    let requested = if retryable {
+        requested_delay_ms(response.headers(), SystemTime::now())
+    } else {
+        0
+    };
     DeliveryResult::HttpError {
         status: code,
-        retry_after_ms,
+        retry_after_ms: retryable.then_some(backoff.max(requested)),
+        receiver_cooldown_ms: (matches!(code, 429 | 503) && requested > 0).then_some(requested),
+    }
+}
+
+fn requested_delay_ms(headers: &reqwest::header::HeaderMap, now: SystemTime) -> i32 {
+    let mut fields = headers.get_all(reqwest::header::RETRY_AFTER).iter();
+    match (fields.next(), fields.next()) {
+        (Some(value), None) => value.to_str().map_or(0, |value| retry_after_ms(value, now)),
+        _ => 0,
     }
 }
 
 fn retry_after_ms(value: &str, now: SystemTime) -> i32 {
     let value = value.trim();
-    let delay = match value.parse::<u64>() {
-        Ok(seconds) => Duration::from_secs(seconds),
-        Err(_) => httpdate::parse_http_date(value)
+    let delay = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        Duration::from_secs(value.parse().unwrap_or(u64::MAX))
+    } else {
+        httpdate::parse_http_date(value)
             .ok()
             .and_then(|date| date.duration_since(now).ok())
-            .unwrap_or_default(),
+            .unwrap_or_default()
     };
     delay.min(MAX_RETRY_AFTER).as_nanos().div_ceil(1_000_000) as i32
 }
@@ -173,6 +181,21 @@ mod tests {
         assert_eq!(retry_after_ms("Sun, 06 Nov 1994 08:49:36 GMT", now), 0);
         assert_eq!(retry_after_ms("Sun, 06 Nov 1994 09:00:00 GMT", now), 60_000);
         assert_eq!(retry_after_ms("18446744073709551615", now), 60_000);
+        assert_eq!(retry_after_ms("18446744073709551616", now), 60_000);
+        assert_eq!(retry_after_ms("+4", now), 0);
         assert_eq!(retry_after_ms("invalid", now), 0);
+    }
+
+    #[test]
+    fn requires_one_valid_retry_after_header() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+        let now = SystemTime::UNIX_EPOCH;
+        let mut headers = HeaderMap::new();
+        assert_eq!(requested_delay_ms(&headers, now), 0);
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("4"));
+        assert_eq!(requested_delay_ms(&headers, now), 4_000);
+        headers.append(RETRY_AFTER, HeaderValue::from_static("6"));
+        assert_eq!(requested_delay_ms(&headers, now), 0);
     }
 }

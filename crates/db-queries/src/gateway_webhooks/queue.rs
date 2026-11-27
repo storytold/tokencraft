@@ -1,5 +1,7 @@
 use sqlx::PgPool;
 
+use super::cooldowns;
+
 const MAX_ATTEMPTS: i32 = 6;
 
 pub struct Claim {
@@ -41,9 +43,16 @@ pub async fn claim(pool: &PgPool, excluded_destinations: &[String]) -> sqlx::Res
            JOIN gateway_webhook_subscriptions s ON s.id = coalesce(r.webhook_subscription_id, w.webhook_subscription_id)
          WHERE d.state IN ('pending', 'sending') AND d.available_at <= statement_timestamp()
            AND s.destination_id <> ALL($1::text[])
+           AND (s.revoked_at IS NOT NULL OR d.deadline_at <= statement_timestamp()
+                OR d.attempt_count - d.attempt_baseline >= $2
+                OR NOT EXISTS (
+                    SELECT 1 FROM gateway_webhook_cooldowns c
+                    WHERE c.receiver_digest = sha256(convert_to(s.destination_url, 'UTF8'))
+                      AND c.available_after > statement_timestamp()
+                ))
          ORDER BY d.available_at, d.id LIMIT 1
          FOR UPDATE OF d SKIP LOCKED FOR SHARE OF s SKIP LOCKED",
-        excluded_destinations,
+        excluded_destinations, MAX_ATTEMPTS,
     )
     .fetch_optional(&mut *tx)
     .await?;
@@ -125,6 +134,7 @@ pub enum DeliveryResult {
     HttpError {
         status: i16,
         retry_after_ms: Option<i32>,
+        receiver_cooldown_ms: Option<i32>,
     },
     NetworkError {
         retry_after_ms: i32,
@@ -133,16 +143,17 @@ pub enum DeliveryResult {
 }
 
 pub async fn finish(pool: &PgPool, claim: &Claim, result: DeliveryResult) -> sqlx::Result<bool> {
-    let (outcome, status, delay) = match result {
-        DeliveryResult::Delivered(status) => ("delivered", Some(status), None),
+    let (outcome, status, delay, cooldown) = match result {
+        DeliveryResult::Delivered(status) => ("delivered", Some(status), None, None),
         DeliveryResult::HttpError {
             status,
             retry_after_ms,
-        } => ("http_error", Some(status), retry_after_ms),
+            receiver_cooldown_ms,
+        } => ("http_error", Some(status), retry_after_ms, receiver_cooldown_ms),
         DeliveryResult::NetworkError { retry_after_ms } => {
-            ("network_error", None, Some(retry_after_ms))
+            ("network_error", None, Some(retry_after_ms), None)
         }
-        DeliveryResult::DestinationUnavailable => ("destination_unavailable", None, None),
+        DeliveryResult::DestinationUnavailable => ("destination_unavailable", None, None, None),
     };
     let error = (outcome != "delivered").then_some(outcome);
     let retry_delay = delay.filter(|_| claim.tries_in_cycle < MAX_ATTEMPTS);
@@ -173,6 +184,9 @@ pub async fn finish(pool: &PgPool, claim: &Claim, result: DeliveryResult) -> sql
         )
         .execute(&mut *tx)
         .await?;
+        if let Some(wait_ms) = cooldown {
+            cooldowns::record(&mut tx, &claim.destination_url, wait_ms).await?;
+        }
     }
     tx.commit().await?;
     Ok(recorded)

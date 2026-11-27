@@ -476,6 +476,7 @@ async fn maintain(pool: &db::PgPool) -> sqlx::Result<()> {
     db_queries::gateway_requests::expire_results(pool).await?;
     db_queries::gateway_requests::content_history::expire(pool).await?;
     db_queries::gateway_requests::queue_cooldowns::purge_expired(pool).await?;
+    db_queries::gateway_webhooks::cooldowns::purge_expired(pool).await?;
     db_queries::gateway_requests::artifacts::purge_expired(pool).await?;
     db_queries::gateway_requests::chat_streams::purge_expired(pool).await?;
     db_queries::gateway_exports::publish(pool, None).await?;

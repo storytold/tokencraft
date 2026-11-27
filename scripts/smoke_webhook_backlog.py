@@ -8,11 +8,11 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from secrets import token_hex
 from tempfile import TemporaryDirectory
 from threading import Event, Lock
-from time import time
+from time import monotonic, time
 from urllib.parse import urlsplit
 
 from postgres_tools import postgres_bin
@@ -31,11 +31,12 @@ class Handler(BaseHTTPRequestHandler):
             event_id = fields["webhook-id"]
             first = event_id not in self.server.seen
             self.server.seen.add(event_id)
+            self.server.received_at[event_id] = monotonic()
             self.server.received.put((self.path, fields, raw))
         if first and self.server.slow:
             self.server.release.wait(8)
             self.send_response(503)
-            self.send_header("Retry-After", "1")
+            self.send_header("Retry-After", self.server.retry_after)
         else:
             self.send_response(204)
         self.end_headers()
@@ -47,9 +48,11 @@ class Receiver(ThreadingHTTPServer):
     def __init__(self, *, slow=False):
         super().__init__((HOST, 0), Handler)
         self.slow = slow
+        self.retry_after = "1"
         self.release = Event()
         self.lock = Lock()
         self.seen = set()
+        self.received_at = {}
         self.received = Queue()
 
     def url(self, path):
@@ -79,7 +82,8 @@ def verify(gateway, directory, settings, session, account, project, case):
         fast = stack.enter_context(serve(Receiver()))
         config = directory / "webhook-routes.json"
         config.write_text(json.dumps({"destinations": {
-            "slow_a": slow.url("/a"), "slow_b": slow.url("/b"), "fast": fast.url("/events"),
+            "slow_a": slow.url("/a"), "slow_b": slow.url("/b"), "same_url": slow.url("/a"),
+            "fast": fast.url("/events"),
         }}))
         settings = dict(settings, TOKENCRAFT_DEMO_WEBHOOK_CONFIG=str(config), TOKENCRAFT_DEMO_WEBHOOK_KEY=token_hex(32))
         stack.enter_context(service("webhook-api", [gateway], directory, settings, lambda: ready(api)))
@@ -165,12 +169,57 @@ def verify(gateway, directory, settings, session, account, project, case):
                 eventually(recovered, "stalled receiver recovery")
             print("PASS the healthy receiver delivered during the stall and all retries kept their signed bytes")
 
+        if case == "cooldown":
+            slow.retry_after = "8"
+            slow.release.set()
+            original = enqueue(destinations["/a"])
+            path = f"/v1/projects/{project}/webhook-deliveries?account_id={account}"
+            with service("webhook-first-worker", [gateway], directory, worker, lambda: ready(worker_port)):
+                signed = verify_event(slow.received.get(timeout=3), destinations["/a"][0], project, original)
+                first_received = slow.received_at[signed[0]]
+
+                def retry_recorded():
+                    rows, _ = call(api, path, 200, headers=session)
+                    return any(row["request_id"] == original and row["state"] == "pending"
+                               and row["attempt_count"] == 1 and row["last_error"] == "http_error"
+                               for row in rows["items"])
+
+                eventually(retry_recorded, "the receiver's retry delay", timeout=4)
+
+            slow.slow = False
+            alias = subscription(session, account, project, "same_url")
+            queued = enqueue(alias)
+            independent = enqueue(destinations["/b"])
+            healthy_request = enqueue(healthy)
+            with service("webhook-replacement-worker", [gateway], directory, worker, lambda: ready(worker_port)):
+                sample = slow.received.get(timeout=3)
+                assert sample[0] == "/b", "the replacement sent to a receiver still in cooldown"
+                verify_event(sample, destinations["/b"][0], project, independent)
+                verify_event(fast.received.get(timeout=2.5), healthy[0], healthy_project, healthy_request)
+                try:
+                    slow.received.get(timeout=0.6)
+                except Empty:
+                    pass
+                else:
+                    raise AssertionError("a receiver alias received work before the requested delay elapsed")
+
+                resume = {}
+                for _ in range(2):
+                    sample = slow.received.get(timeout=11)
+                    assert sample[0] == "/a"
+                    request = json.loads(sample[2])["data"]["request_id"]
+                    sub = destinations["/a"][0] if request == original else alias[0]
+                    resume[request] = verify_event(sample, sub, project, request)
+                assert set(resume) == {original, queued} and resume[original] == signed
+                assert all(slow.received_at[event[0]] - first_received >= 8 for event in resume.values())
+            print("PASS receiver delay survived worker replacement, held its alias, and preserved signed event replay")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gateway", type=Path)
     parser.add_argument("admin", type=Path)
-    parser.add_argument("--case", choices=("both", "expired", "stall"), default="both")
+    parser.add_argument("--case", choices=("both", "expired", "stall", "cooldown"), default="both")
     args = parser.parse_args()
     with TemporaryDirectory(prefix="tokencraft-webhook-backlog-") as temporary:
         rehearse(args.gateway.resolve(strict=True), args.admin.resolve(strict=True), Path(temporary),

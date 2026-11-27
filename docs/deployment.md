@@ -68,7 +68,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 3. Keep ingress paused and the new fleet stopped while applying the target image's migrations. Use `admin-cli migrate --pause-admissions` on schema 88 or later and `admin-cli migrate` on earlier releases. Reapply [runtime grants](#separate-migration-and-runtime-roles) and run `admin-cli schema-status` as the runtime role. On schema 88 or later, run `admin-cli admissions status --expect paused` with the same role and wait for it to succeed before starting the new fleet. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress), then resume the database gate if active and lift the ingress pause.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 89 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 90 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Deploy client-bound quote signing to the API replicas together. Refresh unused quotes issued before the upgrade. Requests already admitted replay with their original quote, payload, and idempotency key.
 
@@ -117,6 +117,10 @@ If API autoscaling is enabled, the pause also waits for any scale-in request alr
 ### Expose receipt recovery in customer exports
 
 Migration 89 adds receipt recovery to the version 1 export feed and backfills transitions for active requests with a saved recovery receipt. Schema-88 gateways can overlap after the migration commits. Apply it during the cutover window because request writes pause while the migration changes the export trigger and backfills those events. Use the updated [PostgreSQL reporting views](customer-data.md#reconcile-costs) to project the recovered state.
+
+### Apply the webhook receiver delay migration
+
+Migration 90 adds shared webhook receiver delays. Reapply the runtime grants and roll the webhook workers. Schema-89 gateways can overlap during the rollout. Use schema-90 workers throughout the cell to enforce the shared delay across replicas.
 
 ### Rehearse the cutover before release
 
@@ -397,7 +401,7 @@ Each worker runs up to four delivery attempts at a time. When three attempts tar
 
 A worker taking over an expired lease records that attempt and retries with the same event ID and body. Receivers should deduplicate by `webhook-id` because a successful delivery can be retried after a lost response or worker restart. Revocation prevents new attempts and redrives. An attempt already leased when revocation commits may finish.
 
-For retryable responses, the worker honors `Retry-After` in seconds or as an HTTP date, up to 60 seconds. It waits at least the normal backoff and retains the scheduled retry in PostgreSQL. [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
+For retryable responses, the worker honors `Retry-After` in seconds or as an HTTP date, up to 60 seconds. It waits at least the normal backoff and retains the scheduled retry in PostgreSQL. A positive delay on HTTP `429` or `503` also pauses new claims for that saved receiver URL across workers. Destination aliases sharing the exact URL observe the same pause. Work already leased can finish, and other URLs can keep receiving events. [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)
 
 ### Separate migration and runtime roles
 
