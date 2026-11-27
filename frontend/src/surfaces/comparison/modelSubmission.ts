@@ -15,6 +15,10 @@ export function parseClientReference(value: string): string | undefined {
   return !reference || /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(reference) ? reference : undefined;
 }
 
+export function quoteExpired(expiresAt?: string, now = Date.now()) {
+  return expiresAt != null && !(Date.parse(expiresAt) > now);
+}
+
 export function prepareModelSubmission(
   scope: ProjectScope, quote: Pick<Quote, "id" | "input">, options: ModelSubmissionOptions,
 ): ModelSubmission {

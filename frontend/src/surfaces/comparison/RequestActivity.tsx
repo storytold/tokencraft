@@ -16,7 +16,7 @@ import { diagnosticFromUrl } from "@/surfaces/requests/historyDiagnostics";
 import { useRequestHistory } from "@/surfaces/requests/useRequestHistory";
 import { RequestsWorkspace } from "@/surfaces/requests/RequestsWorkspace";
 import { WorkflowRunLink } from "@/surfaces/requests/WorkflowRunLink";
-import { QuoteExpiry } from "./QuoteExpiry";
+import { QuoteExpiry, useQuoteExpired } from "./QuoteExpiry";
 import { ReceiptRecovery } from "./ReceiptRecovery";
 import { useModelSubmission } from "./useModelSubmission";
 
@@ -66,6 +66,8 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
     refreshHistory();
   });
   const submitting = submission.sending;
+  const quoteIsExpired = useQuoteExpired(quote?.expires_at);
+  const quoteIsStale = quote != null && quote === submission.staleQuote;
 
   useEffect(() => () => inFlight.current?.abort(), []);
 
@@ -209,10 +211,12 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
             <Input className="mt-1.5 font-mono" value={appRef} onChange={(event) => setAppRef(event.target.value)} maxLength={64} placeholder="Optional opaque ID" />
           </label>
           <Button type="submit" disabled={submitting || canceling || submission.recoverable || deliveryBlocked
-            || clientRef === undefined || !selected || Boolean(promptMode && !prompt.trim())}>
+            || clientRef === undefined || !selected || quoteIsExpired || quoteIsStale || Boolean(promptMode && !prompt.trim())}>
             {submitting ? "Submitting…" : local ? "Send self-hosted request" : live ? "Send live request" : promptMode ? `Run ${promptMode === "mesh" ? "3D" : promptMode} fixture` : "Run mock request"}
           </Button>
-          {quote?.expires_at && <p className="w-full text-xs text-muted" role="status"><QuoteExpiry expiresAt={quote.expires_at} /></p>}
+          {(quote?.expires_at || quoteIsStale) && <p className="w-full text-xs text-muted" role="status">
+            <QuoteExpiry expiresAt={quote?.expires_at} expired={quoteIsExpired} stale={quoteIsStale} />
+          </p>}
         </form>}
         {(runError || submission.error) && <p role="alert" className="mb-4 text-sm text-rose-500">{runError || submission.error}</p>}
         {!readOnly && submission.recoverable && <div className="mb-4">

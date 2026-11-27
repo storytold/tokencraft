@@ -9,6 +9,7 @@ import { useOrg } from "@/lib/org";
 import { parseDollarCap } from "@/lib/routing-policy";
 import { comparisonApi, errorMessage, usd, type ModelCatalog, type ModelQuote, type QuoteInput } from "@/surfaces/comparison/api";
 import { statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
+import { QuoteExpiry, useQuoteExpired } from "@/surfaces/comparison/QuoteExpiry";
 import { ReceiptRecovery } from "@/surfaces/comparison/ReceiptRecovery";
 import { parseClientReference } from "@/surfaces/comparison/modelSubmission";
 import { useModelSubmission } from "@/surfaces/comparison/useModelSubmission";
@@ -240,7 +241,8 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
                   onChange={(id) => { setModelId(id); setRunError(""); }} />
                 <PlaygroundForm key={selected[0]} choice={selected[1]} scope={scope} clientRef={attribution}
                   clientDraft={clientRef} setClientDraft={setClientRef} boundClient={boundClient}
-                  busy={busy} pending={pending === "submit"} recoveryPending={submission.recoverable} onRun={run} />
+                  busy={busy} pending={pending === "submit"} recoveryPending={submission.recoverable}
+                  staleQuote={submission.staleQuote} onRun={run} />
               </>
             )}
           {(runError || submission.error) && <p role="alert" className="text-sm text-rose-600 dark:text-rose-300">{runError || submission.error}</p>}
@@ -294,10 +296,11 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
   );
 }
 
-function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft, boundClient, busy, pending, recoveryPending, onRun }: {
+function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft, boundClient, busy, pending, recoveryPending, staleQuote, onRun }: {
   choice: ModelChoice; scope: ProjectScope; clientRef: string; clientDraft: string;
   setClientDraft: (value: string) => void; boundClient: string | null;
-  busy: boolean; pending: boolean; recoveryPending: boolean; onRun: (quote: ModelQuote, prompt: string, appRef: string) => void;
+  busy: boolean; pending: boolean; recoveryPending: boolean; staleQuote?: ModelQuote;
+  onRun: (quote: ModelQuote, prompt: string, appRef: string) => void;
 }) {
   const { kind, model } = choice;
   const [prompt, setPrompt] = useState("");
@@ -331,6 +334,8 @@ function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft,
   const key = JSON.stringify([quoteInput, clientRef, revision]);
   const current = evaluation?.key === key ? evaluation : undefined;
   const quote = current?.quote;
+  const quoteIsExpired = useQuoteExpired(quote?.expires_at);
+  const quoteIsStale = quote !== undefined && quote === staleQuote;
   const offer = quote?.candidates.find((candidate) => candidate.selected);
   const fixture = quote?.prompt_mode === "fixture";
   const needsPrompt = Boolean(quote?.prompt_mode && !fixture);
@@ -408,9 +413,12 @@ function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft,
           </> : <p className="text-muted">{!validClient ? "Enter a valid client reference."
             : maxNanos === undefined ? "Enter a valid USD cap." : !quoteInput ? "Check the request settings."
             : !current ? "Checking estimate…" : quote ? "No eligible route for these settings." : current.error}</p>}
+          {(quote?.expires_at || quoteIsStale) && <p className="text-xs text-muted">
+            <QuoteExpiry expiresAt={quote?.expires_at} expired={quoteIsExpired} stale={quoteIsStale} />
+          </p>}
           {current && <button className="mt-0.5 text-xs text-brand underline" type="button" onClick={() => setRevision((value) => value + 1)}>Refresh estimate</button>}
         </div>
-        <Button type="submit" disabled={busy || recoveryPending || !offer || (needsPrompt && !prompt.trim())}>
+        <Button type="submit" disabled={busy || recoveryPending || !offer || quoteIsExpired || quoteIsStale || (needsPrompt && !prompt.trim())}>
           {pending ? <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
           {pending ? "Submitting…" : "Run model"}
         </Button>

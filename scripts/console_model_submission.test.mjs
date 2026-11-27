@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseClientReference, prepareModelSubmission, readModelReceipt } from "../frontend/src/surfaces/comparison/modelSubmission.ts";
+import { parseClientReference, prepareModelSubmission, quoteExpired, readModelReceipt } from "../frontend/src/surfaces/comparison/modelSubmission.ts";
 
 const requestId = "req_01m8des3gv2esdtx1bxekn3bqg";
 
@@ -9,6 +9,15 @@ test("optional client reference uses the same normalized value in the quote and 
   assert.equal(parseClientReference("  studio.customer-42:render  "), "studio.customer-42:render");
   assert.equal(parseClientReference("studio/customer"), undefined);
   assert.equal(parseClientReference("a".repeat(65)), undefined);
+});
+
+test("the quote expires at the signed deadline and invalid deadlines fail closed", () => {
+  const expiresAt = "2026-11-27T18:00:00.000Z";
+  const deadline = Date.parse(expiresAt);
+  assert.equal(quoteExpired(expiresAt, deadline - 1), false);
+  assert.equal(quoteExpired(expiresAt, deadline), true);
+  assert.equal(quoteExpired("invalid", deadline), true);
+  assert.equal(quoteExpired(undefined, deadline), false);
 });
 
 test("a staged submission keeps the original quote, scope, prompt, and delivery settings", () => {
