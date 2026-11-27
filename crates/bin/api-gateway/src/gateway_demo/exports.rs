@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Extension, Json,
+    body::Bytes,
     extract::{Path, Query, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
@@ -14,6 +15,7 @@ use db_queries::{
 };
 use ids::GatewayExportId;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
     access::{self, GatewayCaller, Permission, ScopeQuery, parse_id},
@@ -35,6 +37,31 @@ pub(crate) const EXPORT_PROJECT_HEADER: &str = "x-tokencraft-project";
 pub(crate) const EXPORT_CLIENT_HEADER: &str = "x-tokencraft-client-ref";
 pub(crate) const EXPORT_VERSION_HEADER: &str = "x-tokencraft-schema-version";
 pub(super) const SCHEMA_VERSION: u8 = 1;
+const MAX_IN_FLIGHT: usize = 4;
+
+#[derive(Clone)]
+pub(super) struct Capacity(Arc<Semaphore>);
+
+impl Capacity {
+    pub(super) fn new() -> Self {
+        Self(Arc::new(Semaphore::new(MAX_IN_FLIGHT)))
+    }
+
+    fn acquire(&self) -> ApiResult<OwnedSemaphorePermit> {
+        Arc::clone(&self.0).try_acquire_owned().map_err(|_| ApiError::ExportCapacity)
+    }
+}
+
+struct ExportBytes {
+    body: Vec<u8>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AsRef<[u8]> for ExportBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.body
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +92,7 @@ impl From<Snapshot> for Export {
 
 pub(super) async fn create(
     State(state): State<AppState>,
+    Extension(capacity): Extension<Capacity>,
     caller: GatewayCaller,
     Json(input): Json<Create>,
 ) -> ApiResult<(StatusCode, Json<Export>)> {
@@ -80,6 +108,7 @@ pub(super) async fn create(
     .await?;
     let scope = access.for_client(input.client_ref.as_deref())?;
     let after = cursor(input.after.as_deref())?;
+    let _permit = capacity.acquire()?;
     gateway_exports::publish(&state.pool, Some(scope.project)).await?;
     let id = GatewayExportId::generate();
     let snapshot = gateway_exports::create(&state.pool, scope, &id, &access.actor_id, after)
@@ -165,10 +194,11 @@ struct VersionedEvent {
 pub(super) async fn data(
     State(state): State<AppState>,
     Extension(storage): Extension<Option<Arc<ArchiveStorage>>>,
+    Extension(capacity): Extension<Capacity>,
     caller: GatewayCaller,
     Query(query): Query<DataQuery>,
     Path(raw): Path<String>,
-) -> ApiResult<(HeaderMap, Vec<u8>)> {
+) -> ApiResult<(HeaderMap, Bytes)> {
     let access = access::resolve(
         &state,
         caller,
@@ -181,14 +211,15 @@ pub(super) async fn data(
     .await?;
     let id = parse_id(&raw, "export_id")?;
     let scope = access.scope();
-    let snapshot = scoped_snapshot(&state.pool, scope, &id).await?;
     let after = cursor(query.after.as_deref())?;
     let limit = page_limit(query.limit)?;
+    let permit = capacity.acquire()?;
+    let snapshot = scoped_snapshot(&state.pool, scope, &id).await?;
     let events = gateway_exports::events(&state.pool, scope, &snapshot, after, limit as i64 + 1)
         .await?
         .ok_or_else(missing_cursor)?;
     let (mut headers, body) =
-        encode_page(&state.pool, storage.as_ref(), scope, events, limit).await?;
+        encode_page(&state.pool, storage.as_ref(), scope, events, limit, permit).await?;
     headers.insert(
         CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("attachment; filename=\"tokencraft-{id}.ndjson\""))
@@ -229,15 +260,18 @@ pub(super) struct FeedQuery {
             ("X-TokenCraft-Client-Ref" = String, description = "Effective client reference or an empty value for project-wide access."),
             ("X-TokenCraft-Schema-Version" = u8, description = "Event schema version."),
          )),
+        (status = 503, description = "Export capacity or storage is temporarily unavailable. Resume with the same cursor.", body = crate::error::GatewayError,
+         headers(("Retry-After" = u8, description = "Seconds to wait when the API replica's export slots are busy."))),
         (status = "default", response = super::RequestErrorResponse),
     )
 )]
 pub(super) async fn feed(
     State(state): State<AppState>,
     Extension(storage): Extension<Option<Arc<ArchiveStorage>>>,
+    Extension(capacity): Extension<Capacity>,
     caller: GatewayCaller,
     Query(query): Query<FeedQuery>,
-) -> ApiResult<(HeaderMap, Vec<u8>)> {
+) -> ApiResult<(HeaderMap, Bytes)> {
     let access = access::resolve(
         &state,
         caller,
@@ -251,11 +285,12 @@ pub(super) async fn feed(
     let scope = access.for_client(query.client_ref.as_deref())?;
     let after = cursor(query.after.as_deref())?;
     let limit = page_limit(query.limit)?;
+    let permit = capacity.acquire()?;
     let page = gateway_exports::feed_page(&state.pool, scope, after, limit as i64 + 1)
         .await?
         .ok_or_else(|| ApiError::NotFound("event cursor unavailable for this feed".into()))?;
     let (mut headers, body) =
-        encode_page(&state.pool, storage.as_ref(), scope, page.events, limit).await?;
+        encode_page(&state.pool, storage.as_ref(), scope, page.events, limit, permit).await?;
     headers.insert(FEED_AS_OF_HEADER, header_value(&page.as_of.to_rfc3339()));
     headers.insert(
         PUBLICATION_PENDING_HEADER,
@@ -295,7 +330,8 @@ async fn encode_page(
     scope: RequestScope<'_>,
     mut events: Vec<ExportEvent>,
     limit: usize,
-) -> ApiResult<(HeaderMap, Vec<u8>)> {
+    permit: OwnedSemaphorePermit,
+) -> ApiResult<(HeaderMap, Bytes)> {
     let has_more = archive_events::limit_page(&mut events, limit);
     archive_events::hydrate(pool, storage, scope, &mut events).await?;
     let mut headers = HeaderMap::new();
@@ -310,7 +346,8 @@ async fn encode_page(
     }
     let body = encode_events(events)?;
     headers.insert(SHA256_HEADER, header_value(&digest(&body)));
-    Ok((headers, body))
+    // Keep the slot allocated while the transport still owns the response buffer.
+    Ok((headers, Bytes::from_owner(ExportBytes { body, _permit: permit })))
 }
 
 pub(super) fn encode_events(events: Vec<ExportEvent>) -> ApiResult<Vec<u8>> {
@@ -359,4 +396,23 @@ pub(super) fn cursor(after: Option<&str>) -> ApiResult<Option<&str>> {
 
 fn missing_cursor() -> ApiError {
     ApiError::NotFound("event cursor unavailable for this export".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_bytes_retain_the_export_slot_until_the_last_view_is_released() {
+        let capacity = Capacity(Arc::new(Semaphore::new(1)));
+        let bytes = Bytes::from_owner(ExportBytes {
+            body: b"event".to_vec(),
+            _permit: capacity.acquire().unwrap(),
+        });
+        let slice = bytes.slice(..1);
+        drop(bytes);
+        assert!(matches!(capacity.acquire(), Err(ApiError::ExportCapacity)));
+        drop(slice);
+        assert!(capacity.acquire().is_ok());
+    }
 }

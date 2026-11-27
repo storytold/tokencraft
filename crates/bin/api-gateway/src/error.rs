@@ -25,6 +25,8 @@ pub(crate) const SUBMISSION_RATE_MESSAGE: &str = "organization submission rate l
 
 pub(crate) const QUOTE_STALE_MESSAGE: &str = "quote expired or changed; request a fresh comparison";
 
+pub(crate) const EXPORT_CAPACITY_MESSAGE: &str = "event exports are busy; retry shortly";
+
 #[derive(Debug)]
 pub enum ApiError {
   BadRequest(String),
@@ -39,6 +41,7 @@ pub enum ApiError {
   ActiveRequestLimit,
   SubmissionRateLimit(i64),
   ProviderCredentialUnavailable,
+  ExportCapacity,
   NotImplemented(String),
   ServiceUnavailable(String),
   Internal(String),
@@ -57,7 +60,7 @@ impl ApiError {
       Self::ActiveRequestLimit | Self::SubmissionRateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
       Self::ProviderCredentialUnavailable => StatusCode::CONFLICT,
       Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
-      Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+      Self::ExportCapacity | Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
       Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
   }
@@ -75,6 +78,7 @@ impl ApiError {
       Self::ActiveRequestLimit => "active_request_limit",
       Self::SubmissionRateLimit(_) => "submission_rate_limit",
       Self::ProviderCredentialUnavailable => "provider_credential_unavailable",
+      Self::ExportCapacity => "export_capacity",
       Self::NotImplemented(_) => "not_implemented",
       Self::ServiceUnavailable(_) => "service_unavailable",
       Self::Internal(_) => "internal_error",
@@ -88,6 +92,7 @@ impl ApiError {
       Self::ActiveRequestLimit => ACTIVE_REQUEST_LIMIT_MESSAGE,
       Self::SubmissionRateLimit(_) => SUBMISSION_RATE_MESSAGE,
       Self::ProviderCredentialUnavailable => PROVIDER_CREDENTIAL_MESSAGE,
+      Self::ExportCapacity => EXPORT_CAPACITY_MESSAGE,
       Self::BadRequest(m)
       | Self::Unauthorized(m)
       | Self::Forbidden(m)
@@ -103,6 +108,7 @@ impl ApiError {
   pub(crate) fn retry_after(&self) -> Option<HeaderValue> {
     match self {
       Self::SubmissionRateLimit(seconds) => HeaderValue::from_str(&seconds.to_string()).ok(),
+      Self::ExportCapacity => Some(HeaderValue::from_static("2")),
       _ => None,
     }
   }

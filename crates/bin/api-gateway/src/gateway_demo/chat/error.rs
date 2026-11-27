@@ -148,6 +148,11 @@ impl From<ApiError> for ChatError {
                 "service_unavailable",
                 message,
             ),
+            ApiError::ExportCapacity => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "export_capacity",
+                crate::error::EXPORT_CAPACITY_MESSAGE.into(),
+            ),
             ApiError::Internal(message) => {
                 tracing::error!(detail = %message, "chat compatibility handler failed");
                 (

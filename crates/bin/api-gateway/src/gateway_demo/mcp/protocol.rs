@@ -371,6 +371,7 @@ fn tool_result<T: Serialize>(id: ValueId, outcome: ApiResult<T>) -> Response {
                     crate::error::SUBMISSION_RATE_MESSAGE,
                 ),
                 ApiError::ProviderCredentialUnavailable => crate::error::PROVIDER_CREDENTIAL_MESSAGE.into(),
+                ApiError::ExportCapacity => crate::error::EXPORT_CAPACITY_MESSAGE.into(),
                 ApiError::Unauthorized(_) => "Reconnect TokenCraft.".into(),
                 ApiError::Internal(_) => "TokenCraft could not complete this operation.".into(),
             };

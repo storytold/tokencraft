@@ -66,6 +66,10 @@ const scope = [
 const scoped = "Project bearer key or an authorized account credential or session.";
 const exportsAuth = scoped + " Project keys require exports:read.";
 const outOfScope = error("Resource absent or outside the caller's authorized scope.");
+const exportBusy = {
+  ...error("The API replica is busy serving exports. Retry with the same cursor."),
+  headers: { "Retry-After": { schema: integer, description: "Seconds to wait before retrying." } },
+};
 const invalid = error("Invalid input or selection.");
 const revisionConflict = error("Revision is stale. Reload the current policy or resource before retrying.");
 const browserOrigin = header("Origin", "The configured browser origin.", true);
@@ -202,7 +206,7 @@ const dataOperations = [
   route("post", "/v1/exports", gateway("exports"), "Create an event export snapshot", {
     auth: exportsAuth, body: json(object({ ...exportScope, client_ref: nullable(string), after: nullable(string) },
       ["account_id", "project_id", "client_ref", "after"])),
-    responses: { 201: reply("Snapshot with a fixed high watermark.", exportSnapshot), 404: outOfScope },
+    responses: { 201: reply("Snapshot with a fixed high watermark.", exportSnapshot), 404: outOfScope, 503: exportBusy },
   }),
   route("get", "/v1/exports/{id}", gateway("exports"), "Get an export snapshot descriptor", {
     auth: exportsAuth, params: scope, responses: { 200: reply("Snapshot descriptor.", exportSnapshot), 404: outOfScope },
@@ -219,6 +223,7 @@ const dataOperations = [
         },
       },
       404: outOfScope,
+      503: exportBusy,
     },
   }),
   route("get", "/v1/archives", gateway("archives"), "List event archives", {

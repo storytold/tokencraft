@@ -1,11 +1,13 @@
 """Verify scheduled event retirement and scoped recovery with a disposable bucket and gateway."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from hashlib import sha256
 import json
 from pathlib import Path
 from secrets import token_hex
+import subprocess
 from tempfile import TemporaryDirectory
 from threading import Event
 from urllib.parse import urlencode, urlsplit
@@ -44,6 +46,59 @@ class ColdArchiveHandler(BucketHandler):
                 return
             self.server.restore_requests.append(request.path)
         self.reply(202)
+
+
+def verify_export_backpressure(port, directory, psql, pg_env, project, auth):
+    snapshot, _ = call(port, "/v1/exports", 201, method="POST", headers=auth, body={"project_id": project})
+    path = f"/v1/exports/{snapshot['id']}/data"
+    expected, _ = call(port, path, 200, headers=auth)
+    with ThreadPoolExecutor(max_workers=10) as reads, subprocess.Popen(
+        [psql, "-XqAtw", "-v", "ON_ERROR_STOP=1"],
+        cwd=directory, env=pg_env, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    ) as holder:
+        try:
+            holder.stdin.write("SET lock_timeout = '3s';\nBEGIN;\n"
+                               "LOCK TABLE gateway_export_snapshots IN ACCESS EXCLUSIVE MODE;\nSELECT 'held';\n")
+            holder.stdin.flush()
+            assert holder.stdout.readline().strip() == "held"
+
+            def waiting_for_snapshot():
+                return int(command(psql, "-XqAtw", "-c",
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                    "AND query LIKE '%FROM gateway_export_snapshots%'",
+                    cwd=directory, env=pg_env))
+
+            admitted = [reads.submit(call, port, path, 200, headers=auth) for _ in range(4)]
+            eventually(lambda: waiting_for_snapshot() == 4, "four held export reads", timeout=3)
+            excess = [reads.submit(call, port, path, 503, headers=auth) for _ in range(6)]
+
+            def backpressure_ready():
+                count = waiting_for_snapshot()
+                assert count < 10, "Export downloads occupied all ten gateway database connections"
+                return all(task.done() for task in excess)
+
+            eventually(backpressure_ready, "immediate backpressure for excess exports", timeout=3)
+            assert waiting_for_snapshot() == 4
+            responses = [task.result() for task in excess]
+            responses.append(call(port, f"/v1/exports/events?project_id={project}", 503, headers=auth))
+            responses.append(call(port, "/v1/exports", 503, method="POST", headers=auth, body={"project_id": project}))
+            for payload, headers in responses:
+                assert payload["error"]["code"] == "export_capacity"
+                assert headers.get("Retry-After") == "2"
+                assert headers.get("Cache-Control") == "private, no-store"
+
+            receipt, _ = call(port, "/v1/image", 202, method="POST", headers={**auth, "Idempotency-Key": token_hex(16)},
+                              body={"model": "example_image", "task": "text_to_image", "prompt": "Export contention fixture",
+                                    "count": 1, "aspect_ratio": "1:1"})
+            call(port, receipt["status_url"], 200, headers=auth)
+            assert waiting_for_snapshot() == 4
+        finally:
+            holder.stdin.close()
+            holder.wait(timeout=5)
+        assert all(task.result(timeout=5)[0] == expected for task in admitted)
+    wait_for_status(port, receipt, auth, "succeeded", 18)
+    assert call(port, path, 200, headers=auth)[0] == expected
+    print("PASS export backpressure capped blocked reads and preserved admission, status and exact snapshot bytes")
 
 
 def verify(gateway, directory, settings, session, account, project):
@@ -176,6 +231,7 @@ def verify(gateway, directory, settings, session, account, project):
         assert len(bucket.restore_requests) == 1
         assert connector.jobs == {identifier: 1 for identifier in receipts}
         print("PASS the administrator's retrieval superseded in-flight verification and the original cursor resumed")
+        verify_export_backpressure(port, directory, psql, pg_env, project, clients[0])
 
 
 def main():

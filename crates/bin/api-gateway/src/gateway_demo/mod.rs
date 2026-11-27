@@ -390,6 +390,7 @@ fn router(config: DemoConfig) -> Router<AppState> {
     };
     router
         .layer(Extension(archive_storage))
+        .layer(Extension(exports::Capacity::new()))
         .layer(DefaultBodyLimit::max(8192))
 }
 

@@ -2348,6 +2348,26 @@
               }
             }
           },
+          "503": {
+            "description": "Export capacity or storage is temporarily unavailable. Resume with the same cursor.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait when the API replica's export slots are busy."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
           "default": {
             "$ref": "#/components/responses/RequestErrorResponse"
           }
