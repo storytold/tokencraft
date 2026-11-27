@@ -1,4 +1,4 @@
-import { readJson, submitUpstream, upstream } from './queue.mjs';
+import { cancelUnusedBody, readJson, submitUpstream, upstream } from './queue.mjs';
 
 const model = 'seedance-20';
 
@@ -38,7 +38,10 @@ export function kinovi({ origin, key, artifactOrigins }) {
       const url = new URL('/api/v1/jobs/recordInfo', origin);
       url.searchParams.set('taskId', id);
       const response = await upstream(url, { headers: { authorization: `Bearer ${delegated ?? key}` } });
-      if (!response.ok) throw new Error('Kinovi response unavailable');
+      if (!response.ok) {
+        cancelUnusedBody(response);
+        throw new Error('Kinovi response unavailable');
+      }
       const result = await readJson(response.body, undefined, (name, value, context) => {
         if (name === 'creditsUsed') return typeof value === 'number' ? creditQuantity(context?.source) : undefined;
         return value;

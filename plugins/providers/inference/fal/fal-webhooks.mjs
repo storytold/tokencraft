@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { readBody, readJson, required, upstream, validatedOrigin } from './queue.mjs';
+import { cancelUnusedBody, readBody, readJson, required, upstream, validatedOrigin } from './queue.mjs';
 
 const keyEndpoint = 'https://rest.fal.ai/.well-known/jwks.json';
 const callbackPath = /^\/v1\/fal\/webhooks\/([A-Za-z0-9_-]{1,128})\/([0-9a-f]{64})$/;
@@ -37,7 +37,10 @@ export function falWebhooks({ callbackOrigin, gatewayOrigin, user, jwksUrl = key
 
   async function fetchKeys() {
     const response = await upstream(jwksUrl);
-    if (!response.ok) throw new Error('fal signing keys unavailable');
+    if (!response.ok) {
+      cancelUnusedBody(response);
+      throw new Error('fal signing keys unavailable');
+    }
     const { keys } = await readJson(response.body, 32 * 1024);
     if (!Array.isArray(keys) || keys.length > 32) throw new Error('invalid fal signing keys');
     const publicKeys = keys.filter((key) => key?.kty === 'OKP' && key.crv === 'Ed25519'
@@ -96,7 +99,7 @@ export function falWebhooks({ callbackOrigin, gatewayOrigin, user, jwksUrl = key
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         body: JSON.stringify({ version: 1 }),
       });
-      await reply.body?.cancel();
+      cancelUnusedBody(reply);
       if (reply.status !== 204) throw new Error('gateway completion unavailable');
     },
   };

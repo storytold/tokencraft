@@ -3,10 +3,12 @@ on:
   push:
     paths:
       - 'plugins/providers/inference/**'
+      - 'scripts/provider_response_cleanup.test.mjs'
       - '.github/workflows/provider-plugins.yml'
   pull_request:
     paths:
       - 'plugins/providers/inference/**'
+      - 'scripts/provider_response_cleanup.test.mjs'
       - '.github/workflows/provider-plugins.yml'
 
 permissions:
@@ -27,3 +29,8 @@ jobs:
       - name: Test provider plugin
         working-directory: plugins/providers/inference/${{ matrix.plugin }}
         run: npm test
+      - name: Verify unused upstream responses close promptly
+        if: matrix.plugin != 'openrouter'
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+        run: node --test --test-name-pattern "^$PLUGIN " scripts/provider_response_cleanup.test.mjs

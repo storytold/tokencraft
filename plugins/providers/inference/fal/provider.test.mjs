@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { queueServer, readJson, send } from './queue.mjs';
 import { fal } from './provider.mjs';
 import { falWebhooks } from './fal-webhooks.mjs';
@@ -311,6 +312,7 @@ test('recovers lost fal acknowledgements with signed webhooks and retries a lost
   let key = signer.publicKey;
   let jwksReads = 0;
   let jwksAvailable = true;
+  let failedJwksClosed;
   let loseRelay = true;
   let earlyCallback;
   let elapsed = 0;
@@ -325,7 +327,10 @@ test('recovers lost fal acknowledgements with signed webhooks and retries a lost
     if (url.pathname === '/jwks') {
       jwksReads += 1;
       assert.equal(request.headers.authorization, undefined);
-      if (!jwksAvailable) return send(response, 503, {});
+      if (!jwksAvailable) {
+        failedJwksClosed = once(response, 'close').then(() => true);
+        return response.writeHead(503, { 'content-type': 'application/json' }).write('open fixture body');
+      }
       return send(response, 200, { keys: [key.export({ format: 'jwk' })] });
     }
     if (url.pathname === submitPath && request.method === 'POST') {
@@ -428,6 +433,7 @@ test('recovers lost fal acknowledgements with signed webhooks and retries a lost
     assert.equal((await receive(callbacks.get('early-failure'), { id: 'failed-task', status: 'ERROR',
       key: rotated })).status, 502);
     assert.equal(jwksReads, 4);
+    assert.equal(await Promise.race([failedJwksClosed, delay(2_500, false, { ref: false })]), true);
     jwksAvailable = true;
     elapsed += 31_000;
     assert.equal((await receive(callbacks.get('early-failure'), { id: 'failed-task', status: 'ERROR',

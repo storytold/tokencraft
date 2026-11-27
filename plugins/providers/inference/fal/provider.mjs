@@ -1,10 +1,13 @@
-import { readJson, submitUpstream, upstream } from './queue.mjs';
+import { cancelUnusedBody, readJson, submitUpstream, upstream } from './queue.mjs';
 import { models } from './models.mjs';
 
 export function fal({ origin, key, artifactOrigins }) {
   const response = async (path, authorization) => {
     const reply = await upstream(new URL(path, origin), { headers: { authorization } });
-    if (!reply.ok) throw new Error('fal response unavailable');
+    if (!reply.ok) {
+      cancelUnusedBody(reply);
+      throw new Error('fal response unavailable');
+    }
     return readJson(reply.body);
   };
   return {

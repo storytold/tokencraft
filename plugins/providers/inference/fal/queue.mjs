@@ -36,15 +36,22 @@ export function upstream(url, options = {}) {
   return fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(4_000) });
 }
 
+export function cancelUnusedBody(response) {
+  void response.body?.cancel().catch(() => {});
+}
+
 export async function submitUpstream(url, authorization, body, handle) {
   const response = await upstream(url, {
     method: 'POST',
     headers: { authorization, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (response.status === 429) return { status: 'unavailable', retry_after_ms: 2_000 };
-  if ([400, 401, 402, 403, 413, 422].includes(response.status)) return { status: 'rejected' };
-  if (!response.ok) return { status: 'uncertain' };
+  if (!response.ok) {
+    cancelUnusedBody(response);
+    if (response.status === 429) return { status: 'unavailable', retry_after_ms: 2_000 };
+    if ([400, 401, 402, 403, 413, 422].includes(response.status)) return { status: 'rejected' };
+    return { status: 'uncertain' };
+  }
   const id = handle(await readJson(response.body));
   return typeof id === 'string' && identifier.test(id)
     ? { status: 'accepted', handle: id }
@@ -262,7 +269,7 @@ export async function queueServer({ state, token, provider, webhooks, tenantKeys
     const length = upstreamResponse.headers.get('content-length');
     if (!upstreamResponse.ok || !upstreamResponse.body || Number(length) > model.maxBytes
         || (mediaType !== model.mediaType && !model.mediaAliases?.includes(mediaType))) {
-      await upstreamResponse.body?.cancel();
+      cancelUnusedBody(upstreamResponse);
       return send(response, 502, { error: 'invalid upstream artifact' });
     }
     let bytes = 0;
