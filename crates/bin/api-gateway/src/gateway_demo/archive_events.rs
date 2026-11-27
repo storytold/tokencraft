@@ -37,29 +37,36 @@ pub(super) async fn hydrate(
 ) -> ApiResult<()> {
     // Automatic archives retire contiguous publication ranges in the feed.
     for partition in events.chunk_by_mut(|left, right| left.archive_id == right.archive_id) {
-        let Some(raw) = partition[0].archive_id.as_deref() else {
-            continue;
-        };
-        let id = raw.parse().map_err(|_| invalid_event())?;
-        let storage = storage.ok_or_else(storage_unavailable)?;
-        let ids = partition.iter().map(|event| event.id.clone()).collect();
-        let mut archived = read(pool, storage, scope, &id, ids).await?;
-        for event in partition {
-            let source = archived.remove(&event.id).ok_or_else(invalid_event)?;
-            if source.project_id != event.project_id
-                || source.request_id != event.request_id
-                || source.client_ref != event.client_ref
-                || source.event_type != event.event_type
-                || source.occurred_at != event.occurred_at
-                || !source
-                    .data
-                    .as_ref()
-                    .is_some_and(serde_json::Value::is_object)
-            {
-                return Err(invalid_event());
-            }
-            event.data = source.data;
+        hydrate_partition(pool, storage, scope, partition).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn hydrate_partition(
+    pool: &db::PgPool,
+    storage: Option<&Arc<ArchiveStorage>>,
+    scope: RequestScope<'_>,
+    partition: &mut [ExportEvent],
+) -> ApiResult<()> {
+    let Some(raw) = partition.first().and_then(|event| event.archive_id.as_deref()) else {
+        return Ok(());
+    };
+    let id = raw.parse().map_err(|_| invalid_event())?;
+    let storage = storage.ok_or_else(storage_unavailable)?;
+    let ids = partition.iter().map(|event| event.id.clone()).collect();
+    let mut archived = read(pool, storage, scope, &id, ids).await?;
+    for event in partition {
+        let source = archived.remove(&event.id).ok_or_else(invalid_event)?;
+        if source.project_id != event.project_id
+            || source.request_id != event.request_id
+            || source.client_ref != event.client_ref
+            || source.event_type != event.event_type
+            || source.occurred_at != event.occurred_at
+            || !source.data.as_ref().is_some_and(serde_json::Value::is_object)
+        {
+            return Err(invalid_event());
         }
+        event.data = source.data;
     }
     Ok(())
 }

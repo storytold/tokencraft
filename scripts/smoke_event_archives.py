@@ -26,7 +26,11 @@ MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
 
 class ColdArchiveHandler(BucketHandler):
     def do_GET(self):
-        if not self.server.cold.is_set():
+        requested = urlsplit(self.path).path
+        with self.server.lock:
+            self.server.read_paths.append(requested)
+            selected_cold = requested in self.server.cold_paths
+        if not selected_cold and not self.server.cold.is_set():
             return super().do_GET()
         path = self.signed_path()
         with self.server.lock:
@@ -186,6 +190,57 @@ def verify_byte_paging(port, project, auth, archived):
     print("PASS live and snapshot pages split between large archived and hot events with exact importer cursors")
 
 
+def verify_later_cold_archive(port, project, auth, bucket, first, second, third):
+    snapshot, _ = call(port, "/v1/exports", 201, method="POST", headers=auth, body={"project_id": project})
+    paths = (f"/v1/exports/{snapshot['id']}/data", "/v1/exports/events")
+
+    @contextmanager
+    def cold_object(archive):
+        with bucket.lock:
+            path, = (path for path in bucket.objects if archive in path)
+            bucket.cold_paths.add(path)
+            bucket.read_paths.clear()
+        try:
+            yield path
+        finally:
+            with bucket.lock:
+                bucket.cold_paths.remove(path)
+
+    def read(path, *, after=None, status=200):
+        query = {"project_id": project, **({"after": after} if after else {})}
+        return call(port, path + "?" + urlencode(query), status, headers=auth, max_bytes=MAX_ARCHIVE_BYTES)
+
+    def cursor(body, headers):
+        assert headers["X-TokenCraft-Has-More"] == "true"
+        assert headers["X-TokenCraft-Content-Sha256"] == sha256(body).hexdigest()
+        last = json.loads(body.splitlines()[-1])["id"]
+        assert headers["X-TokenCraft-Next-After"] == last
+        return last
+
+    for path in paths:
+        with cold_object(second):
+            body, headers = read(path)
+            assert body == first
+            error, error_headers = read(path, after=cursor(body, headers), status=409)
+            assert error["error"]["code"] == "archive_retrieval_required"
+            assert "X-TokenCraft-Next-After" not in error_headers
+
+        with cold_object(third) as cold_path:
+            body, headers = read(path)
+            assert body.startswith(first)
+            with bucket.lock:
+                assert cold_path not in bucket.read_paths
+            remainder, remainder_headers = read(path, after=cursor(body, headers))
+            assert len(remainder) >= 5 * 1024 * 1024
+            before_cold = cursor(remainder, remainder_headers)
+            error, _ = read(path, after=before_cold, status=409)
+            assert error["error"]["code"] == "archive_retrieval_required"
+        recovered, final = read(path, after=before_cold)
+        assert recovered and final["X-TokenCraft-Has-More"] == "false"
+        assert final["X-TokenCraft-Content-Sha256"] == sha256(recovered).hexdigest()
+    print("PASS readable archive prefixes advance the cursor and byte overflow skips later storage reads")
+
+
 def verify(gateway, directory, settings, session, account, project):
     port, worker_port = int(settings["API_GATEWAY_PORT"]), loopback_port()
     scope = urlencode({"account_id": account, "project_id": project})
@@ -211,6 +266,7 @@ def verify(gateway, directory, settings, session, account, project):
             Event() for _ in range(4)
         )
         bucket.restore_requests = []
+        bucket.cold_paths, bucket.read_paths = set(), []
         stack.enter_context(serve(bucket))
         connector = stack.enter_context(serve(Connector()))
         bindings = directory / "archive-connector.json"
@@ -403,6 +459,31 @@ def verify(gateway, directory, settings, session, account, project):
                               "WHERE request_id = :'request' AND event_type = 'request.succeeded';",
                               request=new_request)
         verify_byte_paging(port, project, project_reader, expected_project)
+
+        def retire_next_archive(request=None):
+            seen = {row["id"] for row in archives()}
+            advance_fixture_clock(
+                "UPDATE gateway_export_events SET occurred_at = now() - interval '3 days' "
+                "WHERE project_id = :'project' AND archive_id IS NULL "
+                "AND (nullif(:'request', '') IS NULL OR request_id = :'request');",
+                project=project, request=request or "",
+            )
+
+            def sealed():
+                return [row["id"] for row in archives()
+                        if row["id"] not in seen and row["automatic"] and row.get("stored_at")]
+
+            eventually(sealed, "next contiguous archive seal")
+            archive_id, = sealed()
+            advance_fixture_clock("UPDATE gateway_archives SET stored_at = now() - interval '2 days' "
+                                  "WHERE id = :'archive';", archive=archive_id)
+            eventually(lambda: any(row["id"] == archive_id and row.get("retired_at") for row in archives()),
+                       "next contiguous archive retirement")
+            return archive_id
+
+        second = retire_next_archive(new_request)
+        third = retire_next_archive()
+        verify_later_cold_archive(promoted, project, project_reader, bucket, expected_project, second, third)
 
 
 def main():

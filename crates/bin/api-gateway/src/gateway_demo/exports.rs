@@ -23,8 +23,6 @@ use super::{
     access::{self, GatewayCaller, Permission, ScopeQuery, parse_id},
     archive_blobs::ArchiveStorage,
     archive_events,
-    catalog::digest,
-    response_bytes,
 };
 use crate::{
     error::{ApiError, ApiResult},
@@ -342,27 +340,19 @@ async fn encode_page(
     permit: OwnedSemaphorePermit,
 ) -> ApiResult<(HeaderMap, Bytes)> {
     let has_more = archive_events::limit_page(&mut events, limit);
-    archive_events::hydrate(pool, storage, scope, &mut events).await?;
-    let (body, checksum, last_id, has_more) = tokio::task::spawn_blocking(move || {
-        let page = page::encode(events, has_more)?;
-        let checksum = digest(&page.body);
-        let body = response_bytes::from_vec(page.body, permit);
-        Ok::<_, ApiError>((body, checksum, page.last_id, page.has_more))
-    })
-    .await
-    .map_err(|_| ApiError::Internal("could not encode export page".into()))??;
+    let page = page::encode(pool, storage, scope, events, has_more, permit).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         CONTENT_TYPE,
         HeaderValue::from_static("application/x-ndjson"),
     );
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(HAS_MORE_HEADER, bool_header(has_more));
-    if let Some(last_id) = last_id {
+    headers.insert(HAS_MORE_HEADER, bool_header(page.has_more));
+    if let Some(last_id) = page.last_id {
         headers.insert(NEXT_AFTER_HEADER, header_value(&last_id));
     }
-    headers.insert(SHA256_HEADER, header_value(&checksum));
-    Ok((headers, body))
+    headers.insert(SHA256_HEADER, header_value(&page.checksum));
+    Ok((headers, page.body))
 }
 
 pub(super) fn encode_events(events: Vec<ExportEvent>) -> ApiResult<Vec<u8>> {
@@ -409,6 +399,7 @@ fn missing_cursor() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::response_bytes;
 
     #[test]
     fn response_bytes_retain_the_export_slot_until_the_last_view_is_released() {
