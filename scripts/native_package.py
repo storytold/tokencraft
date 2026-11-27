@@ -58,7 +58,7 @@ OPERATIONS_FILES = (
     "web/tokencraft-mark.png",
 )
 SUPPORT_FILES = (
-    "LICENSE", REFERENCE_CATALOG, "contracts/openapi.json", PRIMITIVE_SOURCE,
+    "LICENSE", "SECURITY.md", REFERENCE_CATALOG, "contracts/openapi.json", PRIMITIVE_SOURCE,
     "docs/README.md", "docs/api-contracts.md", "docs/api-schema.md", "docs/capacity.md",
     "docs/setup.md", "docs/deployment.md", "docs/workflows.md", "docs/media-tools.md",
     "docs/provider-connectors.md", "docs/customer-data.md", "docs/event-archives.md",

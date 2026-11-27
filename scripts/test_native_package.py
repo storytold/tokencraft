@@ -1,4 +1,4 @@
-"""Check that a mixed native package fails before its services start."""
+"""Check the native package before its services start."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,25 @@ import tarfile
 from tempfile import TemporaryDirectory
 import unittest
 
-from native_package import BINARIES, smoke_package, verify_binary_versions
+from native_package import (
+    BINARIES, archive_package, smoke_package, verify_binary_versions, verify_documentation,
+)
+
+
+class NativePackageDocumentationTest(unittest.TestCase):
+    def test_shipped_guides_resolve_from_the_extracted_archive(self):
+        with TemporaryDirectory() as directory:
+            work = Path(directory)
+            binaries = work / "binaries"
+            binaries.mkdir()
+            for name in BINARIES:
+                binary = binaries / name
+                binary.touch(mode=0o755)
+            package = "tokencraft-fixture"
+            archive = archive_package(binaries, work, package, metadata={})
+            with tarfile.open(archive, "r:gz") as tar:
+                tar.extractall(work, filter="data")
+            verify_documentation((work / package).resolve())
 
 
 class NativeBinaryVersionsTest(unittest.TestCase):

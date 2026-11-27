@@ -100,7 +100,7 @@ The per-organization row provides exact limits across API replicas and survives 
 
 Each worker runs up to four provider tasks. In a worker serving multiple destinations, aliases sharing one origin can use at most three slots. Workers with both chat bindings and external artifact storage also reserve one slot for chat. Slow uploads from multiple media connectors can otherwise fill every slot while using the same storage backend.
 
-The [gateway CI](../.github/workflows/ci.yml) runs the mixed-tenant rehearsal on Linux with PostgreSQL 17 and HAProxy 3.2. It starts two API replicas and a worker, stalls a synthetic connector and a signature-checking bucket, and verifies that other tenants complete chat requests while storage is stalled. It then verifies admission through one surviving API, a non-storable retry response when the pool is empty, and recovery of the original receipt when a replica returns. It reports request and queue delay percentiles, pool acquisition timings, and sampled PostgreSQL lock waits.
+The [gateway CI](https://github.com/storytold/tokencraft/blob/main/.github/workflows/ci.yml) runs the mixed-tenant rehearsal on Linux with PostgreSQL 17 and HAProxy 3.2. It starts two API replicas and a worker, stalls a synthetic connector and a signature-checking bucket, and verifies that other tenants complete chat requests while storage is stalled. It then verifies admission through one surviving API, a non-storable retry response when the pool is empty, and recovery of the original receipt when a replica returns. It reports request and queue delay percentiles, pool acquisition timings, and sampled PostgreSQL lock waits.
 
 Run the same rehearsal locally with PostgreSQL 17 and HAProxy 3.2 or newer on the path.
 
