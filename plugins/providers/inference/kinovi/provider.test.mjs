@@ -150,6 +150,13 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
     assert.deepEqual(await (await submit()).json(), accepted);
     assert.equal(submitCount, 1);
     const traced = { ...headers, ...traceContext };
+    const receipt = `${base}/v1/jobs/by-request/example-1`;
+    assert.equal((await fetch(receipt)).status, 401);
+    assert.equal((await fetch(`${base}/v1/jobs/by-request/missing`, { headers })).status, 404);
+    const vendorSubmissionsBeforeLookup = submitCount;
+    assert.deepEqual(await (await fetch(receipt, { headers: traced })).json(),
+      { version: 1, request_id: 'example-1', handle: 'example-1' });
+    assert.equal(submitCount, vendorSubmissionsBeforeLookup);
     assert.deepEqual(await (await fetch(`${base}/v1/jobs/example-1`, { headers: traced })).json(),
       { version: 1, handle: 'example-1', status: 'succeeded' });
     const usage = async () => (await fetch(`${base}/v1/jobs/example-1`, {
@@ -175,7 +182,7 @@ test('maps queued work, persists the handle on restart, and fetches artifact byt
     assert.equal(artifact.headers.get('content-type'), artifactType);
     assert.equal(await artifact.text(), 'fixture artifact');
     await artifactLogged;
-    assert.deepEqual(entries.map((entry) => entry.operation).sort(), ['artifact', 'status', 'submit']);
+    assert.deepEqual(entries.map((entry) => entry.operation).sort(), ['artifact', 'lookup', 'status', 'submit']);
     for (const { timestamp, elapsed_ms, ...entry } of entries) {
       assert.ok(Number.isFinite(Date.parse(timestamp)) && elapsed_ms >= 0);
       assert.deepEqual(entry, {

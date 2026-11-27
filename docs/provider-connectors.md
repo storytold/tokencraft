@@ -352,9 +352,17 @@ The gateway records completion and the first valid charge before artifact retrie
 
 Unavailable artifacts, interrupted transfers, and failed storage publication retry from the same handle with delays of about 2, 4, 8, 16, and then up to 30 seconds. PostgreSQL keeps the schedule across worker restarts. The polling deadline still applies. An eligible operator recheck starts a fresh retry schedule. The charge appears on the request, in usage grouped by provider and unit, and in scoped exports. Jobs keep their original binding digest across API and worker restarts. To roll a connector origin or revision, introduce a new named binding, repoint the catalog, and keep the older entry with `drain_only: true` and its original name, origin, and revision until outstanding jobs and rechecks have drained. Use the [drain check](deployment.md#check-a-connector-rollout) before retiring the old entry.
 
+## Recover a lost submission receipt
+
+Set `"receipt_lookup": true` on a queue binding when the connector can read its durable request-to-handle mapping. Implement `GET /v1/jobs/by-request/{request_id}` with the binding service bearer credential. Return `{"version":1,"request_id":"req_example","handle":"job_connector_123"}` for a known accepted job, or `404` when the mapping is unavailable. Return the same handle that the original submission would acknowledge. Serve the lookup directly from connector state, using only the service credential. The subsequent status and artifact reads use the existing pinned credential checks.
+
+The gateway checks the original binding when the submission response is lost, the returned handle is already assigned, or the worker lease expires before recording acceptance. It verifies the echoed request ID and claims the handle before resuming polls. Missing or invalid lookups retry for up to 15 minutes from dispatch. An unresolved job stays available for reconciliation.
+
+The fal and Kinovi example bindings enable receipt lookup. Upgrade the connector and gateway binaries before adding the field to an existing configuration. Adding it preserves the binding identity, so the worker can recover eligible jobs already dispatched to that binding.
+
 ## Send completion notifications
 
-Set `completion_webhooks: true` on a new connector binding to opt in. The gateway adds an optional `completion` object to `POST /v1/jobs` for that binding. Persist it with the stable request-to-handle mapping before replying.
+Set `completion_webhooks: true` on a new connector binding to enable completion hints and receipt lookup. The gateway adds an optional `completion` object to `POST /v1/jobs` for that binding. Persist it with the stable request-to-handle mapping before replying.
 
 ```json
 {
@@ -364,8 +372,6 @@ Set `completion_webhooks: true` on a new connector binding to opt in. The gatewa
 ```
 
 When the job reaches a terminal status, post `{"version":1}` to that path on your operator-configured gateway origin. Supply `Authorization: Bearer <token>` and `Content-Type: application/json`. Use HTTPS except for local fixtures. Keep the token in the connector and out of logs. The gateway returns `204` for an authenticated notification or replay. In case of an interrupted response, retry the same notification. When relaying an upstream webhook, verify it in the connector before notifying the gateway.
-
-An opted-in connector also implements `GET /v1/jobs/by-request/{request_id}` using the original binding bearer credential. Return `{"version":1,"request_id":"req_example","handle":"job_connector_123"}` for a known request. Use `404` when the mapping is unavailable. The gateway checks the original binding if the response is lost, the handle is already assigned, or the worker lease expires before recording acceptance. This check runs even if no webhook arrived. The gateway validates the echoed request ID and claims the handle before resuming polls. The worker retries a missing or invalid lookup for up to 15 minutes from dispatch. These are read-only lookups of the original job.
 
 The notification carries an availability hint and can wake a poll before completion is recorded. The worker reads authoritative status and artifacts from the pinned connector. Once the gateway has recorded completion, it keeps the publication retry schedule. The request trace records callback receipt and verified handle recovery separately. Recovered jobs produce the usual terminal customer webhook. Enabling or disabling completion webhooks changes the binding identity. Roll to a new named binding and retain the old entry with `drain_only: true` while its requests drain.
 

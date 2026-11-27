@@ -5,7 +5,8 @@
       "name": "fal",
       "revision": "v1",
       "origin": "http://127.0.0.1:4021/",
-      "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_FAL"
+      "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_FAL",
+      "receipt_lookup": true
     }
   ]
 }

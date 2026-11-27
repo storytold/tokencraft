@@ -187,7 +187,7 @@ fn blocker(
     let binding = entry.binding_digest.as_str();
     let retained = match entry.adapter.as_str() {
         "connector_queue" if entry.phase == "submission_recovery" => connectors
-            .completion_digests()
+            .recovery_digests()
             .any(|digest| digest == binding),
         "connector_queue" => connectors.by_digest(binding).is_some(),
         "openai_compatible_chat" => chat.values().any(|connection| connection.digest == binding),

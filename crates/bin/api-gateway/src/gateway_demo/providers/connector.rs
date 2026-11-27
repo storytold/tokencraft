@@ -47,6 +47,8 @@ struct ConfigBinding {
     origin: String,
     token_env: String,
     #[serde(default)]
+    receipt_lookup: bool,
+    #[serde(default)]
     completion_webhooks: bool,
     #[serde(default)]
     drain_only: bool,
@@ -66,6 +68,7 @@ pub(super) struct Connector {
     origin: Url,
     client: Client,
     authorization: header::HeaderValue,
+    receipt_lookup: bool,
     completion_webhooks: bool,
     drain_only: bool,
     pub(super) tenant_keys: bool,
@@ -288,8 +291,10 @@ impl Connectors {
         })
     }
 
-    pub(super) fn completion_digests(&self) -> impl Iterator<Item = &str> {
-        self.bindings.values().filter(|entry| entry.completion_webhooks).map(|entry| entry.digest.as_str())
+    pub(super) fn recovery_digests(&self) -> impl Iterator<Item = &str> {
+        self.bindings.values()
+            .filter(|entry| entry.receipt_lookup)
+            .map(|entry| entry.digest.as_str())
     }
 
     pub(super) fn active_digests(&self) -> impl Iterator<Item = &str> {
@@ -347,6 +352,7 @@ impl ConfigBinding {
             origin,
             client,
             authorization,
+            receipt_lookup: self.receipt_lookup || self.completion_webhooks,
             completion_webhooks: self.completion_webhooks,
             drain_only: self.drain_only,
             tenant_keys: self.tenant_keys,

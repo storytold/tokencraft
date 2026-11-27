@@ -62,7 +62,7 @@ export function required(name) {
 // boundary leaves an unresolved intent, which suppresses another vendor POST.
 export async function queueServer({ state, token, provider, tenantKeys = false,
   previousToken, previousTokenExpiresAt, monitoringToken, traceLogs = false }) {
-  const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact']);
+  const monitor = monitoringProbe(monitoringToken, token, previousToken, ['submit', 'status', 'artifact', 'lookup']);
   const authorize = serviceAuthorization(token, {
     previousToken, previousTokenExpiresAt, minimumPreviousLength: tenantKeys ? 32 : 24,
   });
@@ -207,6 +207,14 @@ export async function queueServer({ state, token, provider, tenantKeys = false,
       if (request.method === 'POST' && request.url === '/v1/jobs') {
         observe(request, response, 'submit');
         return await submit(request, response);
+      }
+      const byRequest = /^\/v1\/jobs\/by-request\/([A-Za-z0-9_-]{1,128})$/.exec(request.url ?? '');
+      if (request.method === 'GET' && byRequest) {
+        observe(request, response, 'lookup');
+        const id = byRequest[1];
+        const job = await load(id);
+        if (job?.outcome?.status !== 'accepted') return send(response, 404, { error: 'unknown job' });
+        return send(response, 200, { version: 1, request_id: id, handle: id });
       }
       const match = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,128})(?:\/artifacts\/([0-7]))?$/.exec(request.url ?? '');
       if (request.method === 'GET' && match) {

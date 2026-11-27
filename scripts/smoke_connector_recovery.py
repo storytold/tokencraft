@@ -4,6 +4,7 @@ import argparse
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -59,6 +60,10 @@ class Connector(BaseHTTPRequestHandler):
             self.server.submissions[request] += 1
             self.server.jobs[request] = job
             self.trace("submit", request)
+        if job["input"]["prompt"] == "second" and "completion" not in job:
+            # The connector persisted the receipt, then the connection closed before acknowledgement.
+            self.close_connection = True
+            return
         self.reply(200, {"version": 1, "request_id": request,
                          "outcome": {"status": "accepted", "handle": "first"}})
 
@@ -178,17 +183,20 @@ def verify_read_views(port, peer, session, account, project, first, second, firs
     print("PASS scoped pages, cursor isolation, trace and cost filters, and exact project and client usage")
 
 
-def verify_recovery(gateway, directory, settings, session, account, project):
+def verify_recovery(gateway, directory, settings, session, account, project, *, webhooks=True, receipt_lookup=False):
     token = token_hex(32)
     port = int(settings["API_GATEWAY_PORT"])
     peer = loopback_port()
     with ExitStack() as apps:
         connector = apps.enter_context(connector_server(token))
         bindings = directory / "connector.json"
-        bindings.write_text(json.dumps({"version": 1, "bindings": [{
+        binding = {
             "name": "example", "revision": "recovery-v1", "origin": f"http://{HOST}:{connector.server_port}/",
-            "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE", "completion_webhooks": True,
-        }]}))
+            "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE",
+        }
+        if webhooks:
+            binding["completion_webhooks"] = True
+        bindings.write_text(json.dumps({"version": 1, "bindings": [binding]}))
         settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(ROOT / "examples/connector/catalog.json"),
                         TOKENCRAFT_CONNECTORS=str(bindings), TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE=token)
         settings.pop("TOKENCRAFT_LOCAL_CHAT_BINDINGS", None)
@@ -196,6 +204,10 @@ def verify_recovery(gateway, directory, settings, session, account, project):
         apps.enter_context(service("recovery-peer", [gateway], directory, dict(
             settings, API_GATEWAY_PORT=str(peer), APP_BASE_URL=f"http://localhost:{peer}",
         ), lambda: ready(peer)))
+        if receipt_lookup:
+            # Enable lookup on the workers without changing the identity already loaded by the APIs.
+            binding["receipt_lookup"] = True
+            bindings.write_text(json.dumps({"version": 1, "bindings": [binding]}))
 
         @contextmanager
         def worker(name):
@@ -226,7 +238,7 @@ def verify_recovery(gateway, directory, settings, session, account, project):
             assert read_image(peer, first, first_client) == connector.images["first"]
             second = submit(peer, second_client, "second")
             wait_for_status(port, second, second_client, "awaiting_reconciliation", 12)
-            assert connector.lookup_started.wait(timeout=8)
+            assert connector.lookup_started.wait(timeout=8), "Worker did not look up the stored receipt"
             replay = submit(port, second_client, "second")
             assert replay["id"] == second["id"]
             call(port, first["status_url"], 404, headers=second_client)
@@ -236,13 +248,16 @@ def verify_recovery(gateway, directory, settings, session, account, project):
             assert usage["totals"].get("provider_charges", []) == []
             assert connector.fetches == {"first": 1}
 
-            first_grant = connector.jobs[first["id"]]["completion"]
-            grant = connector.jobs[second["id"]]["completion"]
-            call(port, grant["path"], 401, method="POST", body={"version": 1},
-                 headers={"Authorization": "Bearer " + first_grant["token"]})
-            for api in (port, peer):
-                call(api, grant["path"], 204, method="POST", body={"version": 1},
-                     headers={"Authorization": "Bearer " + grant["token"]})
+            if webhooks:
+                first_grant = connector.jobs[first["id"]]["completion"]
+                grant = connector.jobs[second["id"]]["completion"]
+                call(port, grant["path"], 401, method="POST", body={"version": 1},
+                     headers={"Authorization": "Bearer " + first_grant["token"]})
+                for api in (port, peer):
+                    call(api, grant["path"], 204, method="POST", body={"version": 1},
+                         headers={"Authorization": "Bearer " + grant["token"]})
+            else:
+                assert all("completion" not in job for job in connector.jobs.values())
 
         connector.corrected.set()
         with worker("replacement-worker"):
@@ -269,8 +284,11 @@ def verify_recovery(gateway, directory, settings, session, account, project):
         for operation, subject, parent, state, baggage in connector.traces:
             assert (parent, state, baggage) == (expected[subject], None, None), operation
         print("PASS connector requests use the scoped OTLP parent across recovery without caller metadata")
-        print("PASS conflicting handle stayed unconfirmed, then recovered with the right output and charge after restart")
-        verify_read_views(port, peer, session, account, project, first, second, first_client, second_client)
+        if webhooks:
+            print("PASS conflicting handle stayed unconfirmed, then recovered with the right output and charge after restart")
+            verify_read_views(port, peer, session, account, project, first, second, first_client, second_client)
+        else:
+            print("PASS dropped acknowledgement recovered by lookup with no callbacks and one provider submission")
 
 
 def main():
@@ -278,9 +296,12 @@ def main():
     parser.add_argument("gateway", type=Path)
     parser.add_argument("admin", type=Path)
     args = parser.parse_args()
-    with TemporaryDirectory(prefix="tokencraft-connector-recovery-") as directory:
-        rehearse(args.gateway.resolve(strict=True), args.admin.resolve(strict=True),
-                 Path(directory), verification=verify_recovery)
+    gateway = args.gateway.resolve(strict=True)
+    admin = args.admin.resolve(strict=True)
+    polling = partial(verify_recovery, webhooks=False, receipt_lookup=True)
+    for verify in (verify_recovery, polling):
+        with TemporaryDirectory(prefix="tokencraft-connector-recovery-") as directory:
+            rehearse(gateway, admin, Path(directory), verification=verify)
 
 
 if __name__ == "__main__":

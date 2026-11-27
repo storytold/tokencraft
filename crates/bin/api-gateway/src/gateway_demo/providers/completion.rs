@@ -87,7 +87,7 @@ pub(crate) async fn receive(
 }
 
 pub(super) fn spawn(pool: db::PgPool, runtime: Arc<ProviderRuntime>, readiness: Arc<Readiness>) {
-    let bindings: Vec<_> = runtime.connectors.completion_digests().map(str::to_owned).collect();
+    let bindings: Vec<_> = runtime.connectors.recovery_digests().map(str::to_owned).collect();
     if bindings.is_empty() {
         return;
     }

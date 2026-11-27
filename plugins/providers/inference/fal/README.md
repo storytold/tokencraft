@@ -22,7 +22,7 @@ The listener defaults to `127.0.0.1:4021`. Set `PORT` to override it. Keep the d
 
 Copy the [example binding](bindings.example.json) and [catalog offers](catalog.example.json) into your [TokenCraft profile](../README.md#start-a-plugin). Set the same gateway token in the gateway environment and fill in reviewed rates before serving live traffic. The sample catalog uses zero as its placeholder price. Keep `FAL_KEY` in the plugin environment.
 
-The plugin saves the model with the intent before contacting fal and the vendor handle before acknowledging a job. After a restart, the saved model determines how to poll, read, and validate the result. Existing state remains readable as FLUX.1 [dev]. The tests run against local fixtures. [fal queue documentation](https://fal.ai/docs/documentation/model-apis/inference/queue)
+The plugin saves the model with the intent before contacting fal and the vendor handle before acknowledging a job. The example binding enables [receipt lookup](../../../../docs/provider-connectors.md#recover-a-lost-submission-receipt) so polling deployments can recover a saved job if the gateway misses the acknowledgement. After a restart, the saved model determines how to poll, read, and validate the result. Existing state remains readable as FLUX.1 [dev]. The tests run against local fixtures. [fal queue documentation](https://fal.ai/docs/documentation/model-apis/inference/queue)
 
 ## Rotate the gateway service token
 

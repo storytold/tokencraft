@@ -5,7 +5,8 @@
       "name": "kinovi",
       "revision": "v1",
       "origin": "http://127.0.0.1:4023/",
-      "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_KINOVI"
+      "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_KINOVI",
+      "receipt_lookup": true
     }
   ]
 }

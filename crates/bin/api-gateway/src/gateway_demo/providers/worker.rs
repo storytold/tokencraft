@@ -29,7 +29,7 @@ pub(super) async fn run(
     let chat: Vec<_> = runtime.local_chat.values().map(|entry| entry.digest.clone()).collect();
     let submit_connectors: Vec<_> = runtime.connectors.active_digests().map(str::to_owned).collect();
     let poll_connectors: Vec<_> = runtime.connectors.digests().map(str::to_owned).collect();
-    let recovery: Vec<_> = runtime.connectors.completion_digests().map(str::to_owned).collect();
+    let recovery: Vec<_> = runtime.connectors.recovery_digests().map(str::to_owned).collect();
     let destinations = runtime.connectors.worker_destinations()
         .chain(runtime.local_chat.values().map(|binding| {
             let destination = binding.client.worker_origin().unwrap_or_else(|| binding.digest.clone());
