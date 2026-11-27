@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from secrets import token_hex
+import signal
 import subprocess
 from tempfile import TemporaryDirectory
 from time import sleep
@@ -86,6 +87,60 @@ def verify_automatic_routing(port, policy, project, session, auth, workload, con
     print("PASS automatic model routing honors preference precedence, hard limits, and recorded model identity")
 
 
+def verify_data_routing(port, policy, project, session, auth, workload, connector, worker):
+    def set_limits(path, revision, regions, retention):
+        call(port, path, 200, method="PUT", headers=session, body={
+            "expected_revision": revision,
+            "policy": {"data_requirements": {"allowed_regions": regions, "max_retention_seconds": retention}},
+        })
+
+    def quote(**requirements):
+        return call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth, body={
+            "model": "auto", "workload": workload, "data_requirements": requirements,
+        })[0]
+
+    def submit(offers, expected, headers):
+        return call(port, "/v1/requests", expected, method="POST", headers=headers, body={
+            "quote_id": offers["id"], "input": offers["input"], "image_prompt": "Synthetic data handling fixture",
+        })[0]
+
+    project_policy = f"{policy}&project_id={project}"
+    set_limits(policy, 3, ["eu-west-1", "us-east-1"], 120)
+    set_limits(project_policy, 1, ["eu-west-1"], 60)
+    constrained = quote(allowed_regions=["us-east-1", "eu-west-1"], max_retention_seconds=90)
+    assert constrained["input"]["data_requirements"] == {
+        "allowed_regions": ["eu-west-1", "us-east-1"], "max_retention_seconds": 90,
+    }
+    assert constrained["routing"]["data_requirements"] == {
+        "allowed_regions": ["eu-west-1"], "max_retention_seconds": 60,
+    }
+    assert constrained["selected_offer_id"] == "alternate_model"
+    assert {row["offer_id"]: row["reason"] for row in constrained["candidates"]} == {
+        "primary": "provider_region_unmet", "backup": "provider_retention_unmet", "alternate_model": "eligible",
+    }
+    inherited = quote()
+    assert inherited["selected_offer_id"] == "alternate_model" and "data_requirements" not in inherited["input"]
+    disjoint = quote(allowed_regions=["us-east-1"])
+    assert disjoint["selected_offer_id"] is None and disjoint["routing"]["data_requirements"]["allowed_regions"] == []
+
+    key = {**auth, "Idempotency-Key": token_hex(16)}
+    accepted = submit(constrained, 202, key)
+    assert wait_for_status(port, accepted, auth, "succeeded", 18)["quote"]["input"] == constrained["input"]
+    assert submit(constrained, 200, key) == accepted and connector.jobs[accepted["id"]] == 1
+
+    worker.send_signal(signal.SIGSTOP)
+    try:
+        blocked = submit(constrained, 202, {**auth, "Idempotency-Key": token_hex(16)})
+        set_limits(project_policy, 2, ["eu-west-1"], 0)
+    finally:
+        worker.send_signal(signal.SIGCONT)
+    stopped = wait_for_status(port, blocked, auth, "failed", 18)
+    assert stopped["upstream"]["error_code"] == "provider_data_handling_blocked"
+    assert blocked["id"] not in connector.jobs
+    assert submit(constrained, 200, key) == accepted
+    print("PASS normalized data limits survive admission and tightened retention blocks queued provider submission")
+
+
 def verify(gateway, directory, settings, session, account, project):
     port = int(settings["API_GATEWAY_PORT"])
     principal = f"/v1/projects/{project}/service-principals?account_id={account}"
@@ -103,11 +158,14 @@ def verify(gateway, directory, settings, session, account, project):
             "origin": f"http://{HOST}:{connector.server_port}/", "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE",
         }]}))
         offer = json.loads((ROOT / "examples/connector/catalog.json").read_bytes())["offers"][0]
-        primary = {**offer, "id": "primary", "pricing": {**offer["pricing"], "usd_nanos_per_image": 3_000_000}}
+        primary = {**offer, "id": "primary", "pricing": {**offer["pricing"], "usd_nanos_per_image": 3_000_000},
+                   "data_handling": {"processing_regions": ["us-east-1"], "retention_seconds": 0}}
         backup = {**offer, "id": "backup", "provider": "fixture_alt",
-                  "pricing": {**offer["pricing"], "usd_nanos_per_image": 5_000_000}}
+                  "pricing": {**offer["pricing"], "usd_nanos_per_image": 5_000_000},
+                  "data_handling": {"processing_regions": ["eu-west-1"], "retention_seconds": 180}}
         alternate = {**backup, "id": "alternate_model", "model": "alternate_image",
-                     "pricing": {**offer["pricing"], "usd_nanos_per_image": 4_500_000}}
+                     "pricing": {**offer["pricing"], "usd_nanos_per_image": 4_500_000},
+                     "data_handling": {"processing_regions": ["eu-west-1"], "retention_seconds": 30}}
         catalog = directory / "reviewed-rates.json"
         catalog.write_text(json.dumps({"version": 1, "rate_feed_offers": ["primary"],
                                        "offers": [primary, backup, alternate]}))
@@ -181,9 +239,9 @@ def verify(gateway, directory, settings, session, account, project):
         replacement = run_image(race_key, 202, 5_000_000)
         assert replacement["id"] != accepted["id"]
         assert not connector.jobs
-        worker = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(loopback_port()))
-        worker_port = int(worker["API_GATEWAY_PORT"])
-        stack.enter_context(service("rate-worker", [gateway], directory, worker, lambda: ready(worker_port)))
+        worker_port = loopback_port()
+        worker_settings = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
+        worker = stack.enter_context(service("rate-worker", [gateway], directory, worker_settings, lambda: ready(worker_port)))
         for receipt in (accepted, replacement):
             wait_for_status(port, receipt, auth, "succeeded", 18)
         usage, _ = call(port, "/v1/usage", 200, headers=auth)
@@ -217,6 +275,7 @@ def verify(gateway, directory, settings, session, account, project):
         assert usage["totals"]["requests"] == 3 and usage["totals"]["estimated_usd_nanos"] == "11000000"
         print("PASS an atomic rate refresh selected the cheaper reviewed offer and invalidated the old quote")
         verify_automatic_routing(port, policy, project, session, auth, workload, connector)
+        verify_data_routing(port, policy, project, session, auth, workload, connector, worker)
 
 
 def main():

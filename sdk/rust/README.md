@@ -35,6 +35,8 @@ To link a caller span, use `client.clone().with_submit_traceparent(traceparent)?
 
 For automatic model selection, set `QuoteInput::model` to `"auto"` and use a project key. Use `quote_with_options` to combine provider preferences, community thresholds, and client attribution. `submit` preserves the request-level preferences and thresholds in the quote. Use the same client reference in `SubmitOptions`. Each automatic candidate names the model it represents. [Routing policy precedence](../../docs/deployment.md#routing-policy-precedence)
 
+Set `QuoteOptions::data_requirements` to limit provider processing regions or upstream retention. Persist the returned `Quote` before submitting. Its `input` holds the normalized request and retains those limits across serialization and replay. The effective requirements appear under `routing.data_requirements`. Use `quote.input.base` when you need ownership of the basic `QuoteInput`, or `input.into()` when constructing a quote from basic fixture input. [Data handling requirements](../../docs/api-schema.md#provider-data-handling)
+
 Use `get(id)` and `events(id)` to inspect the request, `result(id)` for a stored chat result, and `list` and `usage` for client filters and cursor pagination. The usage report preserves aggregated nano-USD amounts as decimal strings.
 
 For a quote that selects an image offer, set `SubmitOptions::image_prompt` and call `image_result(id)` after success. When an image includes `artifact`, pass the saved reference to `download_artifact` with `ArtifactLocation::Warm` to verify the downloaded bytes. The trace's `upstream.accepted_at` and `upstream.queue_state` show acknowledgment and queue progress. [Example connector walkthrough](../../docs/setup.md)

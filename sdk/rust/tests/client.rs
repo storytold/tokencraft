@@ -321,6 +321,63 @@ async fn preferred_order_reaches_quotes_and_preserves_request_overrides_on_submi
 }
 
 #[tokio::test]
+async fn saved_quotes_replay_requested_data_limits_and_leave_inherited_limits_to_the_gateway() {
+    use tokencraft_sdk::{DataRequirements, QuoteOptions, SubmitOptions};
+
+    let requested = json!({
+        "allowed_regions": ["eu-west-1", "us-east-1"],
+        "max_retention_seconds": 90,
+    });
+    let requested_options = DataRequirements {
+        allowed_regions: Some(vec!["us-east-1".into(), "eu-west-1".into()]),
+        max_retention_seconds: Some(90),
+    };
+    let effective = json!({
+        "allowed_regions": ["eu-west-1"],
+        "max_retention_seconds": 30,
+    });
+    for limits in [Some(&requested), None] {
+        let mut wire_input = serde_json::to_value(input()).unwrap();
+        if let Some(limits) = limits {
+            wire_input["data_requirements"] = limits.clone();
+        }
+        let document = json!({
+            "id": "quo_fixture", "catalog_revision": "fixture", "currency": "USD",
+            "input": wire_input, "selected_offer_id": "eligible_image", "candidates": [],
+            "routing": {
+                "organization_revision": 1, "project_revision": 2, "data_requirements": effective,
+            },
+        });
+        let (origin, captured) = reply("200 OK", "", &document.to_string()).await;
+        let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        let quote = client
+            .quote_with_options(&input(), QuoteOptions {
+                data_requirements: limits.map(|_| &requested_options),
+                ..QuoteOptions::default()
+            })
+            .await
+            .unwrap();
+        let (_, body) = captured.await.unwrap();
+        let quoted: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let sent = limits.map(|_| serde_json::to_value(&requested_options).unwrap());
+        assert_eq!(quoted.get("data_requirements"), sent.as_ref());
+        let saved = serde_json::to_string(&quote).unwrap();
+        let restored: Quote = serde_json::from_str(&saved).unwrap();
+        let (origin, captured) = reply("202 Accepted", "", &json!({
+            "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
+        }).to_string()).await;
+        let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        assert_eq!(
+            client.submit(&restored, SubmitOptions::new("fixture-data-policy")).await.unwrap().id,
+            REQUEST,
+        );
+        let (_, body) = captured.await.unwrap();
+        let submitted: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(submitted["input"].get("data_requirements"), limits);
+    }
+}
+
+#[tokio::test]
 async fn exact_offer_pin_reaches_quote_and_submit() {
     use tokencraft_sdk::SubmitOptions;
 

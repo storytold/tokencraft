@@ -138,7 +138,7 @@ impl TokenCraftClient {
         .await
     }
 
-    /// Quote with request-level provider preferences, model thresholds, or project attribution.
+    /// Quote with request-level routing requirements or project attribution.
     pub async fn quote_with_options(
         &self,
         input: &QuoteInput,
@@ -297,31 +297,36 @@ impl TokenCraftClient {
     ) -> Result<Receipt, Error> {
         let key = options.idempotency_key;
         validate_idempotency_key(key)?;
-        let quote_options = quote.routing.as_ref().map_or_else(QuoteOptions::default, |routing| {
-            QuoteOptions {
-                preferred_providers: routing
-                    .provider_preference
-                    .as_ref()
+        let input = &quote.input;
+        let routing = quote.routing.as_ref();
+        // Older saved Rust quotes only retained explicit precedence settings under routing.
+        let quote_options = QuoteOptions {
+            preferred_providers: input.preferred_providers.as_deref().or_else(|| {
+                routing
+                    .and_then(|policy| policy.provider_preference.as_ref())
                     .and_then(PolicySetting::request_value)
-                    .map(Vec::as_slice),
-                min_quality: routing
-                    .min_quality
-                    .as_ref()
+                    .map(Vec::as_slice)
+            }),
+            min_quality: input.min_quality.or_else(|| {
+                routing
+                    .and_then(|policy| policy.min_quality.as_ref())
                     .and_then(PolicySetting::request_value)
-                    .copied(),
-                min_usage_accounts: routing
-                    .min_usage_accounts
-                    .as_ref()
+                    .copied()
+            }),
+            min_usage_accounts: input.min_usage_accounts.or_else(|| {
+                routing
+                    .and_then(|policy| policy.min_usage_accounts.as_ref())
                     .and_then(PolicySetting::request_value)
-                    .copied(),
-                ..QuoteOptions::default()
-            }
-        });
+                    .copied()
+            }),
+            data_requirements: input.data_requirements.as_ref(),
+            ..QuoteOptions::default()
+        };
         let body = SubmitBody {
             quote_id: &quote.id,
             pinned_offer_id: quote.pinned_offer_id.as_deref(),
             input: QuoteBody {
-                input: &quote.input,
+                input: &input.base,
                 options: quote_options,
             },
             client_ref: options.client_ref,

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{ops::Deref, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -210,6 +210,44 @@ pub struct QuoteOptions<'a> {
     /// Minimum number of organizations using an automatically selected model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_usage_accounts: Option<u32>,
+    /// Restrict the provider's processing regions or maximum upstream retention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_requirements: Option<&'a DataRequirements>,
+}
+
+/// The normalized request returned by the gateway, before applying inherited policy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QuotedInput {
+    #[serde(flatten)]
+    pub base: QuoteInput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_providers: Option<Vec<Provider>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_quality: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_usage_accounts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_requirements: Option<DataRequirements>,
+}
+
+impl Deref for QuotedInput {
+    type Target = QuoteInput;
+
+    fn deref(&self) -> &QuoteInput {
+        &self.base
+    }
+}
+
+impl From<QuoteInput> for QuotedInput {
+    fn from(base: QuoteInput) -> Self {
+        Self {
+            base,
+            preferred_providers: None,
+            min_quality: None,
+            min_usage_accounts: None,
+            data_requirements: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -362,7 +400,7 @@ pub struct Quote {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     pub catalog_revision: String,
-    pub input: QuoteInput,
+    pub input: QuotedInput,
     pub currency: String,
     pub selected_offer_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
