@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { ArtifactButton } from "@/components/ArtifactButton";
 import { Button } from "@/components/ui";
-import { API_BASE_URL, ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api";
+import { scheduleDeadline } from "@/lib/deadline";
 import { errorMessage, gatewayRequest, withProject, type ProjectScope } from "@/lib/gateway";
 import type { ProviderResult } from "@/surfaces/comparison/api";
 
@@ -33,7 +35,6 @@ const phaseLabels: Record<Phase, string> = {
   removed: "Removed",
 };
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-const maxTimerDelay = 2_147_483_647;
 
 export function ChatHistoryPanel({ scope, id, status, fallback }: {
   scope: ProjectScope; id: string; status: string; fallback: ReactNode;
@@ -109,22 +110,19 @@ export function ChatHistoryPanel({ scope, id, status, fallback }: {
   useEffect(() => {
     const cutoff = deadline ? Date.parse(deadline) : NaN;
     if (!Number.isFinite(cutoff)) return;
-    let timer: number;
-    function check() {
-      const remaining = cutoff - Date.now();
-      if (remaining > 0) {
-        timer = window.setTimeout(check, Math.min(remaining, maxTimerDelay));
-        return;
-      }
+    let refreshTimer: number | undefined;
+    const cancel = scheduleDeadline(cutoff, () => {
       pending.current?.abort();
       pending.current = null;
       setBusy(undefined);
       setContent(undefined);
       // Give the gateway time to cross the same boundary if its clock is behind.
-      timer = window.setTimeout(() => setRevision((value) => value + 1), 1_000);
-    }
-    check();
-    return () => window.clearTimeout(timer);
+      refreshTimer = window.setTimeout(() => setRevision((value) => value + 1), 1_000);
+    });
+    return () => {
+      cancel();
+      window.clearTimeout(refreshTimer);
+    };
   }, [deadline, revision]);
 
   async function reveal() {
@@ -270,21 +268,23 @@ function MediaDownloads({ result, scope, id, archived }: {
   result: Exclude<ProviderResult["result"], { text: string }>;
   scope: ProjectScope; id: string; archived: boolean;
 }) {
-  const files = "images" in result ? result.images.map((image, index) => ({ file: image, label: `Image ${index + 1}` }))
-    : "video" in result ? [{ file: result.video, label: "Video" }]
-    : "audio" in result ? [{ file: result.audio, label: "Audio" }]
-    : [{ file: result.mesh, label: "3D model" }];
+  const files = "images" in result ? result.images.map((image, index) => (
+    { file: image, label: `Image ${index + 1}`, filename: "tokencraft-image" }
+  ))
+    : "video" in result ? [{ file: result.video, label: "Video", filename: "tokencraft-video" }]
+    : "audio" in result ? [{ file: result.audio, label: "Audio", filename: "tokencraft-audio" }]
+    : [{ file: result.mesh, label: "3D model", filename: "tokencraft-mesh" }];
   const endpoint = `/v1/requests/${encodeURIComponent(id)}${archived ? "/content" : ""}/artifacts`;
   return (
-    <ul className="space-y-1" aria-label="Stored outputs">
-      {files.map(({ file, label }) => file.artifact && (
-        <li key={file.artifact.slot}>
-          <a className="text-sm font-medium text-brand hover:underline"
-            href={API_BASE_URL + withProject(`${endpoint}/${file.artifact.slot}`, scope.project_id, scope.account_id)}>
-            Download {label}
-          </a>
-        </li>
-      ))}
+    <ul className="space-y-1 text-sm" aria-label="Stored outputs">
+      {files.map(({ file, label, filename }) => {
+        if (!file.artifact) return null;
+        const path = withProject(`${endpoint}/${file.artifact.slot}`, scope.project_id, scope.account_id);
+        return <li key={path}>
+          <ArtifactButton path={path} label={`Download ${label}`} filename={filename}
+            reference={file.artifact} contentType={file.content_type} />
+        </li>;
+      })}
     </ul>
   );
 }

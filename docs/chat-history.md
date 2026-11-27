@@ -32,6 +32,8 @@ The worker asks storage for a Standard retrieval with a one-day temporary copy. 
 
 A replacement worker uses the recorded reservation and storage metadata to resume each pending object. When the status is ready, retrieve or download the archive from Requests. Expiry and administrator deletion remove queued restore work and still apply to any temporary copy.
 
+Requests verifies the saved artifact size and SHA-256 before saving the file. When the gateway is busy and supplies a retry delay of up to five seconds, the console retries once in place. You can cancel while the transfer is in progress.
+
 ## Read or remove content
 
 | Operation | Behavior |

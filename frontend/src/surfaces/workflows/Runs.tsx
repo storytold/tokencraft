@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type Ref } from "react";
 import { Play, RefreshCw } from "lucide-react";
-import { API_BASE_URL, ApiError } from "@/lib/api";
+import { ArtifactButton } from "@/components/ArtifactButton";
+import { ApiError } from "@/lib/api";
 import { errorMessage, type ProjectScope } from "@/lib/gateway";
-import { workflowApi } from "./api";
+import { workflowApi, workflowOutputPath } from "./api";
 import { usd } from "./editor";
 import { Dialog } from "./IntentDialog";
 import { ToolParameterInput } from "./ToolParameters";
@@ -112,8 +113,8 @@ export function Status({ status }: { status: RunSummary["status"] }) {
   return <span className={`wf-status wf-status-${status}`}>{statusLabel[status]}</span>;
 }
 
-function RunDetails({ scope, run, graph, heading, onCancel, onReuse }: {
-  scope: ProjectScope; run: Run; graph: Graph; heading: Ref<HTMLHeadingElement>; onCancel: () => Promise<void>;
+function RunDetails({ scope, workflow, run, graph, heading, onCancel, onReuse }: {
+  scope: ProjectScope; workflow: string; run: Run; graph: Graph; heading: Ref<HTMLHeadingElement>; onCancel: () => Promise<void>;
   onReuse?: () => void;
 }) {
   const [error, setError] = useState("");
@@ -132,7 +133,8 @@ function RunDetails({ scope, run, graph, heading, onCancel, onReuse }: {
       {Object.entries(run.outputs).map(([name, output]) => <div className="wf-run-output" key={name}>
         <code>{name}</code>
         {output.type === "text" ? <p>{output.text}</p>
-          : output.type === "media" ? <a href={API_BASE_URL + output.download_url}>Download {output.kind}</a>
+          : output.type === "media" ? <ArtifactButton path={workflowOutputPath(scope, workflow, run.id, name)}
+            label={`Download ${output.kind}`} filename={name} className="wf-button wf-small" />
           : <span className="wf-muted">Synthetic {output.kind} result</span>}
       </div>)}
     </div>}
@@ -213,7 +215,8 @@ export function Runs({ scope, id, graph, selected, onSelect, onReuse }: {
       {list?.length === 0 && <p className="wf-muted">Run a draft or call a published endpoint to see results here.</p>}
     </section>
     {!openRun && runError?.id === selected && runError && <div className="wf-panel"><p className="wf-error" role="alert">{runError.message}</p></div>}
-    {run && openRun && <RunDetails key={run.id} scope={scope} run={run} graph={graph}
+    {run && openRun && <RunDetails key={`${scope.account_id}/${scope.project_id}/${id}/${run.id}`}
+      scope={scope} workflow={id} run={run} graph={graph}
       heading={timelineHeading} onReuse={onReuse} onCancel={async () => {
       await workflowApi.cancel(scope, id, run.id); setRefresh((value) => value + 1);
     }} />}

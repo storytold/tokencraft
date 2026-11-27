@@ -33,6 +33,8 @@ An application can have two active runs across all its keys and API replicas. A 
 
 Fetch an output's download URL while its content is available. On `503 artifact_download_capacity`, wait for `Retry-After` and retry the same download.
 
+In the Runs view, the console verifies the output's SHA-256 before saving it. It retries once when a busy response supplies a delay of up to five seconds. The Runs view stays open if the transfer fails.
+
 Each new draft test or published run consumes one credit from the [organization submission quota](capacity.md#enforce-limits-where-identity-and-state-are-available). Each newly admitted generation step consumes a credit from the same quota. Replays and rejected runs use no new credit. On `429 submission_rate_limit`, wait for the numeric `Retry-After` and retry with the same body and idempotency key. If the worker reaches the quota while admitting a generation step, it waits and retries under the existing run deadline.
 
 Workflow versions pin the graph. The backend checkpoints runs under database leases and replays child admission using a stable step key. Each generation step passes the current project allocation and provider policy checks. Each tool step pins a reviewed project binding and an operation revision. Media results are accessed under the workflow's existing project and app scope.

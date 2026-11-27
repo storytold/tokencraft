@@ -130,6 +130,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Check console security headers
         run: node ../scripts/console_security_headers.mjs
+      - name: Verify the console retention deadline
+        run: node --experimental-strip-types --test ../scripts/console_retention_timer.test.mjs
       - run: npm run build
         env:
           VITE_API_BASE_URL: /

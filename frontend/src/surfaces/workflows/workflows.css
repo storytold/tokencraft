@@ -224,7 +224,6 @@
 .wf-run-row span:first-child, .wf-key-row, .wf-run-output { display: grid; gap: .32rem; min-width: 0; overflow-wrap: anywhere; }
 .wf-key-row { padding-top: .6rem; border-top: 1px solid var(--wf-line); }
 .wf-run-output { padding-top: .35rem; border-top: 1px solid var(--wf-line); }
-.wf-run-output a { color: var(--wf-brand); text-decoration: underline; }
 .wf-timeline { list-style: none; margin: 0; padding: 0; }
 .wf-timeline li { display: flex; justify-content: space-between; align-items: start; padding: .45rem 0; gap: .5rem; border-bottom: 1px solid var(--wf-line); }
 .wf-timeline small { display: block; overflow-wrap: anywhere; }

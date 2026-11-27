@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { ArtifactButton } from "@/components/ArtifactButton";
 import { Button } from "@/components/ui";
 import { API_BASE_URL } from "@/lib/api";
+import { scheduleDeadline } from "@/lib/deadline";
 import { withProject, type ProjectScope } from "@/lib/gateway";
 import { comparisonApi, errorMessage, type ProviderAudio, type ProviderResult, type ProviderVideo } from "@/surfaces/comparison/api";
 
@@ -15,14 +17,16 @@ export function RequestResult({ scope, id, expiresAt, autoLoad = false }: {
   const [copyNotice, setCopyNotice] = useState("");
 
   useEffect(() => {
-    const remaining = Date.parse(expiresAt) - Date.now();
-    if (remaining <= 0) {
+    const deadline = Date.parse(expiresAt);
+    if (!Number.isFinite(deadline)) {
       setExpired(true);
       return;
     }
-    setExpired(false);
-    const timer = window.setTimeout(() => { setData(undefined); setExpired(true); }, remaining);
-    return () => window.clearTimeout(timer);
+    setExpired(deadline <= Date.now());
+    return scheduleDeadline(deadline, () => {
+      setData(undefined);
+      setExpired(true);
+    });
   }, [expiresAt]);
 
   useEffect(() => {
@@ -64,25 +68,32 @@ export function RequestResult({ scope, id, expiresAt, autoLoad = false }: {
       {result && ("images" in result ? (
         <ul className={autoLoad ? "grid gap-3 sm:grid-cols-2" : "space-y-1 border border-border p-3 text-xs"}>
           {result.images.map((image, index) => {
-            const url = image.artifact ? artifactDownloadUrl(id, image.artifact.slot, scope) : image.url;
-            return <li key={index} className={autoLoad ? "min-w-0 overflow-hidden rounded-lg border border-border bg-surface2/50" : ""}>
+            const path = image.artifact && artifactPath(id, image.artifact.slot, scope);
+            const url = path ? API_BASE_URL + path : image.url;
+            return <li key={path ?? index} className={autoLoad ? "min-w-0 overflow-hidden rounded-lg border border-border bg-surface2/50" : ""}>
               {autoLoad && <img className="max-h-80 w-full bg-surface2 object-contain" src={url} alt={`Generated image ${index + 1}`} loading="lazy" />}
               <div className={autoLoad ? "flex flex-wrap items-center justify-between gap-2 p-3 text-xs" : "flex flex-wrap gap-2"}>
-                <a href={url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
-                  {image.artifact ? "Download" : "Open"} image {index + 1}
-                </a>
+                {image.artifact && path ? <ArtifactButton path={path} label={`Download image ${index + 1}`}
+                  filename="tokencraft-image" reference={image.artifact} contentType={image.content_type} />
+                  : <a href={url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
+                    Open image {index + 1}
+                  </a>}
                 <span className="text-muted">{image.width} × {image.height} · {image.content_type}</span>
               </div>
             </li>;
           })}
         </ul>
       ) : "video" in result ? (
-        <TimedMediaResult media={result.video} scope={scope} id={id} />
+        <TimedMediaResult key={artifactPath(id, result.video.artifact.slot, scope)}
+          media={result.video} path={artifactPath(id, result.video.artifact.slot, scope)} />
       ) : "audio" in result ? (
-        <TimedMediaResult media={result.audio} scope={scope} id={id} />
+        <TimedMediaResult key={artifactPath(id, result.audio.artifact.slot, scope)}
+          media={result.audio} path={artifactPath(id, result.audio.artifact.slot, scope)} />
       ) : "mesh" in result ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3 text-sm">
-          <a href={artifactDownloadUrl(id, result.mesh.artifact.slot, scope)} className="font-medium text-brand hover:underline">Download GLB</a>
+          <ArtifactButton key={artifactPath(id, result.mesh.artifact.slot, scope)}
+            path={artifactPath(id, result.mesh.artifact.slot, scope)} label="Download GLB"
+            filename="tokencraft-mesh" reference={result.mesh.artifact} contentType="model/gltf-binary" />
           <span className="text-muted">
             {result.mesh.mesh_count} {result.mesh.mesh_count === 1 ? "mesh" : "meshes"}
             {" · "}{result.mesh.primitive_count} {result.mesh.primitive_count === 1 ? "primitive" : "primitives"}
@@ -105,58 +116,31 @@ export function RequestResult({ scope, id, expiresAt, autoLoad = false }: {
   );
 }
 
-function TimedMediaResult({ media, scope, id }: { media: ProviderVideo | ProviderAudio; scope: ProjectScope; id: string }) {
-  const url = artifactDownloadUrl(id, media.artifact.slot, scope);
+function TimedMediaResult({ media, path }: { media: ProviderVideo | ProviderAudio; path: string }) {
   const kind = "width" in media ? "video" : "audio";
   const mime = kind === "video" ? "video/mp4" : "audio/wav";
   const details = "width" in media ? `${media.width} × ${media.height}` : `${media.sample_rate_hz / 1000} kHz · ${media.channels === 1 ? "Mono" : "Stereo"}`;
   const [source, setSource] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const controller = useRef<AbortController | null>(null);
-
-  useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => () => {
     if (source) URL.revokeObjectURL(source);
   }, [source]);
 
-  async function preview() {
-    const request = new AbortController();
-    controller.current = request;
-    setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(url, { credentials: "include", signal: request.signal });
-      if (!response.ok || response.headers.get("Content-Type") !== mime) {
-        throw new Error("Could not read the preview file.");
-      }
-      const body = await response.blob();
-      if (body.size !== media.artifact.byte_length) throw new Error("Unexpected preview size.");
-      if (!request.signal.aborted) setSource(URL.createObjectURL(body));
-    } catch {
-      if (!request.signal.aborted) setError(`The ${kind} preview could not be loaded.`);
-    } finally {
-      if (!request.signal.aborted) setLoading(false);
-    }
-  }
-
   return (
     <div className="space-y-2 border border-border p-3">
       <div className="flex flex-wrap items-center gap-3 text-xs">
-        <a href={url} className="font-medium text-brand hover:underline">Download {kind}</a>
+        <ArtifactButton path={path} label={`Download ${kind}`} filename={`tokencraft-${kind}`}
+          reference={media.artifact} contentType={mime} />
         <span className="text-muted">{details} · {(media.duration_ms / 1000).toFixed(2)}s</span>
-        {!source && <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void preview()}>
-          {loading ? `Loading ${kind}…` : `Preview ${kind}`}
-        </Button>}
+        {!source && <ArtifactButton path={path} label={`Preview ${kind}`} reference={media.artifact}
+          contentType={mime} onPreview={(file) => setSource(URL.createObjectURL(file))} />}
       </div>
       {source && (kind === "video"
         ? <video aria-label="Generated video preview" className="w-full bg-black" src={source} controls playsInline />
         : <audio aria-label="Generated audio preview" className="w-full" src={source} controls />)}
-      {error && <p className="text-xs text-rose-600 dark:text-rose-300" role="alert">{error}</p>}
     </div>
   );
 }
 
-function artifactDownloadUrl(id: string, slot: number, scope: ProjectScope) {
-  return API_BASE_URL + withProject(`/v1/model-requests/${id}/artifacts/${slot}`, scope.project_id, scope.account_id);
+function artifactPath(id: string, slot: number, scope: ProjectScope) {
+  return withProject(`/v1/model-requests/${encodeURIComponent(id)}/artifacts/${slot}`, scope.project_id, scope.account_id);
 }

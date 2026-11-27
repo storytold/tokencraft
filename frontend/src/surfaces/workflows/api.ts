@@ -9,6 +9,11 @@ export function workflowEndpoint(scope: ProjectScope, id: string) {
   return `${projectRoot(scope)}/workflow-endpoints/${encodeURIComponent(id)}`;
 }
 
+export function workflowOutputPath(scope: ProjectScope, workflow: string, run: string, name: string) {
+  const path = `${workflowEndpoint(scope, workflow)}/runs/${encodeURIComponent(run)}/outputs/${encodeURIComponent(name)}`;
+  return path + scopeSuffix(scope);
+}
+
 function write(body: object, method = "POST", extra?: HeadersInit): RequestInit {
   return { method, headers: { "Content-Type": "application/json", ...extra }, body: JSON.stringify(body) };
 }
