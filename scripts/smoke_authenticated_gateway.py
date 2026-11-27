@@ -1,6 +1,7 @@
-"""Verify one authenticated image request against the bundled TokenCraft connector."""
+"""Verify a saved TokenCraft receipt or run one bundled image request."""
 
 import argparse
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from http.client import HTTPConnection, HTTPSConnection
 import json
@@ -9,12 +10,13 @@ import re
 from secrets import token_hex
 import ssl
 from time import monotonic, sleep
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 
 OFFER = "example_image"
 UPSTREAM_MODEL = "example-image"
 MAX_RESPONSE = 2 * 1024 * 1024
+MEDIA_TYPES = {"images": "image/png", "video": "video/mp4", "audio": "audio/wav", "mesh": "model/gltf-binary"}
 
 
 def origin(value):
@@ -37,7 +39,7 @@ class Gateway:
         self.tls = tls
         self.private_api = private_api
 
-    def request(self, path, expected=200, *, body=None, idempotency_key=None):
+    def request(self, path, expected=200, *, body=None, idempotency_key=None, max_bytes=MAX_RESPONSE):
         host, port = self.address.hostname, self.address.port
         if self.address.scheme == "https":
             connection = HTTPSConnection(host, port, timeout=8, context=self.tls)
@@ -61,8 +63,8 @@ class Gateway:
                 directives = {part.strip().lower() for value in policies for part in value.split(",")}
                 require(len(policies) == 1 and {"private", "no-store"} <= directives,
                         f"{path.split('?')[0]} did not return a private, non-storable response")
-            raw = response.read(MAX_RESPONSE + 1)
-            if len(raw) > MAX_RESPONSE:
+            raw = response.read(max_bytes + 1)
+            if len(raw) > max_bytes:
                 raise RuntimeError("Gateway response exceeded the smoke check size limit")
             return raw, response.headers
         finally:
@@ -135,15 +137,30 @@ def wait_for_result(gateway, path):
     raise RuntimeError("The smoke request did not complete before the deadline")
 
 
+def read_artifact(gateway, path, output, slot, media_type):
+    artifact_path = f"{path}/artifacts/{slot}"
+    require(output["url"] == artifact_path and output["content_type"] == media_type,
+            "Unexpected artifact path or media type")
+    artifact = output["artifact"]
+    limit = MAX_RESPONSE if media_type == "image/png" else 8 * 1024 * 1024
+    size = artifact["byte_length"]
+    require(artifact["slot"] == slot and isinstance(size, int) and 0 < size <= limit,
+            "Invalid artifact slot or size")
+    data, headers = gateway.request(artifact_path, max_bytes=size)
+    require(headers.get_content_type() == media_type and len(data) == size,
+            "The artifact response does not match its recorded media type and size")
+    digest = artifact["sha256"]
+    require(headers.get_all("X-TokenCraft-Content-Sha256") == [digest],
+            "The artifact integrity header did not match the stored digest")
+    require(sha256(data).hexdigest() == digest, "The artifact digest did not match")
+    return data
+
+
 def verify_artifact(gateway, path):
     result, _ = gateway.json(path + "/result")
     (image,) = result["result"]["images"]
-    artifact_path = path + "/artifacts/0"
-    require(image["url"] == artifact_path, "Unexpected artifact path")
-    data, headers = gateway.request(artifact_path)
-    require(headers.get_content_type() == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"),
-            "The result is not a PNG")
-    require(sha256(data).hexdigest() == image["artifact"]["sha256"], "The artifact digest did not match")
+    data = read_artifact(gateway, path, image, 0, MEDIA_TYPES["images"])
+    require(data.startswith(b"\x89PNG\r\n\x1a\n"), "The result is not a PNG")
 
 
 def verify_evidence(gateway, request_id, path, run_id, trace_id):
@@ -167,32 +184,100 @@ def verify_evidence(gateway, request_id, path, run_id, trace_id):
             "Usage did not record one successful, zero-cost request and one output")
 
 
+def verify_saved_result(gateway, path):
+    document, _ = gateway.json(path + "/result")
+    result = document["result"]
+    artifacts = []
+    if "text" in result:
+        require(isinstance(result["text"], str), "The saved chat result does not contain text")
+    else:
+        kinds = [kind for kind in MEDIA_TYPES if kind in result]
+        require(len(kinds) == 1, "The saved result has an unknown media format")
+        kind = kinds[0]
+        outputs = result[kind] if kind == "images" else [result[kind]]
+        require(isinstance(outputs, list) and 1 <= len(outputs) <= 8, "The saved result has an invalid output count")
+        for slot, output in enumerate(outputs):
+            read_artifact(gateway, path, output, slot, MEDIA_TYPES[kind])
+            artifacts.append(f"{path}/artifacts/{slot}")
+    fingerprint = sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
+    return fingerprint, artifacts
+
+
+def verify_saved_receipt(gateway, request_id):
+    path = f"/v1/requests/{request_id}"
+    state, _ = gateway.json(path)
+    require(state["id"] == request_id and state["status"] == "succeeded",
+            "Choose an existing successful request with an available provider result")
+    trace_id = (state.get("correlation") or {}).get("trace_id")
+    require(isinstance(trace_id, str) and re.fullmatch(r"[0-9a-f]{32}", trace_id),
+            "The saved request has no gateway trace ID")
+    trace_path = path + "/trace"
+    trace, _ = gateway.json(trace_path)
+    require(trace["correlation"]["trace_id"] == trace_id
+            and trace["provider_path"]["admitted_offer_id"] == state["quote"]["selected_offer_id"],
+            "The saved trace does not match the request and route")
+    history_path = "/v1/requests?" + urlencode({"trace_id": trace_id, "status": "succeeded"})
+    history, _ = gateway.json(history_path)
+    require([item["id"] for item in history["requests"]] == [request_id],
+            "Scoped history did not return the saved request")
+
+    accepted = next((event["at"] for event in state["events"] if event["kind"] == "accepted"), None)
+    require(accepted is not None, "The saved request has no admission timestamp")
+    day = datetime.fromisoformat(accepted).astimezone(timezone.utc).date()
+    window = {"from": day.isoformat(), "to": (day + timedelta(days=1)).isoformat()}
+    scope = {field: state[field] for field in ("app_ref", "client_ref") if state.get(field) is not None}
+    usage_path = "/v1/usage?" + urlencode({**window, **scope})
+    usage, _ = gateway.json(usage_path)
+    require(usage["project_id"] == state["project_id"] and usage["window"] == window
+            and all(usage.get(field) == value for field, value in scope.items()),
+            "Usage did not preserve the saved request scope and date filters")
+    require(usage["totals"]["succeeded"] >= 1, "Usage did not include successful work in the saved request scope")
+    fingerprint, artifacts = verify_saved_result(gateway, path)
+
+    anonymous = Gateway(gateway.address, None, gateway.tls, private_api=True)
+    for route in (path, trace_path, path + "/result", history_path, usage_path, *artifacts):
+        error, _ = anonymous.json(route, 401)
+        require(error["error"]["code"] == "unauthorized", "An anonymous read did not return a gateway denial")
+    return state["project_id"], trace_id, fingerprint
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", required=True, type=origin)
-    parser.add_argument("--peer", type=origin, help="Second trusted origin for replay and reads")
+    parser.add_argument("--peer", type=origin, help="Second trusted origin for replay or read-only verification")
+    parser.add_argument("--request-id", help="Verify an existing successful receipt using only GET requests")
     parser.add_argument("--ca", help="PEM certificate bundle for a private HTTPS ingress")
     parser.add_argument("--revision", help="Verify this Git SHA on both gateways before sending a scoped key")
     args = parser.parse_args()
     if args.revision is not None and not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         parser.error("--revision must be a full lowercase Git SHA")
+    if args.request_id is not None and not re.fullmatch(r"req_[A-Za-z0-9]{1,124}", args.request_id):
+        parser.error("--request-id must be a native TokenCraft request ID")
     key = os.environ.get("TOKENCRAFT_SMOKE_API_KEY", "")
     if not re.fullmatch(r"[A-Za-z0-9._~-]{16,256}", key):
         parser.error("set TOKENCRAFT_SMOKE_API_KEY to a scoped project API key")
-    run_id = "release-smoke-" + token_hex(12)
     try:
         tls = ssl.create_default_context(cafile=args.ca)
         if args.revision is not None:
             verify_revision(args.api, tls, args.revision)
             if args.peer is not None and args.peer != args.api:
                 verify_revision(args.peer, tls, args.revision)
-        first = Gateway(args.api, key, tls, private_api=args.revision is not None)
-        peer = Gateway(args.peer, key, tls, private_api=args.revision is not None) if args.peer else first
+        private_api = args.revision is not None or args.request_id is not None
+        first = Gateway(args.api, key, tls, private_api=private_api)
+        peer = Gateway(args.peer, key, tls, private_api=private_api) if args.peer and args.peer != args.api else first
+        if args.request_id is not None:
+            found = verify_saved_receipt(first, args.request_id)
+            if peer is not first:
+                require(found == verify_saved_receipt(peer, args.request_id),
+                        "The origins returned different saved receipts or results")
+            print("Saved receipt, result, trace, scoped history, usage, and anonymous denials passed.")
+            return
+        run_id = "release-smoke-" + token_hex(12)
         request_id, path, trace_id = admit(first, peer, run_id)
         wait_for_result(peer, path)
         verify_artifact(peer, path)
         verify_evidence(peer, request_id, path, run_id, trace_id)
-    except (OSError, RuntimeError, ValueError, KeyError) as error:
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as error:
         parser.exit(1, f"Smoke check failed: {error}\n")
     print("Receipt replay, PNG digest, connector trace, request history, and usage passed.")
 

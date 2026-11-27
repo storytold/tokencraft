@@ -65,7 +65,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 
 1. Pause new submissions at ingress while the old API still serves status and results. Let active provider jobs and deliveries drain, then stop the old API and workers so the backup captures a stable recovery point.
 2. Retain the old image and deployment configuration. Back up PostgreSQL and record the corresponding recovery points for artifact storage, connector job state, and retained keys. Verify that the backup can be restored to a separate database before depending on it.
-3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
+3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress) against the live deployment before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
 A schema-70 fleet can move directly to schema 85 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
@@ -340,6 +340,16 @@ bash scripts/smoke_hosted_console.sh https://console.example.com https://api.exa
 ```
 
 The check compares both console copies and the running gateway with the release OpenAPI snapshot. It also compares the connector primitive registry at both origins and verifies the console catalog bytes. An unauthenticated request to `/v1/rate-limits` at both origins must return the gateway's `401` JSON response. This confirms that the route is mounted and that the console forwards it to an API, without needing an account or creating a job. Treat a mismatch as a failed release check even when both `/ready` probes pass.
+
+Before reopening submissions, pick an existing successful request with a gateway trace and a readable warm result. Inject a project key with `requests:read` and `usage:read` into `TOKENCRAFT_SMOKE_API_KEY`.
+
+```sh
+python3 -B scripts/smoke_authenticated_gateway.py \
+  --api https://api.example.com --peer https://console.example.com \
+  --revision "$source_revision" --request-id "$previous_request_id"
+```
+
+This mode uses GET requests to check the saved result, media digests, trace, scoped history, and usage for the UTC day of admission. With `--peer`, both origins must agree on the receipt identity and result. It repeats the scoped reads without a key and requires private, non-storable gateway denials. Omit `--peer` for a console that connects directly to the gateway rather than proxying API routes.
 
 For deployments with the bundled `example_image` connector, run the authenticated check with a dedicated project key in `TOKENCRAFT_SMOKE_API_KEY`. Grant it `requests:submit`, `requests:read`, and `usage:read`. Supply `--peer` only if that trusted origin serves the same deployment.
 

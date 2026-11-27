@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 from contextlib import ExitStack
 from hashlib import sha256
 from pathlib import Path
@@ -269,6 +270,13 @@ def rehearse(args, folder, stack):
         assert upgraded_handle and upgraded_handle != handle
         replay(api, upgraded_only, upgrade_headers, upgrade_body)
         verify_usage(api, "before-upgrade", "pending-upgrade", "after-upgrade")
+        reader, _ = smoke.call(api, base + "/service-principals" + query, 201, method="POST", headers=session,
+                               body={"name": "Read-only release smoke", "scopes": ["requests:read", "usage:read"]})
+        print(run(
+            sys.executable, "-B", root / "scripts/smoke_authenticated_gateway.py",
+            "--api", f"http://{smoke.HOST}:{api}", "--request-id", completed["id"],
+            settings=dict(env, TOKENCRAFT_SMOKE_API_KEY=reader["token"]),
+        ), flush=True)
         verify_legacy_delivery(api)
         assert psql(payload) == legacy_hex
     print("PASS the upgraded fleet loaded legacy connector state, finished queued and new work, and sent the legacy event", flush=True)
