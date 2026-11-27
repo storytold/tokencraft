@@ -25,10 +25,12 @@ def snapshot(observation, source, now, max_age=45):
         raise ValueError("cell needs a fresh database sample and matching worker bindings")
     if source["reserve_connections"] != cell["reserved_connections"]:
         raise ValueError("monitor and autoscaling database connection reserves must match")
+    maintenance = sample.get("maintenance")
     result = {
         "cell": name, "observed_at": min(sampled_at, external_at),
         "database": {"healthy": source["database_healthy"] is True,
-                     "additional_connections": sample["database_connections_available"]},
+                     "additional_connections": sample["database_connections_available"],
+                     "admissions_paused": maintenance.get("paused") if isinstance(maintenance, dict) else None},
     }
     seen_instances = set()
     for role, kind, columns in (

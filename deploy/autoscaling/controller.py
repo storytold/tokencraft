@@ -54,7 +54,7 @@ def validate_config(config):
     integer(config["connection_budget"], "connection_budget", minimum=minimum_connections)
 
 
-def signals(snapshot):
+def signals(snapshot, admissions_open):
     for role in ROLES:
         current = snapshot[role]
         desired = integer(current["desired"], f"{role}.desired")
@@ -83,7 +83,7 @@ def signals(snapshot):
     return {
         "api": (
             cpu >= 0.70 or (reader_slots > 0 and readers / reader_slots >= 0.75),
-            cpu <= 0.35 and readers == 0,
+            admissions_open and cpu <= 0.35 and readers == 0,
             "sustained API CPU or SSE occupancy",
         ),
         "worker": (
@@ -101,7 +101,7 @@ def decide(config, snapshot, previous, now):
         raise ValueError("controller state belongs to another cell")
     state = {
         "cell": config["cell"], "last_observed_at": None, "last_action_at": previous.get("last_action_at"),
-        "last_scaled_role": previous.get("last_scaled_role"), "roles": {},
+        "last_scaled_role": previous.get("last_scaled_role"), "admissions_paused": None, "roles": {},
     }
 
     def hold(reason):
@@ -112,16 +112,23 @@ def decide(config, snapshot, previous, now):
         raise ValueError("snapshot belongs to another cell")
     if type(sampled_at) not in (int, float) or not math.isfinite(sampled_at) or not 0 <= now - sampled_at <= MAX_SAMPLE_AGE:
         return hold("snapshot is stale or has an invalid timestamp")
+    database = snapshot["database"]
+    paused = database.get("admissions_paused")
+    if type(paused) is not bool:
+        paused = None
     prior_at = previous.get("last_observed_at")
     if prior_at is not None and sampled_at <= prior_at:
+        # A newer database read can share the same oldest contributing timestamp.
+        if sampled_at == prior_at and paused is not False:
+            previous = {**previous, "admissions_paused": paused}
         return {"decision": "hold", "reason": "waiting for a fresh snapshot"}, previous
     state["last_observed_at"] = sampled_at
-    database = snapshot["database"]
+    state["admissions_paused"] = paused
     if database["healthy"] is not True:
         return hold("database health guard is closed")
     free_connections = integer(database["additional_connections"], "database.additional_connections")
     try:
-        pressure = signals(snapshot)
+        pressure = signals(snapshot, paused is False)
     except ValueError as error:
         return hold(str(error))
     reserved = sum(snapshot[role]["desired"] for role in ROLES) * config["connections_per_replica"]
@@ -138,7 +145,7 @@ def decide(config, snapshot, previous, now):
         if history.get("desired") != count or history.get("replica_set") != replica_set:
             history = {}
         high_since = history.get("high_since", sampled_at) if high else None
-        low_since = history.get("low_since", sampled_at) if low else None
+        low_since = history.get("low_since") if low and previous.get("admissions_paused") is False else None
         if high and high_since is None:
             high_since = sampled_at
         if low and low_since is None:
@@ -155,6 +162,8 @@ def decide(config, snapshot, previous, now):
     if not actions:
         if remaining < config["connections_per_replica"]:
             return {"decision": "hold", "reason": "database connection headroom is below one replica"}, state
+        if paused is not False and config["api"].get("allow_scale_in") and snapshot["api"]["desired"] > config["api"]["min"]:
+            return hold("API scale-in requires a fresh observation of open admissions")
         return {"decision": "hold", "reason": "replica bounds, pressure windows, or cooldown have not triggered a change"}, state
     _, _, _, role, replicas, reason = min(actions)
     return {

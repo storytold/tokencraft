@@ -118,6 +118,8 @@ python3 -B deploy/autoscaling/controller.py --config policy.json --snapshot snap
 
 The adapter checks current split replica inventory, distinct authenticated process instance IDs, matching worker binding revisions, and fresh observations. The controller uses a digest of each role’s process roster to restart its pressure window after replacement. Upgrade to schema 86 and reapply the monitoring SQL before enabling this adapter. It scales on the oldest eligible submission, poll, or receipt lookup. The dispatch alert continues to measure submission age. Deployment health, CPU and supplier headroom still come from authoritative platform observations. A reachable provider or passing model probe cannot establish spare provider capacity. The adapter only emits observations. The existing controller owns scale decisions and actuation.
 
+API scale-in uses the admission state from the whole-cell database sample. Apply schema 88 and the updated monitoring SQL to enable that observation. Paused or unknown state clears the API scale-in window while scale-out continues to use the usual safeguards.
+
 ## Migrate the earlier operations view
 
 Old Setup and Providers Operations browser links return users to the Providers page. The account's dispatch policy is still editable there by authorized owners and administrators. For existing operator API clients, **TOKENCRAFT_ENABLE_LEGACY_OPERATIONS=true** on a privately routed gateway temporarily mounts the three previous monitoring reads at **/v1/setup/status**, **/v1/operations/queues**, and **/v1/operations/artifact-publication**. They retain their existing account authorization. The console uses the new private probes and aggregated sampler, and these compatibility paths are omitted from the consumer API reference.

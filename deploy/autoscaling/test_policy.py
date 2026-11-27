@@ -16,7 +16,7 @@ class PolicyTest(unittest.TestCase):
         }
         self.sample = {
             "cell": "test", "observed_at": 1000,
-            "database": {"healthy": True, "additional_connections": 40},
+            "database": {"healthy": True, "additional_connections": 40, "admissions_paused": False},
             "api": {"desired": 3, "ready": 3, "stable": True, "deployment_version": "11",
                     "cpu_fraction": 0.4, "sse_readers": 0, "sse_capacity": 96},
             "worker": {"desired": 2, "ready": 2, "stable": True, "deployment_version": "21", "active_tasks": 0,
@@ -97,6 +97,67 @@ class PolicyTest(unittest.TestCase):
         self.sample["api"].update(desired=2, ready=2)
         self.assertEqual(self.tick(state, 300)[0]["decision"], "hold")
 
+    def test_admission_pause_or_unknown_restarts_the_api_scale_in_window(self):
+        self.sample["api"]["cpu_fraction"] = 0.10
+        for observed in (True, None, 0, "false"):
+            with self.subTest(observed=observed):
+                self.sample["database"]["admissions_paused"] = False
+                state = {}
+                for offset in range(0, 300, 15):
+                    _, state = self.tick(state, offset)
+
+                self.sample["database"]["admissions_paused"] = observed
+                action, state = self.tick(state, 300)
+                self.assertEqual(action["decision"], "hold")
+                for offset in range(315, 615, 15):
+                    action, state = self.tick(state, offset)
+                    self.assertEqual(action["decision"], "hold")
+
+                self.sample["database"]["admissions_paused"] = False
+                for offset in range(615, 915, 15):
+                    action, state = self.tick(state, offset)
+                    self.assertEqual(action["decision"], "hold")
+                action, _ = self.tick(state, 915)
+                self.assertEqual((action["role"], action["replicas"]), ("api", 2))
+
+    def test_pause_at_the_same_external_timestamp_clears_scale_in_history(self):
+        self.sample["api"]["cpu_fraction"] = 0.10
+        state = {}
+        for offset in range(0, 300, 15):
+            _, state = self.tick(state, offset)
+        self.sample["database"]["admissions_paused"] = True
+        action, state = self.tick(state, 285)
+        self.assertEqual(action["decision"], "hold")
+        self.sample["database"]["admissions_paused"] = False
+        self.assertEqual(self.tick(state, 300)[0]["decision"], "hold")
+
+    def test_legacy_controller_state_cannot_carry_an_open_admissions_window(self):
+        self.sample["api"]["cpu_fraction"] = 0.10
+        state = {}
+        for offset in range(0, 300, 15):
+            _, state = self.tick(state, offset)
+        del state["admissions_paused"]
+        action, current = self.tick(state, 300)
+        self.assertEqual(action["decision"], "hold")
+        self.assertEqual(current["roles"]["api"]["low_since"], 1300)
+
+    def test_paused_and_legacy_observations_allow_scale_out(self):
+        for observed in (True, None):
+            with self.subTest(observed=observed):
+                if observed is None:
+                    self.sample["database"].pop("admissions_paused", None)
+                else:
+                    self.sample["database"]["admissions_paused"] = observed
+                self.sample["api"]["cpu_fraction"] = 0.88
+                self.sample["worker"].update(oldest_ready_age_seconds=61, active_tasks=8)
+                _, state = self.tick({}, 0)
+                action, _ = self.tick(state, 30)
+                self.assertEqual((action["role"], action["replicas"]), ("api", 4))
+                self.sample["api"]["cpu_fraction"] = 0.10
+                _, state = self.tick({}, 0)
+                action, _ = self.tick(state, 30)
+                self.assertEqual((action["role"], action["replicas"]), ("worker", 3))
+
     def test_missing_provider_health_does_not_enable_worker_scaling(self):
         source = {
             "cell": "test", "observed_at": 1000, "database_healthy": True, "reserve_connections": 20,
@@ -109,7 +170,8 @@ class PolicyTest(unittest.TestCase):
                        "local_bindings": [], "connector_bindings": ["1" * 64],
                        "poll_bindings": ["1" * 64, "2" * 64], "lookup_bindings": ["2" * 64]},
         }
-        database = {"additional_connections": 90, "eligible_sample": 3, "oldest_ready_age_seconds": 41}
+        database = {"additional_connections": 90, "eligible_sample": 3, "oldest_ready_age_seconds": 41,
+                    "admissions_paused": True}
         with patch("collect.time.time", return_value=1001), \
                 patch("collect.scrape", side_effect=lambda url, _: probes[url]), \
                 patch("collect.query_database", return_value=database) as query:
@@ -121,6 +183,7 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["api"]["sse_readers"], 24)
         self.assertEqual(snapshot["worker"]["oldest_ready_age_seconds"], 41)
         self.assertRegex(snapshot["api"]["replica_set"], r"^[0-9a-f]{64}$")
+        self.assertIs(snapshot["database"]["admissions_paused"], True)
 
         source["api"].update(desired=2, probe_urls=["api", "alias"])
         probes["alias"] = probes["api"].copy()

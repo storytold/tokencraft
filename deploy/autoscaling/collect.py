@@ -99,6 +99,7 @@ def collect(source, token, psql):
         "database": {
             "healthy": source["database_healthy"] is True,
             "additional_connections": database["additional_connections"],
+            "admissions_paused": database.get("admissions_paused"),
         },
     }
     for role in ROLES:

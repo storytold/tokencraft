@@ -53,20 +53,22 @@ def wait_for_db(pg_bin, directory, process):
 
 
 def check_queries(pg_bin, directory):
-    def query(*args):
+    def query(*args, role="capacity_test"):
         return subprocess.run([
-            pg_bin / "psql", "-XqAtw", "-h", directory, "-U", "capacity_test", "-d", "postgres",
+            pg_bin / "psql", "-XqAtw", "-h", directory, "-U", role, "-d", "postgres",
             "-v", "ON_ERROR_STOP=1", *args,
         ], env=ENV, check=True, capture_output=True, text=True).stdout.strip()
 
     migrations = sorted((HERE.parents[1] / "crates/db/migrations").glob("*.sql"))
     limit_index = next(index for index, path in enumerate(migrations)
                        if path.name.endswith("_gateway_submission_rate_limits.sql"))
+    gate_index = next(index for index, path in enumerate(migrations)
+                      if path.name.endswith("_gateway_admission_control.sql"))
     query("--single-transaction", *(arg for path in migrations[:limit_index] for arg in ("-f", path)))
     query("-c", "INSERT INTO accounts(id, placeholder_business_name, status) VALUES ('second', 'Existing', 'active')")
-    query("--single-transaction", *(arg for path in migrations[limit_index:] for arg in ("-f", path)))
+    query("--single-transaction", *(arg for path in migrations[limit_index:gate_index] for arg in ("-f", path)))
     assert query("-c", "SELECT * FROM gateway_submission_limit('second')") == "120|20|240||f"
-    print("PASS full PostgreSQL migration chain; an existing organization inherits the default limit")
+    print("PASS an existing organization inherits the default limit after migration")
 
     query("-c", """
         INSERT INTO accounts(id, placeholder_business_name, status)
@@ -121,14 +123,32 @@ def check_queries(pg_bin, directory):
 
     bindings = {"local": [], "connector": ["a" * 64], "poll": ["b" * 64], "lookup": ["c" * 64]}
 
-    def sample():
+    def sample(role="capacity_test"):
         return json.loads(query(
             "-v", "reserve_connections=10", "-v", f"bindings={json.dumps(bindings)}", "-f", HERE / "signals.sql",
+            role=role,
         ))
 
     measured = sample()
     assert measured["oldest_ready_age_seconds"] >= 30 and measured["eligible_sample"] == 1, measured
     assert measured["additional_connections"] > 0, measured
+    assert measured["admissions_paused"] is None
+    query("--single-transaction", *(arg for path in migrations[gate_index:] for arg in ("-f", path)))
+    assert sample()["admissions_paused"] is False
+    query("-c", """
+        CREATE ROLE capacity_collector LOGIN;
+        GRANT SELECT ON public.gateway_requests, public.gateway_provider_runs, public.gateway_dispatch_controls,
+            public.gateway_queue_cooldowns, public.gateway_connector_completions TO capacity_collector;
+        UPDATE public.gateway_admission_control SET paused = true;
+    """)
+    assert sample("capacity_collector")["admissions_paused"] is None
+    query("-c", "GRANT SELECT ON public.gateway_admission_control TO capacity_collector")
+    observed = sample("capacity_collector")
+    assert observed["admissions_paused"] is True and observed["eligible_sample"] == 1, observed
+    query("-c", "UPDATE public.gateway_admission_control SET paused = false")
+    assert sample("capacity_collector")["admissions_paused"] is False
+    assert query("-c", "SELECT has_table_privilege('capacity_collector', 'public.gateway_admission_control', 'UPDATE')") == "f"
+    print("PASS full migration chain; the standalone sampler sees pause with read access and preserves queue signals")
     query("-c", "INSERT INTO gateway_queue_cooldowns VALUES ('burst','project',repeat('a',64),'fixture',now() + interval '60 seconds')")
     assert sample()["eligible_sample"] == 0
     query("-c", "DELETE FROM gateway_queue_cooldowns; INSERT INTO gateway_dispatch_controls VALUES ('burst',1,true,'{}')")
@@ -169,6 +189,11 @@ def check_queries(pg_bin, directory):
     query("-v", "monitor_role=capacity_monitor", "-f", HERE.parent / "monitoring/install.sql")
     settings = json.dumps(bindings)
     providers = json.dumps(["fal"])
+    query("-c", "UPDATE public.gateway_admission_control SET paused = true")
+    whole_cell = json.loads(query("-c", "SET ROLE capacity_monitor; " +
+        f"SELECT tokencraft_monitor.sample('{providers}', '[]', '{settings}', 10, NULL, NULL)"))
+    assert whole_cell["maintenance"]["paused"] is sample("capacity_collector")["admissions_paused"] is True
+    query("-c", "UPDATE public.gateway_admission_control SET paused = false")
     monitored = json.loads(query("-c", "SET ROLE capacity_monitor; " +
         f"SELECT tokencraft_monitor.sample('{providers}', '[]', '{settings}', 10, 'burst', 'project')"))
     lanes = monitored["provider_work"]
@@ -183,7 +208,7 @@ def check_queries(pg_bin, directory):
         assert "permission denied" in error.stderr, error.stderr
     else:
         raise AssertionError("the invoker routine bypassed table permissions")
-    print("PASS monitor exposes scoped aggregate lanes through its restricted function")
+    print("PASS monitor and standalone sampler agree on pause; scoped queues remain available")
 
     query("-c", """
         INSERT INTO gateway_projects(id, account_id, name) VALUES ('overflow', 'second', 'Overflow fixture');

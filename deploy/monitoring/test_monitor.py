@@ -288,6 +288,12 @@ class IntegrationLogic(unittest.TestCase):
                   "worker": {"replicas": ["work"], "desired": 1, "stable": True, "deployment_version": "y"}}
         computed = scaling_snapshot(obs, source, 115)
         self.assertEqual(computed["observed_at"], 108)
+        self.assertIsNone(computed["database"]["admissions_paused"])
+        maintenance = obs["cells"]["lab"]["sample"]
+        for paused in (True, False):
+            maintenance["maintenance"] = {"paused": paused}
+            source["admissions_paused"] = not paused
+            self.assertIs(scaling_snapshot(obs, source, 115)["database"]["admissions_paused"], paused)
         self.assertEqual(computed["worker"]["oldest_ready_age_seconds"], 95)
         self.assertEqual(computed["worker"]["eligible_sample"], 3)
         self.assertFalse(computed["worker"]["provider_headroom"])
