@@ -6,10 +6,19 @@ use db::SchemaState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cmd = std::env::args().nth(1).unwrap_or_default();
+    if cmd == "--version" {
+        println!(
+            "admin-cli {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TOKENCRAFT_SOURCE_REVISION").unwrap_or("unstamped")
+        );
+        return Ok(());
+    }
+
     // Env files by convention (crates/bin/admin-cli/config/…) — no hand-supplied vars needed.
     let _ = config::load_env_files("admin-cli");
     let cfg = config::Config::load()?;
-    let cmd = std::env::args().nth(1).unwrap_or_default();
 
     match cmd.as_str() {
         "migrate" => {
@@ -59,7 +68,7 @@ async fn main() -> Result<()> {
         }
         "" | "help" | "-h" | "--help" => {
             eprintln!(
-                "admin-cli <command>\n  migrate          apply pending migrations\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count"
+                "admin-cli <command>\n  --version        show the version and source revision\n  migrate          apply pending migrations\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count"
             );
         }
         other => bail!("unknown command: {other} (try `help`)"),

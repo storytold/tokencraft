@@ -56,6 +56,7 @@ jobs:
           rustup show
           postgres --version | grep -E '^postgres \(PostgreSQL\) 17\.'
           command -v initdb pg_ctl
+          python3 -B -m unittest discover -s scripts -p test_native_package.py
           options=()
           if [[ "$INCLUDE_CONSOLE" == true ]]; then
             options+=(--console-dir frontend/dist)

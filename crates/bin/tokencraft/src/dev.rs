@@ -34,6 +34,7 @@ const HELP: &str = "Usage: tokencraft dev [OPTIONS]
 Start a local TokenCraft gateway, PostgreSQL cluster, and bundled example connector.
 Use tokencraft mapping --help to manage provider field mappings.
 Use tokencraft backup --help to back up or restore stopped dev state.
+Use tokencraft --version to inspect the launcher build.
 
 Options:
   --state-dir PATH      Private state directory (default: .tokencraft-dev)
@@ -80,6 +81,11 @@ pub(crate) fn main() -> Result<()> {
     let mut args = env::args_os().skip(1);
     match args.next().as_deref().and_then(|arg| arg.to_str()) {
         None | Some("help" | "--help" | "-h") => print!("{HELP}"),
+        Some("--version") => println!(
+            "tokencraft {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("TOKENCRAFT_SOURCE_REVISION").unwrap_or("unstamped")
+        ),
         Some("mapping") => crate::mapping::run(args)?,
         Some("backup") => crate::backup::run(args, crate::backup::Action::Backup)?,
         Some("restore") => crate::backup::run(args, crate::backup::Action::Restore)?,

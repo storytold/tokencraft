@@ -52,11 +52,13 @@ Use `sha256sum -c` on systems with GNU coreutils. From a second terminal in the 
 
 Archives ending in `-console.tar.gz` include a `console/` directory. Run `./bin/tokencraft dev --console-dir ./console` and open the localhost console URL printed by the launcher. The same command accepts `--profile` for a reviewed catalog. Use `--web-port` when the default port 3000 is occupied.
 
-Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. Select **Include the compiled console** to build a console from the same commit. The workflow records that commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. The test runs the extracted `admin-cli` on a fresh database and compares its migration ledger and checksums with the launcher's. It also rehearses backup and restoration of a published workflow before publishing the local archive and checksum. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
+Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. Select **Include the compiled console** to build a console from the same commit. The workflow records that commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. The packager compares the version and source revision reported by each extracted binary with `VERSION.json` before starting the demo. It then runs `admin-cli` on a fresh database, compares its migration ledger and checksums with the launcher's, and rehearses backup and restoration of a published workflow. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
 
 ```sh
 python3 scripts/native_package.py --output ./native-packages
 ```
+
+To reuse binaries compiled with `TOKENCRAFT_SOURCE_REVISION`, pass that same revision to `--source-revision` along with `--bin-dir`. Run any of `tokencraft --version`, `api-gateway --version`, or `admin-cli --version` to inspect the build before packaging.
 
 ### Submit an example image from the terminal
 

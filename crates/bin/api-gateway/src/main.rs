@@ -4,8 +4,17 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
   let mut args = std::env::args_os().skip(1);
-  if args.next().is_some_and(|command| command == "catalog") {
-    return api_gateway::catalog_command(args).await;
+  match args.next() {
+    Some(command) if command == "catalog" => return api_gateway::catalog_command(args).await,
+    Some(command) if command == "--version" => {
+      println!(
+        "api-gateway {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("TOKENCRAFT_SOURCE_REVISION").unwrap_or("unstamped")
+      );
+      return Ok(());
+    }
+    _ => {}
   }
 
   // Env files first, so RUST_LOG from a file shapes the tracing filter below.

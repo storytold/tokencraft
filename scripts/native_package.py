@@ -90,7 +90,9 @@ def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT, sourc
     if offline:
         cargo.append("--offline")
     env = {**os.environ, "CARGO_TARGET_DIR": str(target), "SQLX_OFFLINE": "false"}
-    if source_revision is not None:
+    if source_revision is None:
+        env.pop("TOKENCRAFT_SOURCE_REVISION", None)
+    else:
         env["TOKENCRAFT_SOURCE_REVISION"] = source_revision
     directory = target / ("debug" if cargo_profile == "dev" else cargo_profile)
     with TemporaryDirectory(prefix="tc-build-", dir="/tmp") as temp:
@@ -232,6 +234,19 @@ def verify_mapping_example(package, env):
     print("PASS packaged CLI previewed the bundled image mapping")
 
 
+def verify_binary_versions(package, version, revision):
+    source = revision if revision is not None else "unstamped"
+    for name in BINARIES:
+        try:
+            result = run([package / "bin" / name, "--version"], cwd=package, env={"LC_ALL": "C"},
+                         stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(f"The packaged {name} could not report its build version.") from error
+        if result.stdout != f"{name} {version} ({source})\n".encode():
+            raise RuntimeError(f"The packaged {name} version or source revision differs from VERSION.json.")
+    print("PASS packaged launcher, gateway and admin-cli match VERSION.json")
+
+
 def smoke_package(archive, name, pg_bin):
     """Run the extracted launcher with an explicit tool PATH and disposable state."""
     with TemporaryDirectory(prefix="tc-package-") as temp:
@@ -239,6 +254,9 @@ def smoke_package(archive, name, pg_bin):
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(work, filter="data")
         package = work / name
+        manifest = json.loads((package / "VERSION.json").read_bytes())
+        revision = manifest["source_revision"]
+        verify_binary_versions(package, manifest["version"], revision)
         verify_documentation(package.resolve())
         plugin_args = [argument for provider in PLUGIN_FILES
                        for argument in ("--plugin-catalog", package / INFERENCE / provider / "catalog.example.json")]
@@ -282,7 +300,6 @@ def smoke_package(archive, name, pg_bin):
 
         with launch(state):
             verify_migrations(package, state, pg_bin, db_port, env)
-            revision = json.loads((package / "VERSION.json").read_bytes()).get("source_revision")
             if revision is not None:
                 with opener.open(api + "/ready", timeout=3) as readiness:
                     if readiness.headers.get_all("TokenCraft-Source-Revision") != [revision]:
@@ -348,7 +365,7 @@ def main():
     parser.add_argument("--profile", choices=("dev", "release"), default="release")
     parser.add_argument("--offline", action="store_true", help="Use cached Rust dependencies")
     args = parser.parse_args()
-    if args.source_revision and not re.fullmatch(r"[0-9a-f]{40}", args.source_revision):
+    if args.source_revision is not None and not re.fullmatch(r"[0-9a-f]{40}", args.source_revision):
         parser.error("--source-revision must be a full Git commit SHA")
     pg_bin = postgres_bin()
     version = tomllib.loads((ROOT / "crates/bin/tokencraft/Cargo.toml").read_text())["package"]["version"]
