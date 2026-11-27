@@ -62,6 +62,7 @@ function UsageWorkspace({ scope, projectName, boundClient, canSettle, canReadReq
   const timeline = useUsageReport(scope, dayFilters, null, revision, { allDays: true });
   const modelActivity = useUsageReport(scope, modelFilters, null, revision);
   const groupPage = useUsageReport(scope, groupFilters, after, revision, { enabled: !modelFirstPage && !dayFirstPage });
+  const denial = [timeline, modelActivity, groupPage].find((result) => result?.denied);
   const breakdown = modelFirstPage ? modelActivity : dayFirstPage ? timeline : groupPage;
   const report = timeline?.report;
   const chartError = timeline?.error ?? timeline?.seriesError;
@@ -87,6 +88,16 @@ function UsageWorkspace({ scope, projectName, boundClient, canSettle, canReadReq
     setCursors([]);
     setRevision((value) => value + 1);
   }
+
+  if (denial) return (
+    <Card className="space-y-3 p-5">
+      <div role="alert">
+        <h1 className="text-lg font-semibold">Usage unavailable</h1>
+        <p className="text-sm text-muted">{denial.error}</p>
+      </div>
+      <Button type="button" size="sm" variant="outline" onClick={refresh}>Retry usage</Button>
+    </Card>
+  );
 
   return (
     <div className="mx-auto min-w-0 max-w-7xl space-y-5">

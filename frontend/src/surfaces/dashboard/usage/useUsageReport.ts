@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { ApiError } from "@/lib/api";
 import type { ProjectScope } from "@/lib/gateway";
 import { comparisonApi, errorMessage, type UsageFilters, type UsageReport } from "@/surfaces/comparison/api";
 
-export type UsageResult = { report: UsageReport; groups?: UsageReport["groups"]; seriesError?: string; error?: never }
-  | { report?: never; groups?: never; seriesError?: never; error: string };
+const USAGE_READ_TIMEOUT_MS = 10_000;
+
+export type UsageResult = { report: UsageReport; groups?: UsageReport["groups"]; seriesError?: string; error?: never; denied?: never }
+  | { report?: never; groups?: never; seriesError?: never; error: string; denied?: boolean };
 
 export function useUsageReport(
   scope: ProjectScope, filters: UsageFilters, after: string | null, revision: number,
@@ -16,13 +19,15 @@ export function useUsageReport(
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
-    const signal = controller.signal;
+    const deadline = AbortSignal.timeout(USAGE_READ_TIMEOUT_MS);
+    const signal = AbortSignal.any([controller.signal, deadline]);
     let firstPage: UsageReport | undefined;
 
     async function load() {
       const report = await comparisonApi.usage(scope, filters, after, signal);
+      signal.throwIfAborted();
       const groups = [...report.groups];
-      if (allDays && report.next_after && !signal.aborted) {
+      if (allDays && report.next_after) {
         // A 92-day window can span two gateway pages. Keep the report used for
         // export intact and collect the full series independently of the table.
         firstPage = report;
@@ -36,13 +41,17 @@ export function useUsageReport(
           cursor = page.next_after;
         }
       }
-      if (!signal.aborted) setResult({ key, data: { report, groups } });
+      signal.throwIfAborted();
+      setResult({ key, data: { report, groups } });
     }
 
     void load().catch((failure) => {
-      if (signal.aborted) return;
-      const message = errorMessage(failure);
-      setResult({ key, data: firstPage ? { report: firstPage, seriesError: message } : { error: message } });
+      if (controller.signal.aborted) return;
+      const denied = failure instanceof ApiError && [401, 403, 404].includes(failure.status);
+      const message = deadline.aborted && !(failure instanceof ApiError)
+        ? "Timed out reading usage." : errorMessage(failure);
+      const data = firstPage && !denied ? { report: firstPage, seriesError: message } : { error: message, denied };
+      setResult({ key, data });
     });
     return () => controller.abort();
   }, [scope, filters, after, revision, key, enabled, allDays]);

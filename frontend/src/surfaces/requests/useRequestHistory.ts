@@ -3,6 +3,8 @@ import { ApiError } from "@/lib/api";
 import { comparisonApi, errorMessage, type HistoryFilters, type TracePage } from "@/surfaces/comparison/api";
 import type { ProjectScope } from "@/lib/gateway";
 
+const HISTORY_READ_TIMEOUT_MS = 10_000;
+
 type HistoryScope = { scope: ProjectScope; filters: HistoryFilters };
 type Position = HistoryScope & { cursors: string[] };
 type HistoryRead = HistoryScope & {
@@ -25,21 +27,25 @@ export function useRequestHistory(scope: ProjectScope, filters: HistoryFilters) 
 
   useEffect(() => {
     const controller = new AbortController();
-    const { signal } = controller;
+    const deadline = AbortSignal.timeout(HISTORY_READ_TIMEOUT_MS);
+    const signal = AbortSignal.any([controller.signal, deadline]);
     const read = { scope, filters, after, revision };
     void comparisonApi.history(scope, filters, after, signal).then((page) => {
-      if (signal.aborted) return;
+      if (controller.signal.aborted) return;
+      signal.throwIfAborted();
       if (filters.diagnostic && page.diagnostic !== filters.diagnostic) {
         setResult({ ...read, error: "This gateway does not support warning filters." });
         return;
       }
       setResult({ ...read, page, error: "" });
     }).catch((cause) => {
-      if (signal.aborted) return;
-      const error = filters.diagnostic && cause instanceof ApiError
-        && cause.status === 400 && cause.code === "request_failed"
-        ? "The gateway rejected the warning filters. Check the filter values and gateway version."
-        : errorMessage(cause);
+      if (controller.signal.aborted) return;
+      let error = deadline.aborted && !(cause instanceof ApiError)
+        ? "Timed out reading request history." : errorMessage(cause);
+      if (filters.diagnostic && cause instanceof ApiError
+          && cause.status === 400 && cause.code === "request_failed") {
+        error = "The gateway rejected the warning filters. Check the filter values and gateway version.";
+      }
       setResult({ ...read, error });
     });
     return () => controller.abort();
