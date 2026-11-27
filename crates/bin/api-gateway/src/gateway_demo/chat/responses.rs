@@ -170,6 +170,8 @@ impl InputMessage {
                 ("TokenCraft-Request-Id" = String, description = "Canonical native request identifier."),
             )
         ),
+        (status = 429, description = "The active-request, organization submission, or concurrent stream limit was reached.", body = ChatErrorResponse,
+            headers(("Retry-After" = u32, description = "Suggested retry delay in seconds for admission throttles."))),
         (status = 504, description = "The buffered request is still pending. Poll Location.", body = ChatErrorResponse),
         (status = "default", description = "Request error.", body = ChatErrorResponse),
     )

@@ -105,6 +105,80 @@ def verify_cache_policy(port, session, account, project):
     print("PASS session, audit, usage and errors are non-storable while public schema documents retain their TTL")
 
 
+
+@contextmanager
+def backpressure_api(gateway, directory, settings):
+    # API-only mode holds an admitted connector job without contacting a supplier.
+    catalog = json.loads(Path(settings["TOKENCRAFT_CORE_CATALOG"]).read_bytes())
+    image = next(offer for offer in catalog["offers"] if offer["id"] == "runtime_image")
+    image.pop("mock_latency_ms")
+    image.update(adapter="connector_queue", local_binding="backpressure", upstream_model="fixture-image")
+    catalog_file = directory / "backpressure-catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    bindings_file = directory / "backpressure-connectors.json"
+    bindings_file.write_text(json.dumps({"version": 1, "bindings": [{
+        "name": "backpressure", "revision": "fixture",
+        "origin": f"http://{HOST}:{loopback_port()}/", "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_BACKPRESSURE",
+    }]}))
+    settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(catalog_file),
+                    TOKENCRAFT_CONNECTORS=str(bindings_file), TOKENCRAFT_CONNECTOR_TOKEN_BACKPRESSURE=token_hex(32))
+    port = int(settings["API_GATEWAY_PORT"])
+    with service("backpressure-api", [gateway], directory, settings, lambda: ready(port)):
+        yield port
+
+
+def verify_admission_backpressure(port):
+    session, account, project = provision(port)
+    policy = f"/v1/routing-policy?account_id={account}&project_id={project}"
+    call(port, policy, 200, method="PUT", headers=session, body={
+        "expected_revision": 0, "policy": {"active_request_limits": {"total": 1}},
+    })
+    principal, _ = call(port, f"/v1/projects/{project}/service-principals?account_id={account}",
+                        201, method="POST", headers=session, body={
+        "name": "Active work limit fixture",
+        "scopes": ["requests:submit", "requests:read", "requests:cancel", "usage:read"],
+    })
+    bearer = {"Authorization": "Bearer " + principal["token"]}
+    image = {"model": "runtime_image", "task": "text_to_image", "prompt": "Synthetic queue fixture",
+             "aspect_ratio": "4:3", "count": 1}
+    quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=bearer, body={
+        "model": image["model"], "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"},
+    })
+
+    def submit(path, body, key, status):
+        return call(port, path, status, method="POST", body=body,
+                    headers={**bearer, "Idempotency-Key": key})
+
+    def cancel(receipt):
+        canceled, _ = call(port, f"/v1/requests/{receipt['id']}/cancel", 200,
+                           method="POST", headers=bearer, body={})
+        assert canceled["status"] == "canceled"
+
+    first_key, retry_key = token_hex(16), token_hex(16)
+    first, _ = submit("/v1/image", image, first_key, 202)
+    chat = {"model": "fixture-chat", "messages": [{"role": "user", "content": image["prompt"]}],
+            "max_completion_tokens": 8}
+    responses = {"model": "fixture-chat", "input": image["prompt"], "max_output_tokens": 8}
+    quoted = {"quote_id": quote["id"], "input": quote["input"], "image_prompt": image["prompt"]}
+    for path, body, key in (
+        ("/v1/image", image, retry_key), ("/v1/requests", quoted, token_hex(16)),
+        ("/v1/chat/completions", chat, token_hex(16)), ("/v1/responses", responses, token_hex(16)),
+    ):
+        denied, response = submit(path, body, key, 429)
+        assert denied["error"]["code"] == "active_request_limit", (path, denied)
+        assert response.get_all("Retry-After") == ["1"], (path, response)
+        assert_private_response(response)
+
+    assert submit("/v1/image", image, first_key, 200)[0] == first
+    cancel(first)
+    second, _ = submit("/v1/image", image, retry_key, 202)
+    assert first["id"] != second["id"] and submit("/v1/image", image, retry_key, 200)[0] == second
+    history, _ = call(port, "/v1/requests", 200, headers=bearer)
+    assert {row["id"] for row in history["requests"]} == {first["id"], second["id"]}
+    cancel(second)
+    print("PASS four admission styles return a non-storable 429 with Retry-After and rejected work can retry once capacity frees")
+
+
 def ready(port):
     return call(port, "/ready", 200)[0]["ready"] is True
 
@@ -1556,6 +1630,8 @@ def rehearse(gateway, admin, directory, *, verification=None):
             verification(gateway, directory, settings, session, account, project)
             return
 
+        with backpressure_api(gateway, directory, settings) as port:
+            verify_admission_backpressure(port)
         settings["TOKENCRAFT_ENABLE_LEGACY_OPERATIONS"] = "true"
         scoped_catalog = directory / "scoped-catalog.json"
         catalog = json.loads(Path(profile["catalog"]).read_bytes())

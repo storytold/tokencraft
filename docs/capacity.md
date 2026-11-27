@@ -85,7 +85,7 @@ To apply API scale-in, set `api.admission_service` to a libpq service for the sa
 | --- | --- |
 | Trusted cell ingress | Optional per-proxy threshold of 1,000 requests per 10 seconds per verified client address. Enable `TOKENCRAFT_LB_ENABLE_IP_RATE_LIMIT=true` after measuring shared NAT and callback traffic. Returns `429 ingress_rate_limit`. |
 | Durable submission | Each organization starts at **120 new submissions/minute** and a **20-submission burst** shared across all its projects and replicas. This covers native and model submissions, media, text, MCP, workflow draft tests and published runs, and their generation requests. |
-| Active work | Existing organization, project, and provider concurrency caps still apply. Queued, running, and unconfirmed requests occupy slots. |
+| Active work | Existing organization, project, and provider concurrency caps still apply. Queued, running, and unconfirmed requests occupy slots. New admissions rejected by an active-work cap receive `429 active_request_limit` and `Retry-After: 1`. |
 | Streams and reads | Existing per-replica 32-reader SSE limit still applies. Existing receipt replay, results, status, and quote operations consume no new-work credits. |
 | Event exports | Each API replica uses four shared slots for snapshot creation, snapshot page downloads, and live export polling. Excess calls receive `503 export_capacity` with `Retry-After: 2`. |
 | Worker and inference provider | Workers honor the existing submit, cooldown, and retry contracts. Provider and model headroom gate autoscaling. Organizations' submission limits and supplier quotas have independent ownership. |

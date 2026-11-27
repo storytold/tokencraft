@@ -40,7 +40,7 @@ pub enum ApiError {
   ArchiveRetrievalRequired(String),
   QuoteStale,
   BudgetExceeded,
-  ActiveRequestLimit,
+  ActiveRequestLimit { retry_after_seconds: Option<u8> },
   SubmissionRateLimit(i64),
   AdmissionsPaused,
   ProviderCredentialUnavailable,
@@ -61,7 +61,7 @@ impl ApiError {
       Self::Conflict(_) => StatusCode::CONFLICT,
       Self::ArchiveRetrievalRequired(_) => StatusCode::CONFLICT,
       Self::QuoteStale | Self::BudgetExceeded => StatusCode::CONFLICT,
-      Self::ActiveRequestLimit | Self::SubmissionRateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
+      Self::ActiveRequestLimit { .. } | Self::SubmissionRateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
       Self::ProviderCredentialUnavailable => StatusCode::CONFLICT,
       Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
       Self::AdmissionsPaused | Self::ExportCapacity | Self::ArtifactDownloadCapacity
@@ -80,7 +80,7 @@ impl ApiError {
       Self::ArchiveRetrievalRequired(_) => "archive_retrieval_required",
       Self::QuoteStale => "quote_stale",
       Self::BudgetExceeded => "monthly_budget_exceeded",
-      Self::ActiveRequestLimit => "active_request_limit",
+      Self::ActiveRequestLimit { .. } => "active_request_limit",
       Self::SubmissionRateLimit(_) => "submission_rate_limit",
       Self::AdmissionsPaused => "admissions_paused",
       Self::ProviderCredentialUnavailable => "provider_credential_unavailable",
@@ -96,7 +96,7 @@ impl ApiError {
     match self {
       Self::QuoteStale => QUOTE_STALE_MESSAGE,
       Self::BudgetExceeded => MONTHLY_BUDGET_MESSAGE,
-      Self::ActiveRequestLimit => ACTIVE_REQUEST_LIMIT_MESSAGE,
+      Self::ActiveRequestLimit { .. } => ACTIVE_REQUEST_LIMIT_MESSAGE,
       Self::SubmissionRateLimit(_) => SUBMISSION_RATE_MESSAGE,
       Self::AdmissionsPaused => ADMISSIONS_PAUSED_MESSAGE,
       Self::ProviderCredentialUnavailable => PROVIDER_CREDENTIAL_MESSAGE,
@@ -116,6 +116,9 @@ impl ApiError {
 
   pub(crate) fn retry_after(&self) -> Option<HeaderValue> {
     match self {
+      Self::ActiveRequestLimit { retry_after_seconds: Some(seconds) } => {
+        HeaderValue::from_str(&seconds.to_string()).ok()
+      }
       Self::SubmissionRateLimit(seconds) => HeaderValue::from_str(&seconds.to_string()).ok(),
       Self::AdmissionsPaused => Some(HeaderValue::from_static("5")),
       Self::ExportCapacity | Self::ArtifactDownloadCapacity => Some(HeaderValue::from_static("2")),

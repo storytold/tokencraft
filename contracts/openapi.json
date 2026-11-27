@@ -133,6 +133,26 @@
           },
           "202": {
             "description": "Request accepted"
+          },
+          "429": {
+            "description": "The active-request limit or organization submission rate was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Wait before retrying the same intent and idempotency key, in seconds."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -863,6 +883,26 @@
           },
           "202": {
             "description": "Request accepted"
+          },
+          "429": {
+            "description": "The active-request limit or organization submission rate was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Wait before retrying the same intent and idempotency key, in seconds."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2137,7 +2177,17 @@
             }
           },
           "429": {
-            "description": "The concurrent stream limit was reached.",
+            "description": "The active-request, organization submission, or concurrent stream limit was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Suggested retry delay in seconds for admission throttles."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2477,6 +2527,26 @@
           },
           "202": {
             "description": "Request accepted"
+          },
+          "429": {
+            "description": "The active-request limit or organization submission rate was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Wait before retrying the same intent and idempotency key, in seconds."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4363,7 +4433,17 @@
             }
           },
           "429": {
-            "description": "An organization, project, or provider active request limit was reached.",
+            "description": "The active-request limit or organization submission rate was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Wait before retrying the same intent and idempotency key, in seconds."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -5627,6 +5707,26 @@
               }
             }
           },
+          "429": {
+            "description": "The active-request, organization submission, or concurrent stream limit was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Suggested retry delay in seconds for admission throttles."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
           "504": {
             "description": "The buffered request is still pending. Poll Location.",
             "content": {
@@ -5894,6 +5994,26 @@
           },
           "202": {
             "description": "Request accepted"
+          },
+          "429": {
+            "description": "The active-request limit or organization submission rate was reached.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Wait before retrying the same intent and idempotency key, in seconds."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
           }
         },
         "security": [

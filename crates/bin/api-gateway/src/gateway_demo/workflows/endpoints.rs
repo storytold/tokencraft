@@ -413,10 +413,7 @@ async fn admit(
     let active = db::count_active_runs(&mut *tx, args.scope, application, MAX_ACTIVE_RUNS_PER_WORKFLOW)
         .await?;
     if active.workflow >= MAX_ACTIVE_RUNS_PER_WORKFLOW || active.application >= MAX_ACTIVE_RUNS_PER_APP {
-        return Ok((
-            [(header::RETRY_AFTER, HeaderValue::from_static("2"))],
-            ApiError::ActiveRequestLimit,
-        ).into_response());
+        return Err(ApiError::ActiveRequestLimit { retry_after_seconds: Some(2) });
     }
     let id = WorkflowRunId::generate();
     let content = progress.seal(args.security, &id)?;

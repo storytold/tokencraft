@@ -130,7 +130,7 @@ impl From<ApiError> for ChatError {
                 "provider_credential_unavailable",
                 PROVIDER_CREDENTIAL_MESSAGE.into(),
             ),
-            ApiError::ActiveRequestLimit => (
+            ApiError::ActiveRequestLimit { .. } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "active_request_limit",
                 ACTIVE_REQUEST_LIMIT_MESSAGE.into(),

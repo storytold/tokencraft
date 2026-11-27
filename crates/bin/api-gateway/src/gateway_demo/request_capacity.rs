@@ -58,7 +58,7 @@ pub(super) async fn enforce(
             .is_some_and(|limit| usage.total > i64::from(limit))
             || provider_limit.is_some_and(|limit| provider_usage > i64::from(*limit))
         {
-            return Err(ApiError::ActiveRequestLimit);
+            return Err(ApiError::ActiveRequestLimit { retry_after_seconds: Some(1) });
         }
     }
     Ok(())

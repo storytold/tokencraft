@@ -161,7 +161,8 @@ pub async fn quote(
                 ("TokenCraft-Trace-Id" = String, description = "Gateway trace ID, when recorded."),
             )),
         (status = 409, description = "Stale quote, changed intent, or exceeded estimated budget.", body = crate::error::GatewayError),
-        (status = 429, description = "An organization, project, or provider active request limit was reached.", body = crate::error::GatewayError),
+        (status = 429, description = "The active-request limit or organization submission rate was reached.", body = crate::error::GatewayError,
+            headers(("Retry-After" = u32, description = "Wait before retrying the same intent and idempotency key, in seconds."))),
         (status = "default", response = super::RequestErrorResponse),
     ),
 )]

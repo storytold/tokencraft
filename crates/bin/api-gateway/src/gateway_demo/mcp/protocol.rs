@@ -365,7 +365,7 @@ fn tool_result<T: Serialize>(id: ValueId, outcome: ApiResult<T>) -> Response {
                 | ApiError::ServiceUnavailable(text) => text,
                 ApiError::QuoteStale => crate::error::QUOTE_STALE_MESSAGE.into(),
                 ApiError::BudgetExceeded => crate::error::MONTHLY_BUDGET_MESSAGE.into(),
-                ApiError::ActiveRequestLimit => crate::error::ACTIVE_REQUEST_LIMIT_MESSAGE.into(),
+                ApiError::ActiveRequestLimit { .. } => crate::error::ACTIVE_REQUEST_LIMIT_MESSAGE.into(),
                 ApiError::SubmissionRateLimit(seconds) => format!(
                     "{}. Retry after {seconds}s with the same idempotency key.",
                     crate::error::SUBMISSION_RATE_MESSAGE,

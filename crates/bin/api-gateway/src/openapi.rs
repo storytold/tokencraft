@@ -195,6 +195,8 @@ macro_rules! document_media {
       responses(
         (status = 200, description = "Quote preview or idempotent request replay"),
         (status = 202, description = "Request accepted"),
+        (status = 429, description = "The active-request limit or organization submission rate was reached.", body = crate::error::GatewayError,
+          headers(("Retry-After" = u32, description = "Wait before retrying the same intent and idempotency key, in seconds."))),
       ),
       security(("project_api_key" = []))
     )]
@@ -298,6 +300,12 @@ mod tests {
       let receipt = &submit["responses"][status];
       assert!(receipt["headers"]["Location"].is_object());
       assert!(receipt["headers"]["TokenCraft-Request-Id"].is_object());
+    }
+
+    for route in ["/v1/requests", "/v1/image", "/v1/video", "/v1/audio", "/v1/3d", "/v1/chat/completions", "/v1/responses"] {
+      let throttle = &paths[route]["post"]["responses"]["429"];
+      assert_eq!(throttle["headers"]["Retry-After"]["schema"]["type"], "integer", "{route}");
+      assert!(throttle["content"]["application/json"]["schema"]["$ref"].is_string(), "{route}");
     }
 
     let trace = &paths["/v1/requests/{id}/trace"]["get"];

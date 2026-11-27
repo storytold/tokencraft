@@ -197,7 +197,7 @@ pub(super) async fn advance(runtime: &Runtime, row: db::Run) -> ApiResult<()> {
             });
             checkpoint(runtime, &row, state, "running", 1).await
         }
-        Err(ApiError::ActiveRequestLimit | ApiError::ServiceUnavailable(_) | ApiError::QuoteStale) => {
+        Err(ApiError::ActiveRequestLimit { .. } | ApiError::ServiceUnavailable(_) | ApiError::QuoteStale) => {
             checkpoint(runtime, &row, state, "queued", 3).await
         }
         Err(ApiError::SubmissionRateLimit(seconds)) => {

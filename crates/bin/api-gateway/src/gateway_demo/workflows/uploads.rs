@@ -75,7 +75,7 @@ impl Pending {
         }
         let (count, bytes) = db::upload_quota(&mut *tx, scope).await?;
         if count >= MAX_FILES || bytes + i64::from(size_bytes) > MAX_BYTES {
-            return Err(ApiError::ActiveRequestLimit);
+            return Err(ApiError::ActiveRequestLimit { retry_after_seconds: None });
         }
         let upload_id = WorkflowUploadId::generate();
         let key = db::UploadKey { scope, actor, id: &upload_id };
