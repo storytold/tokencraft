@@ -25,7 +25,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from postgres_tools import postgres_bin
 from smoke_native_backup import defer_workflow, packaged_delivery_tool, prepare_webhook, prepare_workflow, verify_backup
-from smoke_workflow_contract import provision, webhook_receiver
+from smoke_workflow_contract import call, provision, webhook_receiver
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -286,6 +286,11 @@ def verify_binary_versions(package, version, revision):
     print("PASS packaged launcher, gateway and admin-cli match VERSION.json")
 
 
+def verify_gateway_revision(headers, route, revision):
+    if revision is not None and headers.get_all("TokenCraft-Source-Revision") != [revision]:
+        raise RuntimeError(f"The packaged gateway source revision on {route} differs from VERSION.json.")
+
+
 def smoke_package(archive, name, pg_bin):
     """Run the extracted launcher with an explicit tool PATH and disposable state."""
     with TemporaryDirectory(prefix="tc-package-") as temp, ExitStack() as fixtures:
@@ -353,14 +358,17 @@ def smoke_package(archive, name, pg_bin):
             verify_migrations(package, state, pg_bin, db_port, env)
             if revision is not None:
                 with opener.open(api + "/ready", timeout=3) as readiness:
-                    if readiness.headers.get_all("TokenCraft-Source-Revision") != [revision]:
-                        raise RuntimeError("The packaged gateway source revision differs from VERSION.json.")
+                    verify_gateway_revision(readiness.headers, "/ready", revision)
             with opener.open(api + "/openapi.json", timeout=3) as running_contract:
+                verify_gateway_revision(running_contract.headers, "/openapi.json", revision)
                 if json.load(running_contract) != json.loads((package / "contracts/openapi.json").read_bytes()):
                     raise RuntimeError("The packaged API contract differs from the running gateway.")
             with opener.open(api + "/v1/schemas/primitives", timeout=3) as running_registry:
+                verify_gateway_revision(running_registry.headers, "/v1/schemas/primitives", revision)
                 if running_registry.read() != (package / PRIMITIVE_CONTRACT).read_bytes():
                     raise RuntimeError("The packaged connector primitive registry differs from the running gateway.")
+            _, denial = call(api_port, "/v1/auth/me", 401)
+            verify_gateway_revision(denial, "/v1/auth/me", revision)
             if console.is_dir():
                 verify_console(opener, f"http://localhost:{web_port}", package, api_port, revision)
             run([tool_dir / "bash", package / "examples/connector/smoke.sh", api],
