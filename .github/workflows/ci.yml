@@ -82,6 +82,8 @@ jobs:
         run: python3 -B scripts/smoke_trace_baseline.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify reliability and settled-cost ranking under mixed workload
         run: python3 -B scripts/smoke_route_performance.py target/debug/api-gateway target/debug/admin-cli
+      - name: Verify model advice across previews and admission
+        run: python3 -B scripts/smoke_advised_routing.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify webhook backlog isolation and recovery
         run: python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify profiled media runners and workflow reuse

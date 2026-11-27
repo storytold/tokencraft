@@ -447,6 +447,8 @@ Provider preferences take the first configured value from the request, project, 
 
 Reliability and settled-cost ranking use up to 100 matching outcomes per offer from the previous seven days in the same project and client scope. They match the workload, accepted binding, upstream model, served offer, and saved output shape. Both strategies require 20 samples per eligible offer in the group. Settled-cost ranking uses completed UTC days and compares outcomes served on the originally quoted offer at the current estimate. It requires a settlement for each sample, comparable output shapes, and at least one completion in the group.
 
+On scoped media endpoints, set `model: "advise"` to choose a concrete model using the gateway's catalog, eligibility policy, and scoped ranking. The project or organization can also enable this path when callers omit the model. To submit an advised preview, use the model returned in `input.model` and its `quote_id`.
+
 ## Balance API replicas within a cell
 
 Run the [HAProxy 3.2+ configuration](../deploy/haproxy/cell-api.cfg) on a private network between trusted HTTPS ingress and the API replicas for one cell. It works with one replica and discovers additional replicas from a private DNS record. A future organization router forwards to the selected cell’s proxy tier. Each proxy has one cell’s DNS target, so an unavailable API pool fails within that cell.

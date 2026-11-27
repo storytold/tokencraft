@@ -1,7 +1,7 @@
 """Verify scoped reliability and settled-cost ranking in a busy project's history."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
 from pathlib import Path
 from secrets import token_hex
@@ -32,7 +32,9 @@ def seed_history(directory, settings, donor):
             WHERE r.id = :'donor'
         ), fixtures AS MATERIALIZED (
             SELECT n, kind, r.account_id, r.project_id, r.actor_id, r.binding_digest, r.upstream_model,
-                   r.model, r.adapter, r.app_ref,
+                   coalesce(r.quote #>> CASE WHEN kind IN ('cheap', 'rerouted', 'noise')
+                       THEN '{candidates,0,model}'::text[] ELSE '{candidates,1,model}'::text[] END, r.model) AS model,
+                   r.adapter, r.app_ref,
                    CASE WHEN kind = 'other_client' THEN 'client-b' ELSE r.client_ref END AS client_ref,
                    CASE WHEN kind IN ('cheap', 'rerouted', 'noise') THEN 'cheap' ELSE 'steady' END AS offer_id,
                    CASE WHEN kind IN ('cheap', 'rerouted', 'noise') THEN 'self_hosted' ELSE 'fixture_alt' END AS provider,
@@ -91,7 +93,8 @@ def seed_history(directory, settings, donor):
             "-f", seed, cwd=directory, env=env)
 
 
-def verify(gateway, directory, settings, session, account, project):
+@contextmanager
+def ranking_api(gateway, directory, settings, *, steady_model="example_image"):
     port = int(settings["API_GATEWAY_PORT"])
     with ExitStack() as stack:
         connector = stack.enter_context(serve(Connector()))
@@ -103,14 +106,21 @@ def verify(gateway, directory, settings, session, account, project):
         offer = json.loads((ROOT / "examples/connector/catalog.json").read_bytes())["offers"][0]
         catalog = directory / "rank-catalog.json"
         catalog.write_text(json.dumps({"version": 1, "offers": [
-            {**offer, "id": name, "provider": provider, "pricing": {**offer["pricing"], "usd_nanos_per_image": price}}
-            for name, provider, price in [("cheap", "self_hosted", 100), ("steady", "fixture_alt", 200)]
+            {**offer, "id": name, "provider": provider, "model": model,
+             "pricing": {**offer["pricing"], "usd_nanos_per_image": price}}
+            for name, provider, model, price in [
+                ("cheap", "self_hosted", "example_image", 100), ("steady", "fixture_alt", steady_model, 200),
+            ]
         ]}))
         settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(catalog), TOKENCRAFT_CONNECTORS=str(bindings),
                         TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE=connector.token)
         settings.pop("TOKENCRAFT_LOCAL_CHAT_BINDINGS", None)
         stack.enter_context(service("rank-api", [gateway], directory, settings, lambda: ready(port)))
+        yield port, connector
 
+
+def verify(gateway, directory, settings, session, account, project):
+    with ranking_api(gateway, directory, settings) as (port, connector):
         def key(client, *, read=True):
             path = f"/v1/projects/{project}/service-principals?account_id={account}"
             scopes = ["requests:submit", "requests:read"] if read else ["requests:submit"]

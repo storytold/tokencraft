@@ -6,11 +6,13 @@ use axum::http::{header::AUTHORIZATION, HeaderMap, Method};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use db_queries::gateway_requests::read_snapshot;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use super::access::{self, project_key_suffix, GatewayCaller, Permission, ScopeQuery};
 use super::adaptive::{self, AdvisorRoute, AdvisorSelection, AdvisorSource};
+use super::availability::{AvailabilityInput, RouteAvailability};
 use super::catalog::Provider;
 use super::catalog_refresh::CatalogStore;
 use super::data_handling::DataRequirements;
@@ -272,41 +274,27 @@ async fn run(gateway: &MediaGateway, request: Request) -> ApiResult<Response> {
         admission.validate_prompts()?;
         let scope = access.for_client(admission.client_ref.as_deref())?;
         admission.input.normalize()?;
-        let decision = match &admission.selection {
-            QuoteSelection::Advised(selection) => adaptive::select(AdvisorRoute {
-                pool, scope, catalog: &catalog, providers: gateway.providers.as_deref(),
-                selection, input: &admission.input,
-            }).await?,
-            _ => None,
-        };
-        if let Some(advice) = &decision {
-            // A preview returns a concrete model so execution can replay the quote without AI.
-            admission.input.model = advice.model.clone();
-            admission.input.min_quality = None;
-            admission.input.min_usage_accounts = None;
+        let providers = gateway.providers.as_deref();
+        let mut tx = pool.begin().await?;
+        read_snapshot(&mut *tx).await?;
+        let policies = Policies::load(&mut *tx, scope).await?;
+        if let QuoteSelection::Advised(selection) = &admission.selection {
+            selection.validate_policy(&policies)?;
         }
-        let policies = Policies::load(pool, scope).await?;
-        let availability = super::availability::RouteAvailability::for_pool(
-            pool, super::availability::AvailabilityInput {
-                scope, catalog: &catalog, providers: gateway.providers.as_deref(),
-                quote: &admission.input, policies: &policies,
-            },
-        ).await?;
+        let availability = RouteAvailability::load(&mut *tx, AvailabilityInput {
+            scope, catalog: &catalog, providers, quote: &admission.input, policies: &policies,
+        }).await?;
         let quote = requests::media_quote(
-            &catalog,
-            admission.input,
-            scope,
-            &policies,
-            gateway.providers.as_deref(),
-            &availability,
+            &catalog, admission.input, scope, &policies, providers, &availability,
         )?;
-        let mut quote = super::route_performance::rank(pool, scope, &catalog, gateway.providers.as_deref(), quote).await?;
-        if matches!(admission.selection, QuoteSelection::Advised(_))
-            && decision.is_some() != quote.selected_offer_id.is_some()
-        {
-            return Err(ApiError::Conflict("model eligibility changed; preview the request again".into()));
-        }
-        quote.advisor = decision;
+        let ranked = super::route_performance::rank(&mut *tx, scope, &catalog, providers, quote).await?;
+        let mut quote = match admission.selection {
+            QuoteSelection::Advised(selection) => adaptive::concrete_quote(&mut tx, AdvisorRoute {
+                scope, catalog: &catalog, providers, policies: &policies, availability: &availability,
+            }, ranked, selection.source).await?,
+            _ => ranked,
+        };
+        tx.commit().await?;
         gateway.quote_seals.seal(&mut quote, scope)?;
         super::route_performance::apply_visibility(&access, &mut quote);
         return Ok(Json(catalog.model_quote(quote)).into_response());

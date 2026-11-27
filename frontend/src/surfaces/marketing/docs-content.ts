@@ -255,7 +255,7 @@ export function buildDocs({ baseUrl, demo, keyPath }: { baseUrl: string; demo: b
           id: "policy-automatic-models", title: "Automatic model selection",
           paragraphs: [
             "Rating and usage minimums apply when the request uses `model: auto` or an advised selection. Each minimum follows request, project, then organization precedence. For example, a project value of 6 takes priority over an organization value of 8 when the request leaves the rating unset. A supplied request value of 4 takes priority over both.",
-            "Model Advisor starts off at the gateway. A project can inherit the organization’s Advisor setting or set its own. When enabled, a scoped media request that omits the model can send its prompt and a shortlist of eligible models to the configured Advisor. Named models and automatic selection skip this step.",
+            "A scoped media request can set `model: advise` to select a concrete model using the gateway’s catalog, project policy, and scoped ranking. A project can inherit the organization’s Model Advisor setting or set its own to apply this behavior when callers omit the model.",
             "A rating minimum requires at least 10 community ratings. Enter 6 for the equivalent of 3 out of 5 stars. Usage counts organizations with a successful request for that model in the past 30 days.",
           ],
           keywords: ["automatic model selection", "model auto", "min_quality", "ratings", "min_usage_accounts"],

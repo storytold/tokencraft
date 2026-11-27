@@ -1,21 +1,15 @@
-
-use db_queries::{
-    gateway_requests::RequestScope,
-};
+use db_queries::gateway_requests::RequestScope;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    availability::{AvailabilityInput, RouteAvailability},
-    catalog::{digest, Catalog},
+    availability::RouteAvailability,
+    catalog::Catalog,
     providers::ProviderRuntime,
-    quote::{Quote, QuoteInput, Reason},
-    requests,
+    quote::Quote,
+    requests, route_performance,
     routing_policy::Policies,
 };
-use crate::{
-    error::{ApiError, ApiResult},
-};
-
+use crate::error::{ApiError, ApiResult};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -48,43 +42,37 @@ pub struct AdvisorDecision {
 }
 
 pub(super) struct AdvisorRoute<'a, 'scope> {
-    pub pool: &'a db::PgPool,
     pub scope: RequestScope<'scope>,
     pub catalog: &'a Catalog,
     pub providers: Option<&'a ProviderRuntime>,
-    pub selection: &'a AdvisorSelection,
-    pub input: &'a QuoteInput,
+    pub policies: &'a Policies,
+    pub availability: &'a RouteAvailability,
 }
 
-pub(super) async fn select(route: AdvisorRoute<'_, '_>) -> ApiResult<Option<AdvisorDecision>> {
-    let policies = Policies::load(route.pool, route.scope).await?;
-    route.selection.validate_policy(&policies)?;
-    let availability = RouteAvailability::for_pool(route.pool, AvailabilityInput {
-        scope: route.scope,
-        catalog: route.catalog,
-        providers: route.providers,
-        quote: route.input,
-        policies: &policies,
-    }).await?;
-    let quote = requests::media_quote(
-        route.catalog, route.input.clone(), route.scope, &policies, route.providers, &availability,
-    )?;
-    let Some(model) = quote.selected_offer_id.as_ref().and_then(|id| {
-        quote.candidates.iter().find(|candidate| &candidate.offer_id == id)?.model.clone()
+pub(super) async fn concrete_quote(
+    connection: &mut sqlx::PgConnection,
+    route: AdvisorRoute<'_, '_>,
+    ranked: Quote,
+    source: AdvisorSource,
+) -> ApiResult<Quote> {
+    let Some(model) = ranked.selected_offer_id.as_ref().and_then(|id| {
+        ranked.candidates.iter().find(|candidate| &candidate.offer_id == id)?.model.clone()
     }) else {
-        return Ok(None);
+        return Ok(ranked);
     };
-    Ok(Some(AdvisorDecision { model, source: route.selection.source, used_advisor: false }))
-}
 
-pub(super) fn apply(quote: &mut Quote, decision: AdvisorDecision) -> ApiResult<()> {
-    let position = quote.candidates.iter().position(|candidate| {
-        candidate.reason == Reason::Eligible && candidate.model.as_deref() == Some(decision.model.as_str())
-    }).ok_or_else(|| ApiError::Conflict("the advised model no longer meets the routing requirements".into()))?;
-
-    quote.candidates[..=position].rotate_right(1);
-    quote.selected_offer_id = Some(quote.candidates[0].offer_id.clone());
-    quote.id = format!("quo_{}", digest(format!("advisor-v1:{}:{}", quote.id, decision.model)));
-    quote.advisor = Some(decision);
-    Ok(())
+    // Use the same named-model quote that a client can submit after previewing.
+    let mut input = ranked.input;
+    input.model = model.clone();
+    input.min_quality = None;
+    input.min_usage_accounts = None;
+    let quote = requests::media_quote(
+        route.catalog, input, route.scope, route.policies, route.providers, route.availability,
+    )?;
+    if quote.selected_offer_id.is_none() {
+        return Err(ApiError::Conflict("the advised model no longer meets the routing requirements".into()));
+    }
+    let mut quote = route_performance::rank(connection, route.scope, route.catalog, route.providers, quote).await?;
+    quote.advisor = Some(AdvisorDecision { model, source, used_advisor: false });
+    Ok(quote)
 }

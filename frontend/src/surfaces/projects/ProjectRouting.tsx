@@ -281,7 +281,7 @@ function PolicyEditor({ accountId, projectId, layer, offers = [] }: { accountId:
               Rating and usage minimums narrow automatic and advised selection. Each threshold resolves from the request, project, then organization.
             </PolicyInfo>}>
             <PolicyChoice title="Model Advisor" name="advisor-enabled" topic="policy-automatic-models"
-              help="Applies to scoped image, video, audio, and 3D requests. Advised requests can send their prompt to the configured Advisor. A named model or auto skips the Advisor."
+              help="Selects a concrete model for scoped image, video, audio, and 3D requests using the gateway’s catalog, eligibility rules, and ranking."
               initialValue={policy.advisor_enabled == null ? (layer === "organization" ? "off" : "") : policy.advisor_enabled ? "on" : "off"}
               options={[
                 ...(layer === "project" ? [{ value: "", label: "Use organization default" }] : []),

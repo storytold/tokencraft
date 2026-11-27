@@ -393,20 +393,6 @@ async fn submit_inner(
         actor_id: &access.actor_id,
         idempotency_digest: &idempotency_digest,
     };
-    let advised = if let QuoteSelection::Advised(selection) = &request.selection {
-        // Completed retries skip the Advisor. Another check under the admission lock closes the race.
-        if let Some(accepted) = replay(pool, key, &intent).await? {
-            return Ok((accepted, true));
-        }
-        let scope = RequestScope { client_ref: client, ..key.scope };
-        Some(super::adaptive::select(super::adaptive::AdvisorRoute {
-            pool, scope, catalog, providers, selection, input: &request.input,
-        }).await?.ok_or_else(|| {
-            ApiError::BadRequest("no eligible model matches the advised request".into())
-        })?)
-    } else {
-        None
-    };
     // Admission limits use fresh reads after acquiring their locks.
     let mut tx = pool
         .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
@@ -465,8 +451,18 @@ async fn submit_inner(
         catalog.scoped_quote(request.input, key.scope, &policies, &availability, target)?
     };
     let evidence_scope = RequestScope { client_ref: client, ..key.scope };
-    let mut quote =
+    let ranked =
         super::route_performance::rank(&mut *tx, evidence_scope, catalog, providers, quote).await?;
+    let mut quote = match &request.selection {
+        QuoteSelection::Advised(selection) => super::adaptive::concrete_quote(
+            &mut tx,
+            super::adaptive::AdvisorRoute { scope: evidence_scope, catalog, providers,
+                policies: &policies, availability: &availability },
+            ranked,
+            selection.source,
+        ).await?,
+        _ => ranked,
+    };
     let mut legacy_quote = false;
     if let QuoteSelection::Declared(quote_id) | QuoteSelection::DeclaredMedia(quote_id) =
         &request.selection
@@ -482,9 +478,6 @@ async fn submit_inner(
             }
             legacy_quote = true;
         }
-    }
-    if let Some(decision) = advised {
-        super::adaptive::apply(&mut quote, decision)?;
     }
     quote.chat_options = request.chat_options;
     quote.profile = Some(profile);
