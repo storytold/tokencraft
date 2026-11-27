@@ -58,7 +58,7 @@ Unset the age settings to leave scheduling and retirement off. Workers retry una
 
 ## Recover an export or sync
 
-When an export reaches a cold partition, the gateway first returns any verified records that precede it. Follow the returned cursor. If the next event requires the cold object, the export returns HTTP `409` with `archive_retrieval_required`.
+When a page has verified records, the gateway spends up to one second on additional archive reads before returning the available records. A cold partition or unavailable archive storage also ends the page early. Follow the returned cursor. If the first event on the next page requires a cold object, the export returns HTTP `409` with `archive_retrieval_required`. If storage is unavailable, it returns HTTP `503`. Retry from the same cursor when storage recovers.
 
 A project administrator can retrieve the object through the storage provider and call the restore endpoint once it is readable. With gateway retrieval enabled, the admin can send `POST /v1/archives/{id}/restore?account_id=…&project_id=…&retrieve=true` with a session and the exact `Content-Type: application/json` header. The gateway requests a Standard retrieval with a one-day temporary copy and checks for availability for up to 48 hours. After an unconfirmed send or worker restart, it checks the original object's restore metadata before trying again. A retrieval permits up to three submissions. The gateway verifies the downloaded archive before it opens a download window. [S3 RestoreObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_RestoreObject.html) · [S3 HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)
 

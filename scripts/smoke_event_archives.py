@@ -29,14 +29,22 @@ class ColdArchiveHandler(BucketHandler):
         requested = urlsplit(self.path).path
         with self.server.lock:
             self.server.read_paths.append(requested)
-            selected_cold = requested in self.server.cold_paths
-        if not selected_cold and not self.server.cold.is_set():
+            fault = self.server.read_faults.get(requested)
+        if fault is None and not self.server.cold.is_set():
             return super().do_GET()
         path = self.signed_path()
         with self.server.lock:
             if not path or path not in self.server.objects:
                 self.reply(404)
                 return
+        if fault == "unavailable":
+            self.reply(503)
+            return
+        if isinstance(fault, Event):
+            if not fault.wait(8):
+                self.reply(503)
+                return
+            return super().do_GET()
         if self.server.hold_verification.is_set():
             self.server.verification_started.set()
             if not self.server.release_verification.wait(7):
@@ -195,20 +203,23 @@ def verify_later_cold_archive(port, project, auth, bucket, first, second, third)
     paths = (f"/v1/exports/{snapshot['id']}/data", "/v1/exports/events")
 
     @contextmanager
-    def cold_object(archive):
+    def fault_object(archive, fault="cold"):
         with bucket.lock:
             path, = (path for path in bucket.objects if archive in path)
-            bucket.cold_paths.add(path)
+            bucket.read_faults[path] = fault
             bucket.read_paths.clear()
         try:
             yield path
         finally:
             with bucket.lock:
-                bucket.cold_paths.remove(path)
+                bucket.read_faults.pop(path)
+            if isinstance(fault, Event):
+                fault.set()
 
-    def read(path, *, after=None, status=200):
+    def read(path, *, after=None, status=200, timeout=5):
         query = {"project_id": project, **({"after": after} if after else {})}
-        return call(port, path + "?" + urlencode(query), status, headers=auth, max_bytes=MAX_ARCHIVE_BYTES)
+        return call(port, path + "?" + urlencode(query), status, headers=auth,
+                    max_bytes=MAX_ARCHIVE_BYTES, timeout=timeout)
 
     def cursor(body, headers):
         assert headers["X-TokenCraft-Has-More"] == "true"
@@ -218,14 +229,14 @@ def verify_later_cold_archive(port, project, auth, bucket, first, second, third)
         return last
 
     for path in paths:
-        with cold_object(second):
+        with fault_object(second):
             body, headers = read(path)
             assert body == first
             error, error_headers = read(path, after=cursor(body, headers), status=409)
             assert error["error"]["code"] == "archive_retrieval_required"
             assert "X-TokenCraft-Next-After" not in error_headers
 
-        with cold_object(third) as cold_path:
+        with fault_object(third) as cold_path:
             body, headers = read(path)
             assert body.startswith(first)
             with bucket.lock:
@@ -238,7 +249,24 @@ def verify_later_cold_archive(port, project, auth, bucket, first, second, third)
         recovered, final = read(path, after=before_cold)
         assert recovered and final["X-TokenCraft-Has-More"] == "false"
         assert final["X-TokenCraft-Content-Sha256"] == sha256(recovered).hexdigest()
+        expected_remaining = body[len(first):] + remainder + recovered
+
+        with fault_object(second, "unavailable"):
+            body, headers = read(path)
+            assert body == first
+            error, error_headers = read(path, after=cursor(body, headers), status=503)
+            assert error["error"]["code"] == "service_unavailable"
+            assert "X-TokenCraft-Next-After" not in error_headers
+        with fault_object(second, Event()) as stalled_path:
+            body, headers = read(path, timeout=5)
+            assert body == first
+            with bucket.lock:
+                assert stalled_path in bucket.read_paths
+            after_stall = cursor(body, headers)
+        remaining, final = read(path, after=after_stall)
+        assert remaining == expected_remaining and final["X-TokenCraft-Has-More"] == "false"
     print("PASS readable archive prefixes advance the cursor and byte overflow skips later storage reads")
+    print("PASS failed and stalled lookahead return verified pages and retry from the same cursor")
 
 
 def verify(gateway, directory, settings, session, account, project):
@@ -266,7 +294,7 @@ def verify(gateway, directory, settings, session, account, project):
             Event() for _ in range(4)
         )
         bucket.restore_requests = []
-        bucket.cold_paths, bucket.read_paths = set(), []
+        bucket.read_faults, bucket.read_paths = {}, []
         stack.enter_context(serve(bucket))
         connector = stack.enter_context(serve(Connector()))
         bindings = directory / "archive-connector.json"
