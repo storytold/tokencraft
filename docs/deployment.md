@@ -365,7 +365,7 @@ source_revision="$(git rev-parse HEAD)"
 bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com "$source_revision"
 ```
 
-The check compares both console copies and the running gateway with the release OpenAPI snapshot. It also compares the connector primitive registry at both origins and verifies the console catalog bytes. An unauthenticated request to `/v1/rate-limits` at both origins must return the gateway's `401` JSON response. This confirms that the route is mounted and that the console forwards it to an API, without needing an account or creating a job. Treat a mismatch as a failed release check even when both `/ready` probes pass.
+The revision check verifies health and the expected SHA in a single fresh, non-storable response from each origin. The check also compares both console copies and the running gateway with the release OpenAPI snapshot, compares the connector primitive registry at both origins, and verifies the console catalog bytes. An unauthenticated request to `/v1/rate-limits` at both origins must return the gateway's `401` JSON response. This confirms the route is mounted and the console forwards it to an API without creating a job. Treat any mismatch as a failed release check.
 
 Before reopening submissions, pick an existing successful request with a gateway trace and a readable warm result. Inject a project key with `requests:read` and `usage:read` into `TOKENCRAFT_SMOKE_API_KEY`.
 

@@ -53,41 +53,61 @@ check_rate_limit_route() {
   printf 'PASS %s /v1/rate-limits\n' "$target"
 }
 
-check_gateway_revision() {
-  local origin=$1 target=$2
-  if ! request --fail --output /dev/null --dump-header - -- "$origin/ready" |
-    awk -v expected="$revision" '
-      tolower($1) == "tokencraft-source-revision:" {
-        sub(/\r$/, "", $2)
-        found++
-        if ($2 == expected) matched++
+check_no_store_headers() {
+  awk -v expected_status="$1" -v expected_revision="$2" '
+    function header_value(line) {
+      sub(/^[^:]+:[ \t]*/, "", line)
+      sub(/[ \t\r]+$/, "", line)
+      return line
+    }
+    /^HTTP\// {
+      status = ($2 + 0 == expected_status)
+      policies = private = no_store = stamps = matching_stamp = ages = fresh_age = 0
+    }
+    tolower($0) ~ /^cache-control:/ {
+      policies++
+      count = split(tolower(header_value($0)), directives, ",")
+      for (i = 1; i <= count; i++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", directives[i])
+        if (directives[i] == "private") private = 1
+        if (directives[i] == "no-store") no_store = 1
       }
-      END { exit !(found == 1 && matched == 1) }
-    '; then
-    printf 'FAIL %s /ready must report the expected gateway source revision\n' "$target" >&2
+    }
+    tolower($0) ~ /^tokencraft-source-revision:/ {
+      stamps++
+      matching_stamp = ("sha:" header_value($0) == "sha:" expected_revision)
+    }
+    tolower($0) ~ /^age:/ {
+      ages++
+      fresh_age = (header_value($0) ~ /^0+$/)
+    }
+    END {
+      valid = status && policies == 1 && no_store
+      if (expected_revision == "") {
+        valid = valid && private
+      } else {
+        valid = valid && stamps == 1 && matching_stamp && (ages == 0 || (ages == 1 && fresh_age))
+      }
+      exit !valid
+    }
+  '
+}
+
+check_release_ready() {
+  local origin=$1 target=$2
+  if ! request --fail --output "$probe_body" --dump-header - -- "$origin/ready" |
+    check_no_store_headers 200 "$revision" ||
+    ! jq -es 'length == 1 and .[0].ready == true' "$probe_body" >/dev/null; then
+    printf 'FAIL %s /ready must return fresh, non-storable readiness for the expected source revision\n' "$target" >&2
     return 1
   fi
-  printf 'PASS %s gateway source revision\n' "$target"
+  printf 'PASS %s /ready and gateway source revision\n' "$target"
 }
 
 check_session_cache_policy() {
   local origin=$1 target=$2
   if ! request --output /dev/null --dump-header - -- "$origin/v1/auth/me" |
-    awk '
-      /^HTTP\// { denied = ($2 == 401); policies = 0; private = 0; no_store = 0 }
-      tolower($1) == "cache-control:" {
-        policies++
-        line = tolower($0)
-        sub(/^cache-control:/, "", line)
-        gsub(/[ \t\r]/, "", line)
-        count = split(line, directive, ",")
-        for (i = 1; i <= count; i++) {
-          if (directive[i] == "private") private = 1
-          if (directive[i] == "no-store") no_store = 1
-        }
-      }
-      END { exit !(denied && policies == 1 && private && no_store) }
-    '; then
+    check_no_store_headers 401 ""; then
     printf 'FAIL %s /v1/auth/me must return a private, non-storable 401\n' "$target" >&2
     return 1
   fi
@@ -95,8 +115,13 @@ check_session_cache_policy() {
 }
 
 result=0
-check "$console" console ready 'report the gateway ready' jq -es 'length == 1 and .[0].ready == true' || result=1
-check "$gateway" gateway ready 'report ready' jq -es 'length == 1 and .[0].ready == true' || result=1
+if [[ -n "$revision" ]]; then
+  check_release_ready "$console" console || result=1
+  check_release_ready "$gateway" gateway || result=1
+else
+  check "$console" console ready 'report the gateway ready' jq -es 'length == 1 and .[0].ready == true' || result=1
+  check "$gateway" gateway ready 'report ready' jq -es 'length == 1 and .[0].ready == true' || result=1
+fi
 check "$gateway" gateway openapi.json 'match the release OpenAPI contract' matches_contract || result=1
 check "$console" console openapi.json 'serve the release OpenAPI contract' matches_contract || result=1
 check "$console" console docs/openapi.json 'serve the release OpenAPI contract' matches_contract || result=1
@@ -109,8 +134,6 @@ check "$console" console catalog/artcraft-v1.json 'match the release ArtCraft ca
 check_rate_limit_route "$gateway" gateway || result=1
 check_rate_limit_route "$console" console || result=1
 if [[ -n "$revision" ]]; then
-  check_gateway_revision "$gateway" gateway || result=1
-  check_gateway_revision "$console" console || result=1
   check_session_cache_policy "$gateway" gateway || result=1
   check_session_cache_policy "$console" console || result=1
   check "$console" console release.json 'report the expected console source revision' \
