@@ -18,7 +18,7 @@ python3 -B examples/postgres/export_to_postgres.py --status
 psql -X -w -v ON_ERROR_STOP=1 -f examples/postgres/postgres_usage_views.sql
 ```
 
-The first command pulls a fixed snapshot. Run it again to continue from the last committed event or pick up events published later. Each page checks the checksum and event scope, then commits the events and checkpoint in one transaction. Events deduplicate by gateway URL, project ID, and event ID. Checkpoints also include the client filter. Keep the same gateway URL and scope between runs.
+The first command pulls a fixed snapshot. Run it again to continue from the last committed event or pick up events published later. Each page checks the checksum and event scope, stages validated events in a session-local temporary table, then commits the events and checkpoint in one transaction. The staging table is dropped when the transaction ends. Events deduplicate by gateway URL, project ID, and event ID. Checkpoints also include the client filter. Keep the same gateway URL and scope between runs.
 
 An event ID keeps the same payload across snapshots, the live feed, and archive restores. Identical events deduplicate when a project-wide feed overlaps a client feed. If a stored event's payload differs, the importer stops and rolls back the page and its checkpoint update together.
 

@@ -14,6 +14,7 @@ import subprocess
 import sys
 from threading import Event, Thread
 import time
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request
@@ -170,11 +171,23 @@ def main():
     assert not (origin.username or origin.password or origin.path or origin.query or origin.fragment)
     assert os.environ.get("PGHOST") in {"127.0.0.1", "localhost", "::1"} and os.environ.get("PGDATABASE")
     assert importer.postgres(
-        "SELECT to_regnamespace('tokencraft_export') IS NULL AND to_regclass('gateway_requests') IS NULL;", {}
+        """SELECT to_regnamespace('tokencraft_export') IS NULL
+               AND to_regnamespace('export_smoke_app') IS NULL
+               AND to_regclass('public.gateway_requests') IS NULL;""", {}
     ) == "t", "Point the smoke at a fresh disposable destination database."
     verify_retry_hints()
-    with relay_live_export(origin) as relay:
+    importer.postgres("""
+        CREATE SCHEMA export_smoke_app;
+        CREATE TABLE export_smoke_app.export_page (payload jsonb NOT NULL);
+        INSERT INTO export_smoke_app.export_page VALUES ('{"fixture":true}');
+    """, {})
+    options = f"{os.environ.get('PGOPTIONS', '')} -c search_path=export_smoke_app,pg_temp,public".strip()
+    with patch.dict(os.environ, PGOPTIONS=options), relay_live_export(origin) as relay:
         verify_import(*relay)
+    assert json.loads(importer.postgres("SELECT json_agg(payload) FROM export_smoke_app.export_page;", {})) == [
+        {"fixture": True},
+    ]
+    print("PASS Page staging used the temporary schema throughout snapshot, watch, and replay.", flush=True)
 
 
 def verify_lifecycle():

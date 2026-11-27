@@ -218,11 +218,11 @@ INSERT_ROWS = r"""
 , applied AS (
     INSERT INTO tokencraft_export.events (source_url, project_id, event_id, payload)
     SELECT source_url, project_id, payload->>'id', payload
-    FROM checkpoint CROSS JOIN export_page
+    FROM checkpoint CROSS JOIN pg_temp.export_page
     ON CONFLICT (source_url, project_id, event_id) DO NOTHING RETURNING event_id
 )
 SELECT CASE WHEN EXISTS (SELECT 1 FROM checkpoint) THEN count(*)::text ELSE 'checkpoint_changed' END AS page_result,
-       EXISTS (SELECT 1 FROM checkpoint) AND count(*) < (SELECT count(*) FROM export_page) AS compare_replays
+       EXISTS (SELECT 1 FROM checkpoint) AND count(*) < (SELECT count(*) FROM pg_temp.export_page) AS compare_replays
 FROM applied \gset
 """
 
@@ -231,7 +231,7 @@ FINISH_PAGE = r"""
 \set event_conflict false
 \if :compare_replays
 SELECT EXISTS (
-    SELECT 1 FROM export_page incoming
+    SELECT 1 FROM pg_temp.export_page incoming
     LEFT JOIN tokencraft_export.events stored
       ON stored.source_url = :'source' AND stored.project_id = :'project'
      AND stored.event_id = incoming.payload->>'id'
@@ -254,8 +254,8 @@ def import_page(records, binding, after, next_after, *, as_of="", more="", pendi
         rows = "\n".join(json.dumps(record, separators=(",", ":")).replace("\\", "\\\\") for record in records)
         command = """
 BEGIN;
-CREATE TEMP TABLE export_page (payload jsonb) ON COMMIT DROP;
-COPY export_page FROM STDIN;
+CREATE TEMP TABLE pg_temp.export_page (payload jsonb) ON COMMIT DROP;
+COPY pg_temp.export_page FROM STDIN;
 """ + rows + "\n\\.\n" + ADVANCE + INSERT_ROWS + FINISH_PAGE
     else:
         command = ADVANCE + "SELECT CASE WHEN EXISTS (SELECT 1 FROM checkpoint) THEN '0' ELSE 'checkpoint_changed' END;"
