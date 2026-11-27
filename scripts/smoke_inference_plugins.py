@@ -2,13 +2,16 @@
 
 import argparse
 from contextlib import ExitStack
+from hashlib import sha256
 import json
 from pathlib import Path
 from secrets import token_hex
+import struct
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
+import wave
 
-from smoke_connector_recovery import wait_for_status
+from smoke_connector_recovery import fixture_png, wait_for_status
 from smoke_workflow_contract import (
     CALLER_CONTEXT, ROOT, call, command, loopback_port, ready, rehearse, service,
 )
@@ -16,6 +19,32 @@ from smoke_workflow_contract import (
 
 PLUGINS = ROOT / "plugins/providers/inference"
 WORKLOAD = {"kind": "video", "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p"}
+
+
+def make_media_fixtures(directory, env):
+    command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=black:s=1280x720:r=2:d=5",
+            "-an", "-c:v", "mpeg4", "-threads", "1", "fixture.mp4", cwd=directory, env=env)
+    (directory / "fixture.png").write_bytes(fixture_png((35, 95, 210), 1024, 1024))
+    with wave.open(str(directory / "fixture.wav"), "wb") as audio:
+        audio.setparams((1, 2, 8_000, 0, "NONE", "not compressed"))
+        audio.writeframes(bytes(5 * 8_000 * 2))
+    positions = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 0)
+    document = {
+        "asset": {"version": "2.0"},
+        "buffers": [{"byteLength": len(positions)}],
+        "bufferViews": [{"buffer": 0, "byteLength": len(positions), "target": 34962}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [1, 1, 0]}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 4}]}],
+        "nodes": [{"mesh": 0}], "scenes": [{"nodes": [0]}], "scene": 0,
+    }
+    encoded = json.dumps(document, separators=(",", ":")).encode()
+    encoded += b" " * (-len(encoded) % 4)
+    body = struct.pack("<I4s", len(encoded), b"JSON") + encoded
+    body += struct.pack("<I4s", len(positions), b"BIN\0") + positions
+    mesh = struct.pack("<4sII", b"glTF", 2, len(body) + 12) + body
+    (directory / "fixture.glb").write_bytes(mesh)
+    (directory / "broken.glb").write_bytes(mesh[:-1])
 
 
 def plugin_config(name, file):
@@ -31,10 +60,13 @@ def configure(directory, settings, sites):
     bindings = []
     offers = []
     for name, offer_id, rate in (("fal", "fal_pixverse_v6", 20_000_000), ("kinovi", "kinovi_sample", 10_000_000)):
-        offer = next(row for row in plugin_config(name, "catalog.example.json")["offers"] if row["id"] == offer_id)
+        catalog = plugin_config(name, "catalog.example.json")["offers"]
+        offer = next(row for row in catalog if row["id"] == offer_id)
         offer["model"] = "fixture_video"
         offer["pricing"]["usd_nanos_per_second"] = rate
         offers.append(offer)
+        if name == "fal":
+            offers.extend(row for row in catalog if row["id"] in {"fal_sample", "fal_stable_audio_25", "fal_meshy_v6_preview"})
         binding, = plugin_config(name, "bindings.example.json")["bindings"]
         bindings.append({**binding, "origin": sites[name] + "/"})
     text, = plugin_config("openrouter", "catalog.example.json")["offers"]
@@ -45,14 +77,60 @@ def configure(directory, settings, sites):
                 TOKENCRAFT_LOCAL_CHAT_BINDINGS=write("chat.json", {"version": 1, "bindings": [chat]}))
 
 
+def verify_fal_media(port, directory, shared, other_client):
+    def submit(path, body, key, prompt="Fixture media"):
+        return call(port, path, 202, method="POST",
+                    headers={**shared, **CALLER_CONTEXT, "x-tokencraft-client-ref": "studio_a", "Idempotency-Key": key},
+                    body={**body, "prompt": prompt})[0]
+
+    mesh_request = {"model": "meshy_v6_preview", "task": "text_to_3d"}
+    media = [
+        ("/v1/image", {"model": "fal_sample", "task": "text_to_image"}, "fixture.png", "image/png",
+         "images", {"width": 1024, "height": 1024}),
+        ("/v1/audio", {"model": "stable_audio_25", "task": "text_to_music", "duration_seconds": 5},
+         "fixture.wav", "audio/wav", "audio", {"duration_ms": 5000, "sample_rate_hz": 8000, "channels": 1}),
+        ("/v1/3d", mesh_request, "fixture.glb", "model/gltf-binary",
+         "mesh", {"mesh_count": 1, "primitive_count": 1}),
+    ]
+    pending = [(submit(path, body, "inference-" + field), filename, content_type, field, metadata)
+               for path, body, filename, content_type, field, metadata in media]
+    for receipt, filename, content_type, field, metadata in pending:
+        wait_for_status(port, receipt, shared, "succeeded", 15)
+        result, _ = call(port, receipt["status_url"] + "/result", 200, headers=shared)
+        output = result["result"][field]
+        if field == "images":
+            output, = output
+        expected = (directory / filename).read_bytes()
+        assert {name: output[name] for name in metadata} == metadata
+        assert output["content_type"] == content_type
+        assert output["artifact"] == {"slot": 0, "byte_length": len(expected), "sha256": sha256(expected).hexdigest()}
+        body, headers = call(port, output["url"], 200, headers=shared)
+        assert body == expected and headers.get_content_type() == content_type
+        assert headers["X-TokenCraft-Content-Sha256"] == output["artifact"]["sha256"]
+        call(port, output["url"], 404, headers=other_client)
+        trace, _ = call(port, f"/v1/requests/{receipt['id']}/trace", 200, headers=shared)
+        attempts = trace["evidence"]["routing"]["attempts"]
+        assert [(attempt["provider"], attempt["state"]) for attempt in attempts] == [("fal", "succeeded")]
+    print("PASS fal published scoped PNG, PCM WAV, and embedded GLB with the exact bytes and metadata")
+
+    corrupt = submit("/v1/3d", mesh_request, "inference-broken-mesh", prompt="Corrupt mesh fixture")
+    request = f"/v1/requests/{corrupt['id']}"
+    failed = wait_for_status(port, {"status_url": request}, shared, "failed", 15)
+    upstream = failed["upstream"]
+    assert upstream["error_code"] == "provider_artifact_invalid"
+    assert upstream["queue_state"] == "completed" and upstream["result_observed_at"]
+    call(port, request + "/result", 404, headers=shared)
+    call(port, request + "/artifacts/0", 404, headers=shared)
+    print("PASS corrupted GLB failed validation before any artifact was published")
+
+
 def verify(gateway, directory, settings, session, account, project):
     port, worker_port = int(settings["API_GATEWAY_PORT"]), loopback_port()
     plugin_env = {key: settings[key] for key in ("PATH", "LANG")}
     tokens = {name: token_hex(32) for name in (
         "TOKENCRAFT_CONNECTOR_TOKEN_FAL", "TOKENCRAFT_CONNECTOR_TOKEN_KINOVI", "TOKENCRAFT_LOCAL_CHAT_KEY_OPENROUTER",
     )}
-    command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=black:s=1280x720:r=2:d=5",
-            "-an", "-c:v", "mpeg4", "-threads", "1", "fixture.mp4", cwd=directory, env=plugin_env)
+    make_media_fixtures(directory, plugin_env)
     video = (directory / "fixture.mp4").read_bytes()
     addresses = directory / "addresses.json"
     with ExitStack() as apps:
@@ -163,6 +241,8 @@ def verify(gateway, directory, settings, session, account, project):
         check_video(submit(available, "studio_b", "inference-failover"), "fal", "fal_pixverse_v6")
         assert call(supplier_port, "/counts", 200)[0] == {"fal": 2, "kinovi": 1, "openrouter": 3, "kinovi_throttles": 2}
         print("PASS Kinovi retried once before acceptance and a fresh quote routed to fal during cooldown")
+        verify_fal_media(port, directory, shared, client_b)
+        assert call(supplier_port, "/counts", 200)[0] == {"fal": 6, "kinovi": 1, "openrouter": 3, "kinovi_throttles": 2}
 
 
 def main():

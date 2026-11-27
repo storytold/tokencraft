@@ -10,7 +10,35 @@ import { queueServer as kinoviServer } from '../plugins/providers/inference/kino
 import { openRouterProxy } from '../plugins/providers/inference/openrouter/proxy.mjs';
 
 const counts = { fal: 0, kinovi: 0, openrouter: 0, kinovi_throttles: 0 };
-const media = await readFile('fixture.mp4');
+const artifacts = new Map([
+  ['/video', { file: 'fixture.mp4', contentType: 'video/mp4' }],
+  ['/image', { file: 'fixture.png', contentType: 'image/png' }],
+  ['/audio', { file: 'fixture.wav', contentType: 'audio/x-wav' }],
+  ['/mesh', { file: 'fixture.glb', contentType: 'model/gltf-binary' }],
+  ['/broken-mesh', { file: 'broken.glb', contentType: 'model/gltf-binary' }],
+]);
+const falModels = new Map([
+  ['/fal-ai/flux/dev', {
+    statusPath: '/fal-ai/flux', artifact: '/image',
+    input: { image_size: { width: 1024, height: 1024 }, num_images: 1, output_format: 'png' },
+    result: (url) => ({ images: [{ url }] }),
+  }],
+  ['/fal-ai/pixverse/v6/text-to-video', {
+    statusPath: '/fal-ai/pixverse', artifact: '/video',
+    input: { aspect_ratio: '16:9', resolution: '720p', duration: 5 },
+    result: (url) => ({ video: { url } }),
+  }],
+  ['/fal-ai/stable-audio-25/text-to-audio', {
+    statusPath: '/fal-ai/stable-audio-25', artifact: '/audio', input: { seconds_total: 5 },
+    result: (url) => ({ audio: { url } }),
+  }],
+  ['/fal-ai/meshy/v6/text-to-3d', {
+    statusPath: '/fal-ai/meshy', artifact: '/mesh',
+    input: { mode: 'preview', should_remesh: true, target_polycount: 10_000 },
+    result: (url) => ({ model_glb: { url } }),
+  }],
+]);
+const falJobs = new Map();
 let supplierOrigin;
 const supplier = createServer(async (request, response) => {
   try {
@@ -19,22 +47,31 @@ const supplier = createServer(async (request, response) => {
     for (const name of ['traceparent', 'tracestate', 'baggage', 'x-tokencraft-upstream-key']) {
       assert.equal(request.headers[name], undefined);
     }
-    if (path.pathname === '/video') {
+    const artifact = artifacts.get(path.pathname);
+    if (artifact && request.method === 'GET') {
       assert.equal(request.headers.authorization, undefined);
-      return response.writeHead(200, { 'content-type': 'video/mp4' }).end(media);
+      const body = await readFile(artifact.file);
+      return response.writeHead(200, { 'content-type': artifact.contentType }).end(body);
     }
-    if (path.pathname === '/fal-ai/pixverse/v6/text-to-video' && request.method === 'POST') {
+    const submittedModel = falModels.get(path.pathname);
+    if (submittedModel && request.method === 'POST') {
       assert.equal(request.headers.authorization, 'Key synthetic-fal');
-      const input = await readJson(request);
-      assert.equal(input.aspect_ratio, '16:9');
-      assert.equal(input.resolution, '720p');
-      assert.equal(input.duration, 5);
-      return send(response, 200, { request_id: `fal-${++counts.fal}` });
+      const { prompt, ...input } = await readJson(request);
+      assert.equal(typeof prompt, 'string');
+      assert.deepEqual(input, { ...submittedModel.input, enable_safety_checker: true });
+      const handle = `fal-${++counts.fal}`;
+      const file = submittedModel.artifact === '/mesh' && prompt === 'Corrupt mesh fixture'
+        ? '/broken-mesh' : submittedModel.artifact;
+      falJobs.set(handle, { model: submittedModel, file });
+      return send(response, 200, { request_id: handle });
     }
-    if (/^\/fal-ai\/pixverse\/requests\/fal-\d+(\/status)?$/.test(path.pathname)) {
+    const falJobPath = /^(\/fal-ai\/[^/]+)\/requests\/(fal-\d+)(\/status)?$/.exec(path.pathname);
+    if (falJobPath && request.method === 'GET') {
       assert.equal(request.headers.authorization, 'Key synthetic-fal');
-      return send(response, 200, path.pathname.endsWith('/status')
-        ? { status: 'COMPLETED' } : { video: { url: supplierOrigin + '/video' } });
+      const [, statusPath, handle, status] = falJobPath;
+      const job = falJobs.get(handle);
+      assert.equal(job?.model.statusPath, statusPath);
+      return send(response, 200, status ? { status: 'COMPLETED' } : job.model.result(supplierOrigin + job.file));
     }
     if (path.pathname === '/api/v1/jobs/createTask' && request.method === 'POST') {
       assert.equal(request.headers.authorization, 'Bearer synthetic-kinovi');
