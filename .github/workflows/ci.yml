@@ -56,7 +56,7 @@ jobs:
               diff -u contracts/openapi.json "$contract_dir/openapi.json"
               diff -u crates/core/provider-mapping/schemas/v1.json "$contract_dir/connector-primitives.json"
               bash examples/connector/smoke.sh
-              python3 -B examples/connector/load.py --requests 16 --concurrency 8
+              python3 -B examples/connector/load.py --requests 32 --concurrency 24
               db_password="$(jq -er .database "$state_dir/dev-keys.json")"
               export PGHOST=127.0.0.1 PGPORT=55439 PGUSER=tokencraft PGPASSWORD="$db_password"
               createdb --maintenance-db=postgres -w tokencraft_export_test

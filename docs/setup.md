@@ -78,7 +78,7 @@ Start `tokencraft dev` with a disposable state directory and the bundled connect
 python3 -B examples/connector/load.py --requests 128 --concurrency 24
 ```
 
-The check provisions a project and submits synthetic image requests for two client references using one key. It reports admission and observed completion latency separately, samples the project queue, and verifies the filtered history and usage totals after the queue drains. It polls with the response's `Retry-After` and `ETag` headers when present, so observed completion includes the polling interval. Compare runs with the same concurrency, fixture, hardware, and build profile.
+The check provisions a project and submits synthetic image requests for two client references using one key. It retries submission and active-work limits with the same idempotency key. It reports the number of retries by error code, time to admission including those waits, the successful response time, and observed completion. It samples each active status through the public request history API and verifies the filtered history and usage totals after the queue drains. It polls with the response's `Retry-After` and `ETag` headers when present, so observed completion includes the polling interval. Compare runs with the same concurrency, fixture, hardware, and build profile.
 
 ### Start with a reviewed catalog
 

@@ -1,10 +1,12 @@
 """Measure a bounded batch against the bundled TokenCraft connector."""
 
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
 import json
 from math import ceil
+from random import uniform
 from secrets import token_hex
 from threading import Event
 from time import monotonic, sleep
@@ -21,11 +23,22 @@ IMAGE = {
     "aspect_ratio": "4:3",
 }
 
+
+class HttpError(RuntimeError):
+    def __init__(self, path, status, code, retry_after):
+        super().__init__(f"{path.split('?')[0]} returned HTTP {status}")
+        self.status = status
+        self.code = code
+        self.retry_after = retry_after
+
+
 class RequestSample(NamedTuple):
     identifier: str
     client: str
     admission_seconds: float
+    accepted_response_seconds: float
     terminal_seconds: float
+    admission_retries: Counter[str]
     polls: int
     unchanged: int
 
@@ -40,7 +53,13 @@ def call(address, path, *, body=None, headers=None, expected=(200,)):
         connection.request("GET" if body is None else "POST", path, body, headers)
         response = connection.getresponse()
         if response.status not in expected:
-            raise RuntimeError(f"{path.split('?')[0]} returned HTTP {response.status}")
+            code = None
+            if response.status == 429:
+                try:
+                    code = json.loads(response.read())["error"]["code"]
+                except (ValueError, KeyError, TypeError):
+                    pass
+            raise HttpError(path, response.status, code, response.getheader("Retry-After"))
         raw = response.read()
         return json.loads(raw) if raw else None, response.headers
     finally:
@@ -65,37 +84,72 @@ def provision(address):
                       "name": "Load check",
                       "scopes": ["requests:submit", "requests:read", "usage:read"],
                   })
-    scope = urlencode({"account_id": account, "project_id": project})
-    return {"Authorization": f"Bearer {key['token']}"}, session, scope
+    return {"Authorization": f"Bearer {key['token']}"}
 
 
-def queues(address, session, scope):
-    snapshot, _ = call(address, f"/v1/operations/queues?{scope}", headers=session)
-    rows = snapshot["queues"]
-    return {kind: sum(row["count"] for row in rows if row["kind"] == kind)
-            for kind in ("queued", "running", "awaiting_reconciliation")}
+def request_history(address, bearer, **filters):
+    received = set()
+    after = None
+    while True:
+        query = urlencode({**filters, "after": after} if after else filters)
+        page, _ = call(address, f"/v1/requests?{query}", headers=bearer)
+        for row in page["requests"]:
+            if row["id"] in received:
+                raise RuntimeError("request history repeated a request ID")
+            received.add(row["id"])
+            yield row
+        next_after = page["next_after"]
+        if not next_after:
+            return
+        if next_after == after or not page["requests"]:
+            raise RuntimeError("request history cursor made no progress")
+        after = next_after
 
 
-def observe(address, session, scope, done):
-    peaks = {"queued": 0, "running": 0, "awaiting_reconciliation": 0}
+QUEUE_STATES = ("queued", "running", "awaiting_reconciliation")
+
+
+def queues(address, bearer):
+    return {status: sum(1 for _ in request_history(address, bearer, status=status))
+            for status in QUEUE_STATES}
+
+
+def observe(address, bearer, done):
+    peaks = dict.fromkeys(QUEUE_STATES, 0)
     samples = 0
     while not done.is_set():
-        for kind, value in queues(address, session, scope).items():
-            peaks[kind] = max(peaks[kind], value)
+        for status, count in queues(address, bearer).items():
+            peaks[status] = max(peaks[status], count)
         samples += 1
         done.wait(0.25)
     return {"samples": samples, "peak": peaks}
 
 
+def submit(address, headers, deadline):
+    retries = Counter()
+    while monotonic() < deadline:
+        start = monotonic()
+        try:
+            receipt, _ = call(address, "/v1/image", body=IMAGE, expected=(202,), headers=headers)
+        except HttpError as error:
+            if error.status != 429 or error.code not in ("active_request_limit", "submission_rate_limit"):
+                raise
+            retries[error.code] += 1
+            delay = max(0.1, int(error.retry_after or "1")) + uniform(0, 0.25)
+            sleep(min(delay, max(0, deadline - monotonic())))
+        else:
+            return receipt, monotonic() - start, retries
+    raise RuntimeError(f"load check reached its deadline before admission after {sum(retries.values())} retries")
+
+
 def execute(address, bearer, client, deadline):
-    if monotonic() >= deadline:
-        raise RuntimeError("load check reached its deadline before admission")
     start = monotonic()
-    receipt, _ = call(address, "/v1/image", body=IMAGE, expected=(202,), headers={
+    headers = {
         **bearer,
         "Idempotency-Key": token_hex(16),
         "X-TokenCraft-Client-Ref": client,
-    })
+    }
+    receipt, accepted_response, retries = submit(address, headers, deadline)
     admitted = monotonic()
     identifier = receipt["id"]
     path = receipt["status_url"]
@@ -110,7 +164,8 @@ def execute(address, bearer, client, deadline):
         if value is None:
             unchanged += 1
         elif value["status"] == "succeeded":
-            return RequestSample(identifier, client, admitted - start, monotonic() - start, polls, unchanged)
+            return RequestSample(identifier, client, admitted - start, accepted_response,
+                                 monotonic() - start, retries, polls, unchanged)
         elif value["status"] not in {"queued", "running"}:
             raise RuntimeError(f"image request reached unexpected status {value['status']}")
         if reply.get("ETag"):
@@ -120,25 +175,14 @@ def execute(address, bearer, client, deadline):
 
 
 def verify_client(address, bearer, client, expected):
-    query = urlencode({"client_ref": client})
     received = set()
-    after = None
-    while True:
-        cursor = urlencode({"after": after}) if after else ""
-        path = f"/v1/requests?{query}" + (f"&{cursor}" if cursor else "")
-        page, _ = call(address, path, headers=bearer)
-        for row in page["requests"]:
-            if row["id"] in received or row["client_ref"] != client:
-                raise RuntimeError(f"invalid history page for {client}")
-            received.add(row["id"])
-        next_after = page["next_after"]
-        if not next_after:
-            break
-        if next_after == after or not page["requests"] or len(received) > len(expected):
-            raise RuntimeError(f"history cursor made no progress for {client}")
-        after = next_after
+    for row in request_history(address, bearer, client_ref=client):
+        if row["client_ref"] != client:
+            raise RuntimeError(f"invalid history page for {client}")
+        received.add(row["id"])
     if received != expected:
         raise RuntimeError(f"history did not match admitted requests for {client}")
+    query = urlencode({"client_ref": client})
     usage, _ = call(address, f"/v1/usage?{query}", headers=bearer)
     totals = usage["totals"]
     if any(totals[field] != len(expected) for field in ("requests", "succeeded", "completed_outputs")):
@@ -171,12 +215,12 @@ def main():
     if not ready.get("ready") or offers != [("example_image", "self_hosted", "connector_queue")]:
         parser.error("start the bundled connector with tokencraft dev")
 
-    bearer, session, scope = provision(address)
+    bearer = provision(address)
     done = Event()
     start = monotonic()
     deadline = start + 180
     with ThreadPoolExecutor(max_workers=options.concurrency + 1) as pool:
-        watcher = pool.submit(observe, address, session, scope, done)
+        watcher = pool.submit(observe, address, bearer, done)
         try:
             calls = (CLIENTS[index % len(CLIENTS)] for index in range(options.requests))
             records = list(pool.map(lambda client: execute(address, bearer, client, deadline), calls))
@@ -191,8 +235,11 @@ def main():
         expected = {row.identifier for row in records if row.client == client}
         verify_client(address, bearer, client, expected)
         client_counts[client] = len(expected)
-    if any(queues(address, session, scope).values()):
+    if any(queues(address, bearer).values()):
         raise RuntimeError("request queue remained active after completion")
+    admission_retries = Counter()
+    for row in records:
+        admission_retries.update(row.admission_retries)
     print(json.dumps({
         "requests": len(records),
         "concurrency": options.concurrency,
@@ -200,6 +247,8 @@ def main():
         "elapsed_seconds": round(elapsed, 2),
         "completed_per_second": round(len(records) / elapsed, 2),
         "admission_ms": latency([row.admission_seconds for row in records]),
+        "accepted_response_ms": latency([row.accepted_response_seconds for row in records]),
+        "admission_retries": dict(sorted(admission_retries.items())),
         "terminal_observed_ms": latency([row.terminal_seconds for row in records]),
         "polls": sum(row.polls for row in records),
         "polls_not_modified": sum(row.unchanged for row in records),
