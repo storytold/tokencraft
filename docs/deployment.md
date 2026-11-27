@@ -98,7 +98,7 @@ Migration 87 adds a receipt digest for recoverable webhook key rotations. Schema
 
 Schema 88 adds a pause shared by every API replica using the cell database. Stop earlier gateway binaries before applying migration 88. A fresh migration creates the control in the open state. During a cutover, `admin-cli migrate --pause-admissions` applies the migrations and then commits the pause before reporting success. Keep ingress paused and the new fleet stopped until the runtime role can confirm the pause. If the pause step fails, the migrations can already be applied. Check the schema and set the pause before starting replicas. Plain `admin-cli migrate` preserves the recorded admission state.
 
-Run the command from the matching release with `DATABASE_URL` pointing to the target cell. The migration owner can change the pause. The restricted runtime role can read it.
+Run the command from the matching release with `DATABASE_URL` pointing to the target cell's primary database. The migration owner can change the pause. The restricted runtime role can read it.
 
 ```sh
 admin-cli admissions pause
@@ -106,7 +106,7 @@ admin-cli admissions status --expect paused
 admin-cli admissions resume
 ```
 
-The status command is read-only. With `--expect paused` or `--expect open`, it exits nonzero if the observed state differs. The pause command waits for the admissions already inside their transactions. After it succeeds, new inference submissions, workflow invocations, and draft test runs return `503 admissions_paused` with `Retry-After: 5`. Retry with the same intent and idempotency key. MCP submit tools return a tool error with the same retry guidance.
+The status command is read-only and exits nonzero when connected to a PostgreSQL standby. With `--expect paused` or `--expect open`, it also exits nonzero if the observed state differs. The pause command waits for the admissions already inside their transactions. After it succeeds, new inference submissions, workflow invocations, and draft test runs return `503 admissions_paused` with `Retry-After: 5`. Retry with the same intent and idempotency key. MCP submit tools return a tool error with the same retry guidance.
 
 Matching receipt retries, scoped reads, quotes, provider polling, signed webhook delivery, and generation steps of admitted workflows remain available. Stop API and worker writers at the snapshot boundary for a coordinated backup. Resume admissions after verifying the release with a saved receipt.
 
@@ -116,7 +116,7 @@ If API autoscaling is enabled, the pause also waits for any scale-in request alr
 
 ### Rehearse the cutover before release
 
-The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.
+The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The rehearsal verifies admission control on the primary and checks that a standby cannot confirm the pause. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.
 
 Run the same rehearsal from a source checkout with matching binaries, PostgreSQL 17, OpenSSL, and loopback port 4019 available.
 

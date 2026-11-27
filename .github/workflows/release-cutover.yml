@@ -12,6 +12,7 @@ name: Release cutover
       - 'Cargo.toml'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - 'deploy/monitoring/install.sql'
       - 'deploy/postgres/**'
       - 'examples/connector/**'
       - 'examples/mapping/**'

@@ -174,22 +174,26 @@ def rehearse(args, folder, stack):
     pg_env = dict(env, PGHOST="localhost", PGPORT=str(pg_port), PGUSER="tokencraft", PGPASSWORD=password,
                   PGSSLMODE="verify-full", PGSSLROOTCERT=str(ca))
 
-    def ready_postgres():
-        return subprocess.run([pg / "pg_isready", "-q", "-t", "1", "-d", "postgres"], env=pg_env,
-                              check=False).returncode == 0
+    def postgres_service(data, port):
+        def ready():
+            return subprocess.run([pg / "pg_isready", "-q", "-t", "1", "-d", "postgres"],
+                                  env=dict(pg_env, PGPORT=str(port)), check=False).returncode == 0
 
-    def cli(user, secret, database="postgres", environment="staging"):
+        return smoke.service(f"postgres-{data.name}", [
+            pg / "postgres", "-D", data, "-h", smoke.HOST, "-p", str(port), "-c", "unix_socket_directories=",
+            "-c", "ssl=on", "-c", f"ssl_cert_file={certificate}", "-c", f"ssl_key_file={key}",
+        ], folder, env, ready, shutdown=signal.SIGINT)
+
+    def cli(user, secret, database="postgres", environment="staging", *, port=pg_port):
         root_cert = quote(str(ca), safe="")
-        url = f"postgresql://{user}:{secret}@localhost:{pg_port}/{database}?sslmode=verify-full&sslrootcert={root_cert}"
+        url = f"postgresql://{user}:{secret}@localhost:{port}/{database}?sslmode=verify-full&sslrootcert={root_cert}"
         return dict(env, FOUNDATION_ENV=environment, DATABASE_URL=url)
 
-    def psql(sql, *, database="postgres"):
-        return run(pg / "psql", "-XqAtw", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", sql, settings=pg_env)
+    def psql(sql, *, database="postgres", port=pg_port):
+        return run(pg / "psql", "-XqAtw", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", sql,
+                   settings=dict(pg_env, PGPORT=str(port)))
 
-    stack.enter_context(smoke.service("postgres", [
-        pg / "postgres", "-D", cluster, "-h", smoke.HOST, "-p", str(pg_port), "-c", "unix_socket_directories=",
-        "-c", "ssl=on", "-c", f"ssl_cert_file={certificate}", "-c", f"ssl_key_file={key}",
-    ], folder, env, ready_postgres, shutdown=signal.SIGINT))
+    stack.enter_context(postgres_service(cluster, pg_port))
     owner = cli("tokencraft", password)
     runtime = cli("tokencraft_runtime", runtime_password)
 
@@ -361,6 +365,26 @@ def rehearse(args, folder, stack):
     assert mismatch.returncode == 1 and mismatch.stdout.strip() == "admissions: paused"
     assert "expected admissions to be open, observed paused" in mismatch.stderr
     print("PASS the runtime role verified paused admissions and the opposite expectation failed closed", flush=True)
+
+    psql("CREATE ROLE tokencraft_cutover_monitor LOGIN")
+    run(pg / "psql", "-Xqw", "-d", "postgres", "-v", "monitor_role=tokencraft_cutover_monitor",
+        "-f", root / "deploy/monitoring/install.sql", settings=pg_env)
+    monitor_query = """BEGIN READ ONLY; SET LOCAL ROLE tokencraft_cutover_monitor;
+        SELECT tokencraft_monitor.sample('["mock"]', '[]', '{"local":[],"connector":[]}', 0, NULL, NULL); COMMIT;"""
+    assert json.loads(psql(monitor_query))["maintenance"]["paused"] is True
+    standby, standby_port = folder / "standby", smoke.loopback_port()
+    run(pg / "pg_basebackup", "-w", "-D", standby, "-X", "stream", "-R", "-c", "fast", settings=pg_env)
+    with postgres_service(standby, standby_port):
+        assert psql("SELECT pg_is_in_recovery() AND paused FROM public.gateway_admission_control WHERE singleton",
+                    port=standby_port) == "t"
+        standby_runtime = cli("tokencraft_runtime", runtime_password, port=standby_port)
+        assertion = subprocess.run([args.candidate_admin, "admissions", "status", "--expect", "paused"],
+                                   cwd=folder, env=standby_runtime, capture_output=True, text=True, timeout=15)
+        assert assertion.returncode == 1 and not assertion.stdout
+        assert "admission status requires the cell's primary database" in assertion.stderr
+        assert json.loads(psql(monitor_query, port=standby_port))["maintenance"] is None
+    print("PASS a PostgreSQL standby cannot confirm the pause through the CLI or Operations", flush=True)
+
     versions = psql(
         "SELECT string_agg(version::text, ',' ORDER BY version) FROM public._sqlx_migrations WHERE success"
     )

@@ -14,7 +14,7 @@ AS $maintenance$
 DECLARE
     is_paused boolean;
 BEGIN
-    IF to_regclass('public.gateway_admission_control') IS NULL THEN
+    IF pg_is_in_recovery() OR to_regclass('public.gateway_admission_control') IS NULL THEN
         RETURN NULL;
     END IF;
     SELECT paused INTO is_paused FROM public.gateway_admission_control WHERE singleton;

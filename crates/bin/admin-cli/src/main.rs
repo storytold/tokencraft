@@ -107,7 +107,9 @@ async fn main() -> Result<()> {
                     db::admission_control::set_paused(&pool, paused).await?;
                     paused
                 }
-                None => db::admission_control::paused(&pool).await?,
+                None => db::admission_control::primary_pause_state(&pool)
+                    .await?
+                    .context("admission status requires the cell's primary database")?,
             };
             let state = if paused { "paused" } else { "open" };
             println!("admissions: {state}");
