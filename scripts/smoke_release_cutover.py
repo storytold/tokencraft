@@ -354,7 +354,13 @@ def rehearse(args, folder, stack):
     assert migration.endswith("\nadmissions: paused"), migration
     grant()
     check_schema(runtime, "current", database=str(latest))
-    assert run(args.candidate_admin, "admissions", "status", settings=runtime) == "admissions: paused"
+    assert run(args.candidate_admin, "admissions", "status", "--expect", "paused",
+               settings=runtime) == "admissions: paused"
+    mismatch = subprocess.run([args.candidate_admin, "admissions", "status", "--expect", "open"],
+                              cwd=folder, env=runtime, capture_output=True, text=True, timeout=15)
+    assert mismatch.returncode == 1 and mismatch.stdout.strip() == "admissions: paused"
+    assert "expected admissions to be open, observed paused" in mismatch.stderr
+    print("PASS the runtime role verified paused admissions and the opposite expectation failed closed", flush=True)
     versions = psql(
         "SELECT string_agg(version::text, ',' ORDER BY version) FROM public._sqlx_migrations WHERE success"
     )
@@ -415,6 +421,8 @@ def rehearse(args, folder, stack):
         verify_legacy_delivery(api)
         assert psql(payload) == legacy_hex
         assert run(args.candidate_admin, "admissions", "resume", settings=owner) == "admissions: open"
+        assert run(args.candidate_admin, "admissions", "status", "--expect", "open",
+                   settings=runtime) == "admissions: open"
         upgraded_only, _ = smoke.call(api, "/v1/requests", 202, method="POST",
                                       headers=upgraded_headers, body=upgraded_body)
         read_image(api, upgraded_only, auth)

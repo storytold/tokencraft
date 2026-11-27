@@ -4,6 +4,8 @@
 use anyhow::{bail, ensure, Context, Result};
 use db::SchemaState;
 
+const ADMISSIONS_USAGE: &str = "Usage: admin-cli admissions <pause|resume|status [--expect open|paused]>";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -81,13 +83,24 @@ async fn main() -> Result<()> {
             println!("application tables: {n}");
         }
         "admissions" => {
-            let change = match args.next().as_deref() {
-                Some("status") => None,
-                Some("pause") => Some(true),
-                Some("resume") => Some(false),
-                _ => bail!("Usage: admin-cli admissions <status|pause|resume>"),
+            let (change, expected) = match args.next().as_deref() {
+                Some("status") => {
+                    let expected = match args.next().as_deref() {
+                        None => None,
+                        Some("--expect") => match args.next().as_deref() {
+                            Some("open") => Some("open"),
+                            Some("paused") => Some("paused"),
+                            _ => bail!("{ADMISSIONS_USAGE}"),
+                        },
+                        _ => bail!("{ADMISSIONS_USAGE}"),
+                    };
+                    (None, expected)
+                }
+                Some("pause") => (Some(true), None),
+                Some("resume") => (Some(false), None),
+                _ => bail!("{ADMISSIONS_USAGE}"),
             };
-            ensure!(args.next().is_none(), "Usage: admin-cli admissions <status|pause|resume>");
+            ensure!(args.next().is_none(), "{ADMISSIONS_USAGE}");
             let pool = connect(&cfg).await?;
             let paused = match change {
                 Some(paused) => {
@@ -96,11 +109,15 @@ async fn main() -> Result<()> {
                 }
                 None => db::admission_control::paused(&pool).await?,
             };
-            println!("admissions: {}", if paused { "paused" } else { "open" });
+            let state = if paused { "paused" } else { "open" };
+            println!("admissions: {state}");
+            if let Some(expected) = expected {
+                ensure!(state == expected, "expected admissions to be {expected}, observed {state}");
+            }
         }
         "" | "help" | "-h" | "--help" => {
             eprintln!(
-                "admin-cli <command>\n  --version        show the version and source revision\n  migrate [--pause-admissions]  apply pending migrations and optionally pause admissions\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count\n  admissions       status, pause, or resume new admissions in this cell"
+                "admin-cli <command>\n  --version        show the version and source revision\n  migrate [--pause-admissions]  apply pending migrations and optionally pause admissions\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count\n  admissions       inspect or change the cell admission state\n{ADMISSIONS_USAGE}"
             );
         }
         other => bail!("unknown command: {other} (try `help`)"),

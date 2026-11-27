@@ -65,7 +65,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 
 1. Pause new submissions while the old API still serves status and results. Use the [cell admission control](#pause-new-admissions-in-a-cell) on schema 88 or later. For earlier fleets, apply the pause at ingress. Let active provider jobs and deliveries drain, then stop the old API and workers so the backup captures a stable recovery point.
 2. Retain the old image and deployment configuration. Back up PostgreSQL and record the corresponding recovery points for artifact storage, connector job state, and retained keys. Verify that the backup can be restored to a separate database before depending on it.
-3. Keep ingress paused and the new fleet stopped while applying the target image's migrations. Use `admin-cli migrate --pause-admissions` on schema 88 or later and `admin-cli migrate` on earlier releases. Reapply [runtime grants](#separate-migration-and-runtime-roles) and run `admin-cli schema-status` as the runtime role. On schema 88 or later, confirm `admin-cli admissions status` reports `paused` before starting the new fleet. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress), then resume the database gate if active and lift the ingress pause.
+3. Keep ingress paused and the new fleet stopped while applying the target image's migrations. Use `admin-cli migrate --pause-admissions` on schema 88 or later and `admin-cli migrate` on earlier releases. Reapply [runtime grants](#separate-migration-and-runtime-roles) and run `admin-cli schema-status` as the runtime role. On schema 88 or later, run `admin-cli admissions status --expect paused` with the same role and wait for it to succeed before starting the new fleet. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress), then resume the database gate if active and lift the ingress pause.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
 A schema-70 fleet can move directly to schema 88 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
@@ -102,11 +102,11 @@ Run the command from the matching release with `DATABASE_URL` pointing to the ta
 
 ```sh
 admin-cli admissions pause
-admin-cli admissions status
+admin-cli admissions status --expect paused
 admin-cli admissions resume
 ```
 
-The pause command waits for the admissions already inside their transactions. After it succeeds, new inference submissions, workflow invocations, and draft test runs return `503 admissions_paused` with `Retry-After: 5`. Retry with the same intent and idempotency key. MCP submit tools return a tool error with the same retry guidance.
+The status command is read-only. With `--expect paused` or `--expect open`, it exits nonzero if the observed state differs. The pause command waits for the admissions already inside their transactions. After it succeeds, new inference submissions, workflow invocations, and draft test runs return `503 admissions_paused` with `Retry-After: 5`. Retry with the same intent and idempotency key. MCP submit tools return a tool error with the same retry guidance.
 
 Matching receipt retries, scoped reads, quotes, provider polling, signed webhook delivery, and generation steps of admitted workflows remain available. Stop API and worker writers at the snapshot boundary for a coordinated backup. Resume admissions after verifying the release with a saved receipt.
 
