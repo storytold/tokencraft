@@ -6,7 +6,7 @@ from io import StringIO
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import smoke_authenticated_gateway as smoke
 
@@ -54,6 +54,42 @@ class RevisionPreflightTest(unittest.TestCase):
             smoke.verify_revision(address, None, REVISION)
             smoke.verify_revision(address, None, REVISION)
             self.assertEqual([call.args[1] for call in gateway.call_args_list], [None, None])
+
+
+class ScopedResponseFreshnessTest(unittest.TestCase):
+    def test_rejects_aged_or_ambiguous_scoped_responses_before_reading_the_body(self):
+        path = "/v1/requests/req_Fixture"
+        gateway = smoke.Gateway(smoke.origin("http://localhost:4000"), "synthetic-fixture-token", None,
+                                private_api=True)
+        for status in (200, 401):
+            for ages in (("19",), ("-1",), ("0", "0")):
+                with self.subTest(status=status, ages=ages):
+                    headers = HTTPMessage()
+                    headers["Cache-Control"] = "private, no-store"
+                    for age in ages:
+                        headers["Age"] = age
+                    response = Mock(status=status, headers=headers)
+                    response.read.return_value = b"{}"
+                    with patch.object(smoke, "HTTPConnection") as connection:
+                        connection.return_value.getresponse.return_value = response
+                        with self.assertRaisesRegex(RuntimeError, "fresh, private, non-storable"):
+                            gateway.request(path, status)
+                        response.read.assert_not_called()
+                        connection.return_value.close.assert_called_once()
+
+    def test_accepts_private_responses_with_age_zero_or_no_age(self):
+        gateway = smoke.Gateway(smoke.origin("http://localhost:4000"), None, None, private_api=True)
+        for age in (None, "0"):
+            with self.subTest(age=age):
+                headers = HTTPMessage()
+                headers["Cache-Control"] = "private, no-store"
+                if age is not None:
+                    headers["Age"] = age
+                response = Mock(status=200, headers=headers)
+                response.read.return_value = b"{}"
+                with patch.object(smoke, "HTTPConnection") as connection:
+                    connection.return_value.getresponse.return_value = response
+                    self.assertEqual(gateway.request("/v1/usage"), (b"{}", headers))
 
 
 if __name__ == "__main__":

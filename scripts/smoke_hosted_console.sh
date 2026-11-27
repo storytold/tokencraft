@@ -82,11 +82,11 @@ check_no_store_headers() {
       fresh_age = (header_value($0) ~ /^0+$/)
     }
     END {
-      valid = status && policies == 1 && no_store
+      valid = status && policies == 1 && no_store && (ages == 0 || (ages == 1 && fresh_age))
       if (expected_revision == "") {
         valid = valid && private
       } else {
-        valid = valid && stamps == 1 && matching_stamp && (ages == 0 || (ages == 1 && fresh_age))
+        valid = valid && stamps == 1 && matching_stamp
       }
       exit !valid
     }
@@ -108,7 +108,7 @@ check_session_cache_policy() {
   local origin=$1 target=$2
   if ! request --output /dev/null --dump-header - -- "$origin/v1/auth/me" |
     check_no_store_headers 401 ""; then
-    printf 'FAIL %s /v1/auth/me must return a private, non-storable 401\n' "$target" >&2
+    printf 'FAIL %s /v1/auth/me must return a fresh, private, non-storable 401\n' "$target" >&2
     return 1
   fi
   printf 'PASS %s session cache policy\n' "$target"

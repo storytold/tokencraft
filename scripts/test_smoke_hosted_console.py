@@ -42,6 +42,8 @@ class ConsoleFixture(BaseHTTPRequestHandler):
         elif route in {"/v1/rate-limits", "/v1/auth/me"}:
             status = 401
             headers = {"Cache-Control": "private, no-store"}
+            if route == "/v1/auth/me" and self.server.session_age is not None:
+                headers["Age"] = self.server.session_age
             data = b'{"error":{"code":"unauthorized"}}'
         else:
             self.send_error(404)
@@ -55,13 +57,14 @@ class ConsoleFixture(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def release_gate(console_ready, gateway_ready, revision=REVISION):
+def release_gate(console_ready, gateway_ready, revision=REVISION, *, console_session_age=None):
     with ExitStack() as stack:
         servers = []
         for responses in (console_ready, gateway_ready):
             server = stack.enter_context(serve(ThreadingHTTPServer(("127.0.0.1", 0), ConsoleFixture)))
             server.ready_calls = 0
             server.ready_responses = responses
+            server.session_age = console_session_age if not servers else None
             servers.append(server)
         origins = [f"http://127.0.0.1:{server.server_port}" for server in servers]
         args = ["bash", str(ROOT / "scripts/smoke_hosted_console.sh"), *origins]
@@ -76,7 +79,8 @@ class HostedConsoleReadinessTest(unittest.TestCase):
     fresh = {"TokenCraft-Source-Revision": REVISION, "Cache-Control": "no-store"}
 
     def test_fresh_ready_and_revision_are_read_together_from_each_origin(self):
-        observed, calls = release_gate([(True, self.fresh)], [(True, {**self.fresh, "Age": "0"})])
+        observed, calls = release_gate([(True, self.fresh)], [(True, {**self.fresh, "Age": "0"})],
+                                       console_session_age="0")
         self.assertEqual(observed.returncode, 0, observed.stderr)
         self.assertEqual(calls, [1, 1])
 
@@ -99,6 +103,11 @@ class HostedConsoleReadinessTest(unittest.TestCase):
         observed, calls = release_gate([(True, {})], [(True, {})], revision=None)
         self.assertEqual(observed.returncode, 0, observed.stderr)
         self.assertEqual(calls, [1, 1])
+
+    def test_cached_session_denial_fails_even_with_non_storable_policy(self):
+        observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)], console_session_age="30")
+        self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
+        self.assertIn("FAIL console /v1/auth/me", observed.stderr)
 
 
 if __name__ == "__main__":

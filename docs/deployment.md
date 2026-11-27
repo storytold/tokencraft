@@ -369,7 +369,7 @@ source_revision="$(git rev-parse HEAD)"
 bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com "$source_revision"
 ```
 
-The revision check verifies health and the expected SHA in a single fresh, non-storable response from each origin. The check also compares both console copies and the running gateway with the release OpenAPI snapshot, compares the connector primitive registry at both origins, and verifies the console catalog bytes. An unauthenticated request to `/v1/rate-limits` at both origins must return the gateway's `401` JSON response. This confirms the route is mounted and the console forwards it to an API without creating a job. Treat any mismatch as a failed release check.
+The revision check verifies health and the expected SHA in a single fresh, non-storable response from each origin. It also requires a fresh, private, non-storable `401` from `/v1/auth/me` at both origins. The check compares both console copies and the running gateway with the release OpenAPI snapshot, compares the connector primitive registry at both origins, and verifies the console catalog bytes. An unauthenticated request to `/v1/rate-limits` at both origins must return the gateway's `401` JSON response. This confirms the route is mounted and the console forwards it to an API without creating a job. Treat any mismatch as a failed release check.
 
 Before reopening submissions, pick an existing successful request with a gateway trace and a readable warm result. Inject a project key with `requests:read` and `usage:read` into `TOKENCRAFT_SMOKE_API_KEY`.
 
@@ -379,7 +379,7 @@ python3 -B scripts/smoke_authenticated_gateway.py \
   --revision "$source_revision" --request-id "$previous_request_id"
 ```
 
-This mode uses GET requests to check the saved result, media digests, trace, scoped history, and usage for the UTC day of admission. With `--peer`, both origins must agree on the receipt identity and result. It repeats the scoped reads without a key and requires private, non-storable gateway denials. Omit `--peer` for a console that connects directly to the gateway rather than proxying API routes.
+This mode uses GET requests to check the saved result, media digests, trace, scoped history, and usage for the UTC day of admission. With `--peer`, both origins must agree on the receipt identity and result. It repeats the scoped reads without a key and requires gateway denials. Scoped responses must be private and non-storable. If an ingress sets `Age`, it must send one value of zero. Omit `--peer` for a console that connects directly to the gateway rather than proxying API routes.
 
 For deployments with the bundled `example_image` connector, run the authenticated check with a dedicated project key in `TOKENCRAFT_SMOKE_API_KEY`. Grant it `requests:submit`, `requests:read`, and `usage:read`. Supply `--peer` only if that trusted origin serves the same deployment.
 
