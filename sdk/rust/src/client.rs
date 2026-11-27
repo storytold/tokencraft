@@ -367,15 +367,33 @@ impl TokenCraftClient {
         if let Some(traceparent) = &self.submit_traceparent {
             request = request.header("traceparent", traceparent.clone());
         }
-        self.send_idempotent(request).await
+        let (receipt, status, headers): (Receipt, _, _) = self.send_idempotent(request).await?;
+        let mut header_ids = headers.get_all("tokencraft-request-id").iter();
+        let header_matches = header_ids.next().is_none_or(|id| id.as_bytes() == receipt.id.as_bytes())
+            && header_ids.next().is_none();
+        if !matches!(status, StatusCode::OK | StatusCode::ACCEPTED)
+            || !valid_id(&receipt.id, "req_")
+            || !valid_id(&receipt.project_id, "proj_")
+            || receipt.status_url != format!("/v1/requests/{}", receipt.id)
+            || !header_matches
+        {
+            return Err(Error::Gateway {
+                status,
+                code: "invalid_response".into(),
+                message: "the gateway returned an inconsistent native request receipt".into(),
+                request_id: None,
+            });
+        }
+        Ok(receipt)
     }
 
     pub(super) async fn send_idempotent<T: DeserializeOwned>(
         &self,
         request: RequestBuilder,
-    ) -> Result<T, Error> {
+    ) -> Result<(T, StatusCode, HeaderMap), Error> {
         if self.submit_max_attempts == 1 {
-            return self.send(request, None).await;
+            let response = request.send().await.map_err(|source| Error::from_http(source, None))?;
+            return Self::decode_submission(response, None).await;
         }
 
         let request = request.build().map_err(|source| Error::from_http(source, None))?;
@@ -411,7 +429,7 @@ impl TokenCraftClient {
                     }
                 }
                 let successful = response.status().is_success();
-                match Self::decode(response, request_id.as_deref()).await {
+                match Self::decode_submission(response, request_id.as_deref()).await {
                     Err(Error::Transport { .. }) if successful && may_retry => {
                         tokio::time::sleep(transport_backoff(attempt_number)).await;
                     }
@@ -420,6 +438,17 @@ impl TokenCraftClient {
             }
         }).await;
         result.map_err(|_| Error::Timeout { request_id })?
+    }
+
+    async fn decode_submission<T: DeserializeOwned>(
+        response: Response,
+        id_hint: Option<&str>,
+    ) -> Result<(T, StatusCode, HeaderMap), Error> {
+        let (response, request_id) = Self::checked_response(response, id_hint).await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let value = response.json().await.map_err(|source| Error::from_http(source, request_id))?;
+        Ok((value, status, headers))
     }
 
     pub async fn get(&self, id: &str) -> Result<RequestTrace, Error> {

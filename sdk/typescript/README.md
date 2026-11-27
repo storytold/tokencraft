@@ -25,6 +25,8 @@ Read the [request diagnostics guide](../../docs/request-diagnostics.md) for scop
 
 Native submissions and published workflow invocations make one attempt by default. Set `submitMaxAttempts: 3` to enable retries after a connection error, an interrupted success response, or a `429` or `503` with a valid `Retry-After` in seconds or as an HTTP date. The limit includes the first attempt. Every retry uses the same serialized body and idempotency key within the original `timeoutMs`. Persist the quote, submission options, and key so you can replay the same intent if the client exhausts its attempts. During polling, `wait` follows the same HTTP hints. If a connection drops, a response body is interrupted, or a single read times out, polling resumes at the configured interval with the last valid validator. The overall wait deadline still applies.
 
+Native submissions verify that the receipt's request ID agrees with its status URL and any `TokenCraft-Request-Id` header. An inconsistent receipt returns `invalid_response` without an automatic retry. To recover its receipt, explicitly replay the original quote and options with the same idempotency key.
+
 Artifact and workflow-output downloads also make one attempt by default. Set `downloadMaxAttempts: 3` to retry an interrupted transfer or a `429` or `503` with a valid `Retry-After`. Each attempt starts the download again and verifies the final file. A response that fails integrity validation returns an error. One `timeoutMs` and the caller's abort signal cover the full operation.
 
 The SDK gives an HTTP error body up to one second and 64 KiB within the operation deadline. If it cannot decode the error details, `TokenCraftError` reports `http_error` with the HTTP status and any available request ID.

@@ -218,7 +218,7 @@ impl WorkflowEndpoint<'_> {
                 client_ref: options.client_ref,
                 reuse_run_id: options.reuse_run_id,
             });
-        let receipt: WorkflowReceipt = self.client.send_idempotent(request).await?;
+        let (receipt, _, _): (WorkflowReceipt, _, _) = self.client.send_idempotent(request).await?;
         let expected = format!("/{}/runs/{}", self.path, receipt.id);
         if !valid_id(&receipt.id, "wfr_")
             || receipt.status_url != expected

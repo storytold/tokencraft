@@ -18,7 +18,7 @@ import type {
 
 const inspectable = new Set(["succeeded", "failed", "canceled", "awaiting_reconciliation"]);
 
-type GatewayRead<T> = { value: T; headers: Headers };
+type GatewayRead<T> = { value: T; headers: Headers; status: number };
 type RetryOperation = "submission" | "download";
 
 interface WireOptions extends CallOptions {
@@ -86,7 +86,7 @@ export class TokenCraft {
 
   submit(quote: Pick<Quote, "id" | "input" | "pinned_offer_id">, options: SubmitOptions): Promise<Receipt> {
     validateIdempotencyKey(options.idempotencyKey);
-    return this.#call("POST", "v1/requests", {
+    return this.#read<Receipt>("POST", "v1/requests", {
       auth: true, key: options.idempotencyKey, signal: options.signal,
       retry: "submission",
       traceparent: options.traceparent === undefined ? undefined : validateTraceparent(options.traceparent),
@@ -104,6 +104,16 @@ export class TokenCraft {
         mesh_prompt: options.meshPrompt,
         chat_options: options.chatOptions,
       },
+    }).then(({ value: receipt, headers, status }) => {
+      const headerId = headers.get("TokenCraft-Request-Id");
+      if ((status !== 200 && status !== 202)
+        || !isRequestId(receipt.id)
+        || !hasIdPrefix(receipt.project_id, "proj_")
+        || receipt.status_url !== `/v1/requests/${receipt.id}`
+        || (headerId !== null && headerId !== receipt.id)) {
+        throw new TokenCraftError(status, "invalid_response", "The gateway returned an inconsistent native request receipt.");
+      }
+      return receipt;
     });
   }
 
@@ -375,11 +385,11 @@ export class TokenCraft {
           request.signal.throwIfAborted();
           const delay = response.status === 429 || response.status === 503 ? retryAfter(response.headers) : undefined;
           if (response.status === 304 && typeof validator === "string") {
-            return { value: null, headers: response.headers };
+            return { value: null, headers: response.headers, status: response.status };
           }
           if (delay !== undefined && (polling || attempt < maxAttempts)) {
             void response.body?.cancel().catch(() => {});
-            if (polling) return { value: null, headers: response.headers };
+            if (polling) return { value: null, headers: response.headers, status: response.status };
             await pause(Math.min(delay, this.#timeout), request.signal);
             continue;
           }
@@ -388,7 +398,7 @@ export class TokenCraft {
           }
           const value = await consume(response, id);
           request.signal.throwIfAborted();
-          return { value, headers: response.headers };
+          return { value, headers: response.headers, status: response.status };
         } catch (error) {
           const submissionInterrupted = retry === "submission" && error instanceof TypeError;
           const downloadInterrupted = retry === "download"

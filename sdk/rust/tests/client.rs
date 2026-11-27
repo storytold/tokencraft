@@ -10,6 +10,7 @@ use tokio::{
 };
 
 const REQUEST: &str = "req_01m881w0c8np13xfvetqsbk8m0";
+const PROJECT: &str = "proj_01m881w0c8np13xfvetqsbk8m0";
 const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
 fn input() -> QuoteInput {
@@ -31,6 +32,10 @@ fn quote_fixture() -> Quote {
         "currency": "USD", "pinned_offer_id": "image_fixture",
         "selected_offer_id": "image_fixture", "candidates": []
     })).unwrap()
+}
+
+fn receipt_fixture() -> serde_json::Value {
+    json!({ "id": REQUEST, "project_id": PROJECT, "status_url": format!("/v1/requests/{REQUEST}") })
 }
 
 async fn reply(status: &str, headers: &str, body: &str) -> (String, JoinHandle<(String, String)>) {
@@ -413,9 +418,7 @@ async fn saved_quotes_replay_requested_data_limits_and_leave_inherited_limits_to
         assert_eq!(quoted.get("data_requirements"), sent.as_ref());
         let saved = serde_json::to_string(&quote).unwrap();
         let restored: Quote = serde_json::from_str(&saved).unwrap();
-        let (origin, captured) = reply("202 Accepted", "", &json!({
-            "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
-        }).to_string()).await;
+        let (origin, captured) = reply("202 Accepted", "", &receipt_fixture().to_string()).await;
         let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
         assert_eq!(
             client.submit(&restored, SubmitOptions::new("fixture-data-policy")).await.unwrap().id,
@@ -612,9 +615,7 @@ async fn submission_reuses_the_same_wire_intent_after_hinted_failures() {
             "503 Service Unavailable", "Retry-After: Sun Nov  6 08:49:37 1994\r\n", "{}",
         );
         let limited = wire_response("429 Too Many Requests", "Retry-After: 0\r\n", "{}");
-        let admitted = wire_response("202 Accepted", "", &json!({
-            "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
-        }).to_string());
+        let admitted = wire_response("202 Accepted", "", &receipt_fixture().to_string());
         let first = capture_and_reply(&listener, &unavailable).await;
         let second = capture_and_reply(&listener, &limited).await;
         let third = capture_and_reply(&listener, &admitted).await;
@@ -647,9 +648,7 @@ async fn submission_recovers_a_receipt_after_connection_loss() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
-        let body = json!({
-            "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
-        }).to_string();
+        let body = receipt_fixture().to_string();
         let headers = format!("TokenCraft-Request-Id: {REQUEST}\r\n");
         let admitted = wire_response("202 Accepted", &headers, &body);
         let replay = wire_response("200 OK", &headers, &body);
@@ -689,6 +688,50 @@ async fn submission_leaves_complete_invalid_receipts_terminal() {
 }
 
 #[tokio::test]
+async fn native_admission_rejects_inconsistent_receipt_evidence() {
+    use tokencraft_sdk::SubmitOptions;
+
+    let other = "req_00000000000000000000000000";
+    let original = receipt_fixture();
+    let mut wrong_path = original.clone();
+    wrong_path["status_url"] = json!(format!("/v1/requests/{other}"));
+    let mut absolute_path = original.clone();
+    absolute_path["status_url"] = json!(format!("https://other.example/v1/requests/{REQUEST}"));
+    let mut wrong_id = original.clone();
+    wrong_id["id"] = json!(PROJECT);
+    let mut wrong_project = original.clone();
+    wrong_project["project_id"] = json!(REQUEST);
+    let wrong_header = format!("TokenCraft-Request-Id: {other}\r\n");
+    let repeated_header = format!("TokenCraft-Request-Id: {REQUEST}\r\n").repeat(2);
+
+    for (wire_status, expected_status, headers, body) in [
+        ("202 Accepted", 202, "", &wrong_path),
+        ("202 Accepted", 202, "", &absolute_path),
+        ("202 Accepted", 202, "", &wrong_id),
+        ("202 Accepted", 202, "", &wrong_project),
+        ("201 Created", 201, "", &original),
+        ("202 Accepted", 202, wrong_header.as_str(), &original),
+        ("202 Accepted", 202, repeated_header.as_str(), &original),
+    ] {
+        let (origin, captured) = reply(wire_status, headers, &body.to_string()).await;
+        let client = TokenCraftClient::new(&origin, Some("fixture"))
+            .unwrap()
+            .with_submit_max_attempts(3)
+            .unwrap();
+        let error = client
+            .submit(&quote_fixture(), SubmitOptions::new("receipt-check"))
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, Error::Gateway { code, .. } if code == "invalid_response"));
+        assert_eq!(error.status().map(|value| value.as_u16()), Some(expected_status));
+        assert_eq!(error.request_id(), None);
+        let (head, _) = captured.await.unwrap();
+        assert!(head.starts_with("post /v1/requests "));
+        assert!(head.contains("idempotency-key: receipt-check\r\n"));
+    }
+}
+
+#[tokio::test]
 async fn caller_context_is_validated_and_applies_only_to_the_scoped_client_submissions() {
     use tokencraft_sdk::SubmitOptions;
 
@@ -696,9 +739,7 @@ async fn caller_context_is_validated_and_applies_only_to_the_scoped_client_submi
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         let catalog = wire_response("200 OK", "", r#"{"revision":"fixture","offers":[]}"#);
-        let receipt = wire_response("202 Accepted", "", &json!({
-            "id": REQUEST, "project_id": "fixture", "status_url": format!("/v1/requests/{REQUEST}"),
-        }).to_string());
+        let receipt = wire_response("202 Accepted", "", &receipt_fixture().to_string());
         let (read, _) = capture_and_reply(&listener, &catalog).await;
         let (linked, _) = capture_and_reply(&listener, &receipt).await;
         let (unlinked, _) = capture_and_reply(&listener, &receipt).await;

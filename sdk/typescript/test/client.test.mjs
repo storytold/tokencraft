@@ -9,6 +9,8 @@ import {
 } from "@tokencraft/sdk";
 
 const requestId = "req_01m881w0c8np13xfvetqsbk8m0";
+const projectId = requestId.replace("req_", "proj_");
+const admissionReceipt = (id = requestId) => ({ id, project_id: projectId, status_url: `/v1/requests/${id}` });
 const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const image = { model: "studio_image_demo", workload: { kind: "image", count: 1, aspect_ratio: "7:5" } };
 const options = { baseUrl: "https://gateway.example/edge/", apiKey: "fixture_key" };
@@ -150,7 +152,8 @@ test("reuses the supplied intent on explicit replay and preserves scoped filter 
     ...options,
     fetch: async (url, init) => {
       sent.push({ url, body: init.body, key: init.headers.get("Idempotency-Key") });
-      return Response.json({ id: requestId });
+      return Response.json(url.pathname.endsWith("/v1/requests") && init.method === "POST"
+        ? admissionReceipt() : { requests: [], next_after: null });
     },
   });
   const quote = { id: "quo_fixture", input: image };
@@ -280,7 +283,7 @@ test("opt-in submission retries reuse the serialized intent and idempotency key"
       return Response.json({}, { status: 503, headers: { "Retry-After": "Sunday, 06-Nov-94 08:49:37 GMT" } });
     }
     if (sent.length === 2) return Response.json({}, { status: 429, headers: { "Retry-After": "0" } });
-    return Response.json({ id: requestId }, { status: 202 });
+    return Response.json(admissionReceipt(), { status: 202 });
   } });
   assert.equal((await client.submit(quote, submission)).id, requestId);
   assert.deepEqual(sent, [sent[0], sent[0], sent[0]]);
@@ -295,7 +298,7 @@ test("opt-in submission retries reuse the serialized intent and idempotency key"
 
 test("opt-in submission recovers a receipt after connection loss", async (t) => {
   const sent = [];
-  const receipt = JSON.stringify({ id: requestId });
+  const receipt = JSON.stringify(admissionReceipt());
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -348,11 +351,35 @@ test("submission leaves complete invalid receipts terminal", async () => {
   assert.equal(calls, 1);
 });
 
+test("native admission rejects inconsistent receipt evidence without another attempt", async () => {
+  const original = admissionReceipt();
+  const other = "req_00000000000000000000000000";
+  const replies = [
+    [202, { ...original, status_url: `/v1/requests/${other}` }, {}],
+    [202, { ...original, status_url: `https://other.example${original.status_url}` }, {}],
+    [202, { ...original, id: projectId }, {}],
+    [202, { ...original, project_id: requestId }, {}],
+    [201, original, {}],
+    [202, original, { "TokenCraft-Request-Id": other }],
+    [202, original, { "TokenCraft-Request-Id": `${requestId}, ${requestId}` }],
+  ];
+  let calls = 0;
+  const client = new TokenCraft({ ...options, submitMaxAttempts: 3, fetch: async () => {
+    const [status, body, headers] = replies[calls++];
+    return Response.json(body, { status, headers });
+  } });
+  for (const [index, [status]] of replies.entries()) {
+    await assert.rejects(client.submit({ id: "quo_fixture", input: image }, { idempotencyKey: "receipt-check" }),
+      { status, code: "invalid_response", requestId: undefined });
+    assert.equal(calls, index + 1);
+  }
+});
+
 test("validates caller trace context and keeps it local to the supplied submission", async () => {
   const seen = [];
   const client = new TokenCraft({ ...options, fetch: async (_, init) => {
     seen.push([init.headers.get("traceparent"), init.headers.get("tracestate"), init.headers.get("baggage")]);
-    return Response.json({ id: requestId });
+    return Response.json(admissionReceipt());
   } });
   const quote = { id: "quo_fixture", input: image };
   const future = traceparent.replace(/^00-/, "01-") + "-extension";
@@ -722,7 +749,7 @@ test("keeps an execution slot occupied when an accepted comparison request remai
         const body = JSON.parse(init.body);
         assert.equal(body.quote_id, `quo_${body.pinned_offer_id}`);
         submitted.push(init.headers.get("Idempotency-Key"));
-        return Response.json({ id: requestId });
+        return Response.json(admissionReceipt());
       }
       return Response.json({ id: requestId, status: "awaiting_reconciliation", events: [] });
     },
@@ -781,7 +808,7 @@ test("refreshes saved comparison costs and native charges through scoped request
             provider_charge: earlierCharge ? { unit: "credits", quantity: "0.17", observed_at: observedAt } : undefined,
           },
         });
-        return Response.json({ id });
+        return Response.json(admissionReceipt(id));
       }
       const id = url.pathname.split("/").at(-1);
       assert.equal(init.method, "GET");
