@@ -68,7 +68,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 3. Keep ingress paused and the new fleet stopped while applying the target image's migrations. Use `admin-cli migrate --pause-admissions` on schema 88 or later and `admin-cli migrate` on earlier releases. Reapply [runtime grants](#separate-migration-and-runtime-roles) and run `admin-cli schema-status` as the runtime role. On schema 88 or later, run `admin-cli admissions status --expect paused` with the same role and wait for it to succeed before starting the new fleet. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress), then resume the database gate if active and lift the ingress pause.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 88 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 89 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Deploy client-bound quote signing to the API replicas together. Refresh unused quotes issued before the upgrade. Requests already admitted replay with their original quote, payload, and idempotency key.
 
@@ -113,6 +113,8 @@ Matching receipt retries, scoped reads, quotes, provider polling, signed webhook
 The [Operations console](../deploy/monitoring/README.md#read-the-operational-views) shows the observed pause state and whole-cell request, workflow, and webhook backlog counts.
 
 If API autoscaling is enabled, the pause also waits for any scale-in request already holding the database lock. Verify replica readiness and drain before starting the backup. [Scale-in guard](capacity.md#wire-the-controller-into-a-hosted-cell)
+
+### Expose receipt recovery in customer exports
 
 Migration 89 adds receipt recovery to the version 1 export feed and backfills transitions for active requests with a saved recovery receipt. Schema-88 gateways can overlap after the migration commits. Apply it during the cutover window because request writes pause while the migration changes the export trigger and backfills those events. Use the updated [PostgreSQL reporting views](customer-data.md#reconcile-costs) to project the recovered state.
 
