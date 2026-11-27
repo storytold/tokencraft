@@ -39,7 +39,7 @@ For an operator catalog and externally managed PostgreSQL, use the [gateway runt
 
 ### Start from a native package
 
-Choose the `.tar.gz` for your OS and architecture and keep its `.sha256` file alongside it. The archive includes the matching launcher, gateway, migration tool, OpenAPI contract, public pricing catalog, and deployment files. It also includes the [optional media worker](../plugins/tools/media/README.md) with the [workflow](workflows.md) and [media setup](media-tools.md) guides, plus the separate [Operations console](../deploy/monitoring/README.md) and its sample configuration. Install the PostgreSQL 17 server tools before starting the launcher. [PostgreSQL for Ubuntu](https://www.postgresql.org/download/linux/ubuntu/) · [PostgreSQL 17 for macOS](https://formulae.brew.sh/formula/postgresql%4017)
+Choose the `.tar.gz` for your OS and architecture and keep its `.sha256` file alongside it. The archive includes the matching launcher, gateway, migration tool, OpenAPI contract, connector primitive registry, public pricing catalog, [inference plugins](../plugins/providers/inference/README.md), and deployment files. It also includes the [optional media worker](../plugins/tools/media/README.md) with the [workflow](workflows.md) and [media setup](media-tools.md) guides, plus the separate [Operations console](../deploy/monitoring/README.md) and its sample configuration. Install the PostgreSQL 17 server tools before starting the launcher. [PostgreSQL for Ubuntu](https://www.postgresql.org/download/linux/ubuntu/) · [PostgreSQL 17 for macOS](https://formulae.brew.sh/formula/postgresql%4017)
 
 ```sh
 shasum -a 256 -c tokencraft-0.1.0-darwin-arm64.tar.gz.sha256
@@ -52,7 +52,7 @@ Use `sha256sum -c` on systems with GNU coreutils. From a second terminal in the 
 
 Archives ending in `-console.tar.gz` include a `console/` directory. Run `./bin/tokencraft dev --console-dir ./console` and open the localhost console URL printed by the launcher. The same command accepts `--profile` for a reviewed catalog. Use `--web-port` when the default port 3000 is occupied.
 
-Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. The workflow records the source commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. It tests the extracted package against disposable PostgreSQL, including backup and restoration of a published workflow, then writes the archive and checksum to your chosen directory. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
+Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. Select **Include the compiled console** to build a console from the same commit. The workflow records that commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. It tests the extracted package against disposable PostgreSQL, including backup and restoration of a published workflow, then writes the archive and checksum to your chosen directory. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
 
 ```sh
 python3 scripts/native_package.py --output ./native-packages
@@ -108,7 +108,7 @@ npm ci --ignore-scripts
 VITE_TOKENCRAFT_DEMO=true VITE_TOKENCRAFT_PACKAGED=true VITE_API_BASE_URL= npm run build
 ```
 
-Point `tokencraft dev --console-dir` at the resulting `dist/` directory. The launcher serves it on the web port and supplies the active API port to the frontend. Use that compiled directory with `scripts/native_package.py --console-dir ./path/to/dist` to include the console in a native package.
+Point `tokencraft dev --console-dir` at the resulting `dist/` directory. The launcher serves it on the web port and supplies the active API port to the frontend. Use that compiled directory with `scripts/native_package.py --console-dir ./path/to/dist` to include the console in a native package. When packaging with `--source-revision`, set `TOKENCRAFT_SOURCE_REVISION` to the same commit when building the console. Packaging checks the console's embedded OpenAPI and catalog bytes and, for stamped packages, its source revision.
 
 For frontend development, run these commands from `frontend/` with the gateway already running.
 

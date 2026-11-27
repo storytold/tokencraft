@@ -13,6 +13,10 @@ if (( $# == 3 )) && [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
   exit 2
 fi
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+primitives="$root/contracts/connector-primitives.json"
+if [[ ! -f "$primitives" ]]; then
+  primitives="$root/crates/core/provider-mapping/schemas/v1.json"
+fi
 
 request() {
   curl -q --silent --show-error --connect-timeout 5 --max-time 45 \
@@ -96,6 +100,10 @@ check "$gateway" gateway ready 'report ready' jq -es 'length == 1 and .[0].ready
 check "$gateway" gateway openapi.json 'match the release OpenAPI contract' matches_contract || result=1
 check "$console" console openapi.json 'serve the release OpenAPI contract' matches_contract || result=1
 check "$console" console docs/openapi.json 'serve the release OpenAPI contract' matches_contract || result=1
+check "$gateway" gateway v1/schemas/primitives 'match the release connector primitive registry' \
+  cmp -s "$primitives" - || result=1
+check "$console" console v1/schemas/primitives 'proxy the release connector primitive registry' \
+  cmp -s "$primitives" - || result=1
 check "$console" console catalog/artcraft-v1.json 'match the release ArtCraft catalog bytes' \
   cmp -s "$root/catalog/artcraft-v1.json" - || result=1
 check_rate_limit_route "$gateway" gateway || result=1

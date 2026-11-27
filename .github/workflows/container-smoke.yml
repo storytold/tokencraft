@@ -48,6 +48,8 @@ jobs:
             for file in catalog/artcraft-v1.json contracts/openapi.json deploy/postgres/grant-runtime.sql; do
               docker run --rm --network none --entrypoint cat "$image" "$file" | cmp - "$file"
             done
+            docker run --rm --network none --entrypoint cat "$image" contracts/connector-primitives.json \
+              | cmp - crates/core/provider-mapping/schemas/v1.json
             test "$package_version" = "$image_version"
           done
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$package_version" ]]; then

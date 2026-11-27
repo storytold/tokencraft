@@ -112,7 +112,7 @@ Open **Projects → Settings → Compute fallback** to inherit pool priorities o
 
 ## Build the gateway runtime image
 
-From the core repository, build the gateway target and tag it with the release version. The image includes the matching migration CLI and records the Git commit in `VERSION.json` when supplied at build time. The public catalog, OpenAPI contract, and PostgreSQL runtime grant script are in `/opt/tokencraft`.
+From the core repository, build the gateway target and tag it with the release version. The image includes the matching migration CLI and records the Git commit in `VERSION.json` when supplied at build time. The public catalog, OpenAPI contract, connector primitive registry, and PostgreSQL runtime grant script are in `/opt/tokencraft`.
 
 ```sh
 docker build --file deploy/container/Dockerfile --target gateway \
@@ -326,7 +326,7 @@ source_revision="$(git rev-parse HEAD)"
 bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com "$source_revision"
 ```
 
-The check compares both console copies and the running gateway with the release snapshot and verifies the console catalog bytes. It also sends an unauthenticated request to `/v1/rate-limits` at both origins and expects the gateway's `401` JSON response. This confirms that the route is mounted and that the console forwards it to an API, without needing an account or creating a job. Treat a mismatch as a failed release check even when both `/ready` probes pass.
+The check compares both console copies and the running gateway with the release OpenAPI snapshot. It also compares the connector primitive registry at both origins and verifies the console catalog bytes. An unauthenticated request to `/v1/rate-limits` at both origins must return the gateway's `401` JSON response. This confirms that the route is mounted and that the console forwards it to an API, without needing an account or creating a job. Treat a mismatch as a failed release check even when both `/ready` probes pass.
 
 For deployments with the bundled `example_image` connector, run the authenticated check with a dedicated project key in `TOKENCRAFT_SMOKE_API_KEY`. Grant it `requests:submit`, `requests:read`, and `usage:read`. Supply `--peer` only if that trusted origin serves the same deployment.
 

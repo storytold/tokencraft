@@ -2,6 +2,11 @@ name: Native packages
 
 "on":
   workflow_dispatch:
+    inputs:
+      console:
+        description: Include the compiled console
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,6 +26,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        if: inputs.console
+        with:
+          node-version: "22"
+      - name: Build the matching console
+        if: inputs.console
+        working-directory: frontend
+        env:
+          TOKENCRAFT_SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          npm ci --ignore-scripts
+          npm run build
       - name: Install PostgreSQL 17 on Ubuntu
         if: runner.os == 'Linux'
         run: bash .github/scripts/install-postgresql17-ubuntu.sh
@@ -33,11 +50,17 @@ jobs:
           echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
       - name: Build and verify the unpacked package
         shell: bash
+        env:
+          INCLUDE_CONSOLE: ${{ inputs.console }}
         run: |
           rustup show
           postgres --version | grep -E '^postgres \(PostgreSQL\) 17\.'
           command -v initdb pg_ctl
-          python3 scripts/native_package.py --output "$RUNNER_TEMP/native-packages" --source-revision "$GITHUB_SHA"
+          options=()
+          if [[ "$INCLUDE_CONSOLE" == true ]]; then
+            options+=(--console-dir frontend/dist)
+          fi
+          python3 scripts/native_package.py --output "$RUNNER_TEMP/native-packages" --source-revision "$GITHUB_SHA" "${options[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: tokencraft-native-${{ matrix.runner }}

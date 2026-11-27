@@ -29,6 +29,18 @@ from smoke_native_backup import defer_workflow, prepare_workflow, verify_backup
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARIES = ("tokencraft", "api-gateway", "admin-cli")
+REFERENCE_CATALOG = "catalog/artcraft-v1.json"
+PRIMITIVE_SOURCE = "crates/core/provider-mapping/schemas/v1.json"
+PRIMITIVE_CONTRACT = "contracts/connector-primitives.json"
+INFERENCE = "plugins/providers/inference"
+PLUGIN_COMMON = ("LICENSE", "README.md", "bindings.example.json", "catalog.example.json",
+                 "index.mjs", "package.json", "service-auth.mjs", "service-auth.test.mjs")
+PLUGIN_FILES = {
+    "fal": ("fal-webhooks.mjs", "models.mjs", "provider.mjs", "provider.test.mjs", "queue.mjs",
+            "tenant-keys.mjs", "tenant-keys.test.mjs"),
+    "kinovi": ("provider.mjs", "provider.test.mjs", "queue.mjs", "tenant-keys.mjs", "tenant-keys.test.mjs"),
+    "openrouter": ("proxy.mjs", "proxy.test.mjs"),
+}
 MEDIA_WORKER = "plugins/tools/media"
 MEDIA_FILES = (
     "README.md", "contract.py", "delivery.manifest.json", "delivery.py",
@@ -45,17 +57,20 @@ OPERATIONS_FILES = (
     "web/tokencraft-mark.png",
 )
 SUPPORT_FILES = (
-    "LICENSE", "README.md", "catalog/artcraft-v1.json", "contracts/openapi.json",
+    "LICENSE", "README.md", REFERENCE_CATALOG, "contracts/openapi.json",
     "docs/setup.md", "docs/deployment.md", "docs/workflows.md", "docs/media-tools.md",
     "docs/provider-connectors.md", "docs/customer-data.md", "docs/event-archives.md",
-    "docs/chat-history.md", "examples/connector/catalog.json",
+    "docs/chat-history.md", "docs/request-diagnostics.md", "examples/connector/catalog.json",
     "examples/connector/bindings.json", "examples/connector/smoke.sh",
     "examples/postgres/export_to_postgres.py", "examples/postgres/postgres_usage_views.sql",
     "examples/postgres/grant_sync_role.sql", "examples/postgres/smoke.py",
+    "scripts/smoke_hosted_console.sh", "scripts/smoke_authenticated_gateway.py",
     "deploy/postgres/grant-runtime.sql", "docs/capacity.md",
     "deploy/autoscaling/collect.py", "deploy/autoscaling/controller.py", "deploy/autoscaling/signals.sql",
+    "plugins/providers/README.md", f"{INFERENCE}/README.md",
     "plugins/providers/compute/examples/two-target-chat/catalog.json",
     "plugins/providers/compute/examples/two-target-chat/chat-bindings.json",
+    *(f"{INFERENCE}/{provider}/{name}" for provider, files in PLUGIN_FILES.items() for name in (*PLUGIN_COMMON, *files)),
     *(f"{OPERATIONS}/{name}" for name in OPERATIONS_FILES),
     *(f"{MEDIA_WORKER}/{name}" for name in MEDIA_FILES),
 )
@@ -111,6 +126,7 @@ def archive_package(binary_dir, stage, name, metadata, console_dir=None):
             raise SystemExit(f"Missing executable {binary}")
     files.update({relative: (ROOT / relative, 0o755 if relative.endswith(".sh") else 0o644)
                   for relative in SUPPORT_FILES})
+    files[PRIMITIVE_CONTRACT] = (ROOT / PRIMITIVE_SOURCE, 0o644)
     if console_dir is not None:
         for path in console_dir.rglob("*"):
             relative = path.relative_to(console_dir)
@@ -137,6 +153,25 @@ def archive_package(binary_dir, stage, name, metadata, console_dir=None):
     return archive
 
 
+def verify_console(opener, origin, package, api_port, revision):
+    route = Request(origin + "/pricing", headers={"Accept": "text/html"})
+    with opener.open(route, timeout=3) as result:
+        marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
+        if marker not in result.read():
+            raise RuntimeError("The packaged console did not receive the active API port.")
+    for route, expected in (("docs/openapi.json", "contracts/openapi.json"),
+                            (REFERENCE_CATALOG, REFERENCE_CATALOG)):
+        asset = (package / expected).read_bytes()
+        with opener.open(f"{origin}/{route}", timeout=3) as result:
+            if result.read(len(asset) + 1) != asset:
+                raise RuntimeError(f"The packaged console {route} differs from the release asset.")
+    if revision is not None:
+        with opener.open(origin + "/release.json", timeout=3) as result:
+            manifest = json.load(result)
+            if not isinstance(manifest, dict) or manifest.get("source_revision") != revision:
+                raise RuntimeError("The packaged console source revision differs from VERSION.json.")
+
+
 def smoke_package(archive, name, pg_bin):
     """Run the extracted launcher with an explicit tool PATH and disposable state."""
     with TemporaryDirectory(prefix="tc-package-") as temp:
@@ -144,7 +179,12 @@ def smoke_package(archive, name, pg_bin):
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(work, filter="data")
         package = work / name
-        for entry_point in (package / MEDIA_WORKER / "server.py", package / OPERATIONS / "monitor.py"):
+        plugin_args = [argument for provider in PLUGIN_FILES
+                       for argument in ("--plugin-catalog", package / INFERENCE / provider / "catalog.example.json")]
+        run([package / "bin/api-gateway", "catalog", "check-reference", "--reference", package / REFERENCE_CATALOG,
+             *plugin_args], cwd=package, env={"LC_ALL": "C"}, stdout=subprocess.DEVNULL, timeout=10)
+        for entry_point in (package / MEDIA_WORKER / "server.py", package / OPERATIONS / "monitor.py",
+                            package / "scripts/smoke_authenticated_gateway.py"):
             run([sys.executable, "-B", entry_point, "--help"],
                 cwd=package, env={"LC_ALL": "C"}, stdout=subprocess.DEVNULL, timeout=10)
         tool_dir = work / "tools"
@@ -187,12 +227,11 @@ def smoke_package(archive, name, pg_bin):
             with opener.open(api + "/openapi.json", timeout=3) as running_contract:
                 if json.load(running_contract) != json.loads((package / "contracts/openapi.json").read_bytes()):
                     raise RuntimeError("The packaged API contract differs from the running gateway.")
+            with opener.open(api + "/v1/schemas/primitives", timeout=3) as running_registry:
+                if running_registry.read() != (package / PRIMITIVE_CONTRACT).read_bytes():
+                    raise RuntimeError("The packaged connector primitive registry differs from the running gateway.")
             if console.is_dir():
-                route = Request(f"http://localhost:{web_port}/pricing", headers={"Accept": "text/html"})
-                with opener.open(route, timeout=3) as result:
-                    marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
-                    if marker not in result.read():
-                        raise RuntimeError("The packaged console did not receive the active API port.")
+                verify_console(opener, f"http://localhost:{web_port}", package, api_port, revision)
             run([tool_dir / "bash", package / "examples/connector/smoke.sh", api],
                 cwd=package, env=env, timeout=90)
             workflow = prepare_workflow(api_port, web_port)
