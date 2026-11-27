@@ -1,12 +1,14 @@
 """Rehearse publishing and importing signed presets with a temporary HTTPS registry."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from hashlib import sha256
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shutil
 import ssl
 import subprocess
 from tempfile import TemporaryDirectory
@@ -74,20 +76,28 @@ def verify_release(binary, directory):
     run("openssl", "genpkey", "-algorithm", "ED25519", "-outform", "DER", "-out", private)
     run("openssl", "pkey", "-inform", "DER", "-in", private, "-pubout", "-outform", "DER", "-out", public)
     publisher = sha256(public.read_bytes()).hexdigest()
-    signature = directory / "signature.json"
     releases = directory / "www/releases"
 
-    def stage(reference):
+    def stage(reference, target=releases):
+        signature = directory / f"{reference.name}.sig.json"
         signature.write_bytes(catalog("sign-reference", "--reference", reference, "--private-key", private, *plugins))
         report = json.loads(catalog("stage-reference", "--reference", reference, "--signature", signature,
-                                    "--public-key", public, "--directory", releases, *plugins))
+                                    "--public-key", public, "--directory", target, *plugins))
         original = reference.read_bytes()
         assert report["reference_sha256"] == sha256(original).hexdigest()
-        assert (releases / report["catalog_path"]).read_bytes() == original
+        assert (target / report["catalog_path"]).read_bytes() == original
         assert {entry["offer_id"] for entry in report["plugin_coverage"]} == {
             offer["id"] for offer in json.loads(original)["offers"]
         }
         return report
+
+    def reject_revision_conflict(reference, target=releases):
+        try:
+            stage(reference, target)
+        except RuntimeError as error:
+            assert "reference revision already names a different snapshot" in str(error), error
+        else:
+            raise AssertionError("staging a different snapshot under a recorded revision succeeded")
 
     with registry(directory) as (origin, ca):
         def fetch(*args):
@@ -96,6 +106,10 @@ def verify_release(binary, directory):
         initial = stage(REFERENCE)
         first = fetch("--current")
         assert first == (releases / initial["release_path"]).read_bytes()
+        # Keep the first release on disk and exercise a staging directory made by older binaries.
+        legacy_index = releases / "revisions"
+        if legacy_index.exists():
+            shutil.rmtree(legacy_index)
         source = json.loads(REFERENCE.read_bytes())
         preset = next(offer for offer in source["offers"] if offer["kind"] == "image")
         source["revision"] += "-smoke"
@@ -107,6 +121,40 @@ def verify_release(binary, directory):
         second = fetch("--current")
         assert second == fetch("--sha256", updated["reference_sha256"])
         assert second != first
+        assert stage(updated_reference) == updated
+
+        conflict = directory / "conflicting-revision.json"
+        original = json.loads(REFERENCE.read_bytes())
+        next(offer for offer in original["offers"] if offer["id"] == preset["id"])["rates"] = [
+            {"unit": "image", "usd_nanos": 2},
+        ]
+        conflict.write_text(json.dumps(original))
+        reject_revision_conflict(conflict)
+        assert fetch("--current") == second
+        assert fetch("--sha256", initial["reference_sha256"]) == first
+        assert not (releases / sha256(conflict.read_bytes()).hexdigest()).exists()
+
+    concurrent = directory / "concurrent-releases"
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        attempts = [executor.submit(stage, snapshot, concurrent) for snapshot in (REFERENCE, conflict)]
+        staged = []
+        for attempt in attempts:
+            try:
+                staged.append(attempt.result())
+            except RuntimeError as error:
+                assert "reference revision already names a different snapshot" in str(error), error
+    release, = staged
+    assert (concurrent / release["current_path"]).read_bytes() == (concurrent / release["release_path"]).read_bytes()
+    ambiguous = directory / "ambiguous-legacy-releases"
+    for snapshot in (REFERENCE, conflict):
+        contents = snapshot.read_bytes()
+        existing = ambiguous / sha256(contents).hexdigest()
+        existing.mkdir(parents=True)
+        (existing / "catalog.json").write_bytes(contents)
+    reject_revision_conflict(updated_reference, ambiguous)
+    assert not list((ambiguous / "revisions").glob("*.sha256"))
+    assert not (ambiguous / "current").exists()
+    print("Conflicting revisions were rejected after indexing an older registry and during concurrent staging.")
 
     installed = directory / "installed.json"
     bundle = directory / "reference.bundle.json"

@@ -201,6 +201,8 @@ api-gateway catalog stage-reference --reference artcraft-v1.json \
 
 The JSON report includes `catalog_path` for the public JSON at `<reference_sha256>/catalog.json`, `release_path` for the signed bundle at `<reference_sha256>/<public_key_sha256>.json`, and `current_path` for discovery at `current/<public_key_sha256>.json`. The report's `plugin_coverage` gives the exact plugin catalog hash that backs each published offer. The command updates the current bundle after checking both immutable files. Keep earlier immutable files available for pinned consumers.
 
+Use a new revision label whenever the snapshot bytes change. Staging records each label's checksum in the registry's `revisions/` directory and rejects conflicts before it changes the current bundle. Keep that directory with your staging files. On the first run against an earlier staging directory, the command checks the existing immutable catalogs for conflicts before recording the index. The same snapshot can be staged again or signed by a rotated publisher key.
+
 Publish the immutable files before updating current paths on the static host. Serve the JSON without authentication and configure current bundle paths to revalidate on fetch. Each signing key has its own current bundle. Clients that need signature verification can fetch the bundle using their trusted key.
 
 A reference snapshot supports up to 4,096 offers and 4 MiB of JSON. Signed transport bundles support up to 6 MiB. An operator can use a large reference to select a few entries. The active gateway file supports up to 64 offers and 64 KiB, including any custom entries the operator retains.

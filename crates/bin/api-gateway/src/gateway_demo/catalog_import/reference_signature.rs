@@ -49,7 +49,7 @@ pub(super) struct SignatureFile {
 #[derive(Serialize)]
 pub(super) struct VerifiedReference {
     publisher: &'static str,
-    reference_revision: String,
+    pub(super) reference_revision: String,
     pub(super) reference_sha256: String,
     pub(super) public_key_sha256: String,
 }
