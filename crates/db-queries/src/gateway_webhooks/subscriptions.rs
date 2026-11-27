@@ -82,6 +82,22 @@ pub async fn revoke_subscription<'e, E: PgExecutor<'e>>(
     Ok(res.rows_affected() == 1)
 }
 
+pub async fn find_subscription<'e, E: PgExecutor<'e>>(
+    exec: E,
+    scope: RequestScope<'_>,
+    subscription: &GatewayWebhookSubscriptionId,
+) -> sqlx::Result<Option<Subscription>> {
+    sqlx::query_as!(
+        Subscription,
+        "SELECT id, name, destination_id, client_ref, workflow_app_id, signing_version, signing_rotated_at, created_at, revoked_at
+         FROM gateway_webhook_subscriptions
+         WHERE id = $1 AND account_id = $2 AND project_id = $3",
+        subscription.as_str(), scope.account.as_str(), scope.project.as_str(),
+    )
+    .fetch_optional(exec)
+    .await
+}
+
 pub async fn rotate_subscription<'e, E: PgExecutor<'e>>(
     exec: E,
     scope: RequestScope<'_>,

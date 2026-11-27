@@ -119,6 +119,7 @@ pub(crate) use process::ProcessRole;
         exports::feed,
         webhooks::handlers::destination_ids,
         webhooks::handlers::list_subscriptions,
+        webhooks::handlers::get_subscription,
         webhooks::handlers::create,
         webhooks::handlers::rotate,
         webhooks::handlers::revoke,

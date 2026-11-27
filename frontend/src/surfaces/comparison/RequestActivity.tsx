@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Clock, Radio, RefreshCw } from "lucide-react";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
@@ -24,19 +24,24 @@ const timestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", time
 const promptLabels = { chat: "Chat message", image: "Image prompt", video: "Video prompt", audio: "Audio prompt", mesh: "3D prompt" };
 const promptLimits = { chat: 5000, image: 4000, video: 2048, audio: 2048, mesh: 600 };
 
-export function RequestActivity({ scope, quote, promptMode, readOnly = false, canManageRequests = false, boundClient, submissionClient, historyLookup }: {
+export type RequestDelivery = { id: string; status: "loading" | "ready" }
+  | { id: string; status: "unavailable"; error: string };
+
+export function RequestActivity({ scope, quote, promptMode, readOnly = false, canManageRequests = false, boundClient, submissionClient, delivery, historyLookup }: {
   scope: ProjectScope; quote?: ModelQuote | null; promptMode?: PromptMode; readOnly?: boolean;
   canManageRequests?: boolean; boundClient?: string | null;
-  submissionClient?: { value: string; onChange: (value: string) => void };
+  submissionClient?: { value: string; reference?: string; locked: boolean; onChange: (value: string) => void };
+  delivery?: RequestDelivery;
   historyLookup?: ReactNode;
 }) {
   const selected = quote?.candidates.find((candidate) => candidate.selected);
   const live = selected?.live === true;
   const local = selected?.self_hosted === true;
   const [params, setParams] = useSearchParams();
-  const subscription = quote !== undefined ? params.get("webhook_subscription_id") : null;
   const requestId = params.get("request_id");
-  const clientRef = submissionClient?.value ?? "";
+  const clientRef = submissionClient ? submissionClient.reference : "";
+  const clientId = useId();
+  const deliveryBlocked = delivery !== undefined && delivery.status !== "ready";
   const [appRef, setAppRef] = useState("");
   const [prompt, setPrompt] = useState("");
   const isDashboard = historyLookup !== undefined;
@@ -88,9 +93,9 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
 
   function run(event: FormEvent) {
     event.preventDefault();
-    if (readOnly || !selected || !quote || inFlight.current || (promptMode && !prompt.trim())) return;
+    if (readOnly || !selected || !quote || deliveryBlocked || clientRef === undefined || inFlight.current || (promptMode && !prompt.trim())) return;
     setRunError("");
-    submission.submit(quote, { clientRef, appRef, subscription, promptMode, prompt });
+    submission.submit(quote, { clientRef, appRef, subscription: delivery?.id ?? null, promptMode, prompt });
   }
 
   async function cancel() {
@@ -171,9 +176,13 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
       : "grid items-start gap-5 lg:grid-cols-2"}>
       <Card className="min-w-0 p-5 sm:p-7">
         <h2 className="flex items-center gap-2 text-lg font-semibold"><Radio className="h-4 w-4 text-brand" aria-hidden /> Request trace</h2>
-        {subscription && !readOnly && <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border border-border p-3 text-xs">
-          <p className="min-w-0 break-all">Webhook <code>{subscription}</code></p>
-          <Button type="button" size="sm" variant="ghost" disabled={submitting} onClick={() => {
+        {delivery && !readOnly && <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border border-border p-3 text-xs">
+          <div className="min-w-0">
+            <p className="break-all">Webhook <code>{delivery.id}</code></p>
+            {delivery.status === "loading" && <p role="status" className="mt-1 text-muted">Checking webhook…</p>}
+            {delivery.status === "unavailable" && <p role="alert" className="mt-1 text-rose-500">{delivery.error}</p>}
+          </div>
+          <Button type="button" size="sm" variant="ghost" disabled={submitting || submission.recoverable} onClick={() => {
             const next = new URLSearchParams(params);
             next.delete("webhook_subscription_id");
             setParams(next, { replace: true });
@@ -184,13 +193,19 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
             <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={promptLimits[promptMode]}
               rows={3} required placeholder={live || local ? undefined : promptMode === "chat" ? "Enter a message for the local OpenRouter fixture." : `Describe the ${promptMode} for the local fal fixture.`} />
           </label>}
-          <label className="min-w-40 flex-1 text-sm font-medium">Client reference
-            <Input className="mt-1.5 font-mono" value={clientRef} onChange={(event) => submissionClient?.onChange(event.target.value)} readOnly={Boolean(boundClient)} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9_.:\-]{0,63}" placeholder="Optional opaque ID" />
-          </label>
+          <div className="min-w-40 flex-1 text-sm font-medium">
+            <label htmlFor={clientId}>Client reference</label>
+            <Input id={clientId} className="mt-1.5 font-mono" value={submissionClient?.value ?? ""}
+              onChange={(event) => submissionClient?.onChange(event.target.value)} readOnly={submissionClient?.locked}
+              aria-invalid={clientRef === undefined || undefined} aria-describedby={clientRef === undefined ? clientId + "-error" : undefined}
+              maxLength={64} placeholder="Optional opaque ID" />
+            {clientRef === undefined && <p id={clientId + "-error"} className="mt-1 text-xs text-rose-500">Enter a valid client reference.</p>}
+          </div>
           <label className="min-w-40 flex-1 text-sm font-medium">App reference
             <Input className="mt-1.5 font-mono" value={appRef} onChange={(event) => setAppRef(event.target.value)} maxLength={64} placeholder="Optional opaque ID" />
           </label>
-          <Button type="submit" disabled={submitting || canceling || submission.recoverable || !selected || Boolean(promptMode && !prompt.trim())}>
+          <Button type="submit" disabled={submitting || canceling || submission.recoverable || deliveryBlocked
+            || clientRef === undefined || !selected || Boolean(promptMode && !prompt.trim())}>
             {submitting ? "Submitting…" : local ? "Send self-hosted request" : live ? "Send live request" : promptMode ? `Run ${promptMode === "mesh" ? "3D" : promptMode} fixture` : "Run mock request"}
           </Button>
           {quote?.expires_at && <p className="w-full text-xs text-muted" role="status"><QuoteExpiry expiresAt={quote.expires_at} /></p>}

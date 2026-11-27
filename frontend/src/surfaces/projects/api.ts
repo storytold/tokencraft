@@ -126,6 +126,8 @@ export const webhooksApi = {
   destinations: (scope: ProjectScope, signal: AbortSignal) => gatewayRequest<string[]>(inProject(scope, "/webhook-destinations"), { signal }),
   subscriptions: (scope: ProjectScope, before: string | undefined, signal: AbortSignal) =>
     gatewayRequest<WebhookPage<WebhookSubscription>>(inProject(scope, "/webhooks", before), { signal }),
+  subscription: (scope: ProjectScope, id: string, signal: AbortSignal) =>
+    gatewayRequest<WebhookSubscription>(inProject(scope, `/webhooks/${encodeURIComponent(id)}`), { signal, cache: "no-store" }),
   create: (scope: ProjectScope, input: { name: string; destination_id: string; client_ref: string | null; workflow_app_id?: string }) =>
     gatewayRequest<IssuedWebhook>(inProject(scope, "/webhooks"), write("POST", input)),
   rotate: (scope: ProjectScope, id: string) =>

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{get, post},
     Extension, Json, Router,
 };
 use db_queries::{
@@ -43,7 +43,7 @@ pub fn router(config: Arc<WebhookConfig>) -> Router<AppState> {
         )
         .route(
             "/v1/projects/:project/webhooks/:subscription",
-            delete(revoke),
+            get(get_subscription).delete(revoke),
         )
         .route(
             "/v1/projects/:project/webhooks/:subscription/rotate",
@@ -180,6 +180,35 @@ pub(in crate::gateway_demo) async fn list_subscriptions(
     .await?;
     let items = subscriptions.into_iter().map(WebhookSubscription::from).collect();
     Ok(Json(Page::from_rows(items, |row| &row.id)))
+}
+
+#[utoipa::path(
+    get, path = "/v1/projects/{project}/webhooks/{subscription}",
+    operation_id = "getProjectWebhookSubscription", tag = "webhooks",
+    security(("session_cookie" = [])),
+    params(
+        ("project" = String, Path, description = "Project ID."),
+        ("subscription" = String, Path, description = "Subscription ID."),
+        ("account_id" = String, Query, description = "Organization account ID."),
+    ),
+    responses(
+        (status = 200, description = "Subscription metadata, including its client scope and revocation status.", body = WebhookSubscription),
+        (status = 404, description = "Subscription unavailable in this project.", body = GatewayError),
+        (status = "default", response = RequestErrorResponse),
+    ),
+)]
+pub(in crate::gateway_demo) async fn get_subscription(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Query(query): Query<OrganizationQuery>,
+    Path((raw, subscription)): Path<(String, String)>,
+) -> ApiResult<Json<WebhookSubscription>> {
+    let project = Project::authorized(&state, &auth, &query, &raw).await?;
+    let subscription = parse_id(&subscription, "subscription")?;
+    let record = gateway_webhooks::find_subscription(&state.pool, project.scope(), &subscription)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("webhook subscription not found".into()))?;
+    Ok(Json(record.into()))
 }
 
 #[derive(Deserialize, ToSchema)]

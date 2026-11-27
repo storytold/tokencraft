@@ -10,6 +10,7 @@ import { parseDollarCap } from "@/lib/routing-policy";
 import { comparisonApi, errorMessage, usd, type ModelCatalog, type ModelQuote, type QuoteInput } from "@/surfaces/comparison/api";
 import { statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
 import { ReceiptRecovery } from "@/surfaces/comparison/ReceiptRecovery";
+import { parseClientReference } from "@/surfaces/comparison/modelSubmission";
 import { useModelSubmission } from "@/surfaces/comparison/useModelSubmission";
 import { ProjectPicker, ProjectStatus, useProject } from "@/surfaces/projects/ProjectScope";
 import { defaultImageAspectRatio, modelChoices, modelPresets, modalityNames, presetLabels, type Modality, type ModelChoice } from "@/surfaces/requests/modelOptions";
@@ -314,7 +315,7 @@ function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft,
   const ratio = ratioChoice || defaultImageAspectRatio(ratios);
   const preset = (presets.find(([id]) => id === presetChoice) ?? presets[0])?.[1];
   const maxNanos = parseDollarCap(costCap);
-  const validClient = !clientRef || /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(clientRef);
+  const validClient = parseClientReference(clientRef) !== undefined;
 
   const quoteInput = useMemo<QuoteInput | null>(() => {
     if (maxNanos === undefined || !validClient) return null;

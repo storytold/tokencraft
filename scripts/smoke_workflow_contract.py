@@ -341,12 +341,19 @@ def verify_signed_delivery(
     return delivery
 
 
-def verify_request_webhook(port, session, project_path, query, receiver, workflow_subscription):
+def verify_request_webhook(port, session, project_path, sibling_project, query, receiver, workflow_subscription):
     registration = {"name": "Native receipt fixture", "destination_id": "fixture"}
     native, _ = call(port, project_path + "/webhooks" + query, 201, method="POST", headers=session, body=registration)
     principal, _ = call(port, project_path + "/service-principals" + query, 201, method="POST", headers=session,
                         body={"name": "Native webhook receipt", "scopes": ["requests:submit", "requests:read"]})
     auth = {"Authorization": "Bearer " + principal["token"]}
+    native_path = project_path + "/webhooks/" + native["id"] + query
+    visible, response = call(port, native_path, 200, headers=session)
+    assert visible == {field: value for field, value in native.items() if field != "signing_secret"}
+    assert_private_response(response)
+    call(port, native_path, 401, headers=auth)
+    _, hidden = call(port, f"/v1/projects/{sibling_project}/webhooks/{native['id']}" + query, 404, headers=session)
+    assert_private_response(hidden)
     quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
                     body={"model": "runtime_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}})
     body = {"quote_id": quote["id"], "input": quote["input"],
@@ -648,7 +655,7 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     assert event["workflow_run_id"] == receipt["id"] and "request_id" not in event
     call(port, f"/v1/projects/{sibling_project['id']}/webhook-deliveries/{event['id']}" + query,
          404, headers=session)
-    verify_request_webhook(port, session, project_path, query, receiver, subscription)
+    verify_request_webhook(port, session, project_path, sibling_project["id"], query, receiver, subscription)
     print("PASS app-scoped terminal webhook signature and retry retain the original metadata-only event")
     status_operation = paths[paths_run]["get"]
     verify_json_response(spec, status_operation, 200, state, status_headers, expected_headers=("ETag",))

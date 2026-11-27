@@ -14,6 +14,8 @@ When the operator configures webhook destinations, organization owners and admin
 
 The subscription and delivery lists return up to 50 items. Send the returned `next_before` value as `before` until it is null. The detail operation includes the latest 50 delivery attempts. Redrive a failed delivery while its subscription is active to queue the original event again. A project API key can attach an allowed subscription to a request using `delivery.webhook_subscription_id` on `POST /v1/requests`.
 
+Retrieve one subscription with `GET /v1/projects/{project}/webhooks/{subscription}?account_id={account}`. This administrator read returns the same metadata as the list, including the client reference and revocation status. A **Try in comparison** link uses that metadata to apply the subscription's client scope on both the quote and the submission. Ordinary Compare requests without an entered client reference remain unattributed.
+
 Delivery records identify their subject with `request_id` or `workflow_run_id`. App subscriptions only receive terminal events for the assigned app.
 
 ## Inspect a workflow run

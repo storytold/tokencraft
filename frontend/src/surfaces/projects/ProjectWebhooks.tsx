@@ -100,8 +100,7 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
                 </div>
                 {!subscription.revoked_at && <div className="flex flex-wrap items-center gap-2">
                   {!subscription.workflow_app_id && <Link className="font-medium text-brand hover:underline"
-                    to={`${withProject("/compare", scope.project_id, scope.account_id)}&webhook_subscription_id=${encodeURIComponent(subscription.id)}`}
-                    state={{ webhookClient: subscription.client_ref }}>Try in comparison</Link>}
+                    to={`${withProject("/routing", scope.project_id, scope.account_id)}&webhook_subscription_id=${encodeURIComponent(subscription.id)}`}>Try in comparison</Link>}
                   <Button variant="outline" size="sm" disabled={disabled} onClick={() => {
                     void change(() => webhooksApi.rotate(scope, subscription.id), "Both signing keys are valid for 24 hours.");
                   }}>Rotate signing key</Button>

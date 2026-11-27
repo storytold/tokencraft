@@ -1,15 +1,17 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { SlidersHorizontal } from "lucide-react";
 import { Button, Card, Container, Input, Select } from "@/components/ui";
 import { useOrg } from "@/lib/org";
 import { type ProjectScope, withProject } from "@/lib/gateway";
 import { parseDollarCap, parseToleratedPercent } from "@/lib/routing-policy";
 import { ProjectPicker, ProjectStatus, useProject } from "@/surfaces/projects/ProjectScope";
+import { webhooksApi } from "@/surfaces/projects/api";
 import { comparisonApi, errorMessage, type ModelCatalog, type ModelQuote, type PromptMode, type QuoteInput } from "./api";
 import { OfferComparison } from "./OfferComparison";
 import { ProviderOrder, providerOrderValue } from "./ProviderOrder";
-import { RequestActivity } from "./RequestActivity";
+import { RequestActivity, type RequestDelivery } from "./RequestActivity";
+import { parseClientReference } from "./modelSubmission";
 import { catalogModelName, defaultImageAspectRatio, modelChoices, modelPresets, presetLabels, validAspectRatio } from "@/surfaces/requests/modelOptions";
 
 const labelClass = "block space-y-1.5 text-sm font-medium";
@@ -48,8 +50,9 @@ export default function ComparisonPage() {
   );
 }
 
-function ComparisonForm({ scope, clientRef, children }: {
-  scope?: ProjectScope; clientRef?: string; children: (quote: ModelQuote | null, promptMode?: PromptMode) => ReactNode;
+function ComparisonForm({ scope, clientRef, quoteEnabled, children }: {
+  scope?: ProjectScope; clientRef?: string; quoteEnabled: boolean;
+  children: (quote: ModelQuote | null, promptMode?: PromptMode) => ReactNode;
 }) {
   const [params] = useSearchParams();
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
@@ -116,7 +119,7 @@ function ComparisonForm({ scope, clientRef, children }: {
   const setMatchingPercent = isVideo ? setVideoRatioPercent : setRatioPercent;
   const tolerance = matchingMode === "default" ? null : matchingMode === "exact" ? 0 : parseToleratedPercent(scope ? matchingPercent : "8") ?? undefined;
   const input = useMemo<QuoteInput | null>(() => {
-    if (!selected || maxNanos === undefined || invalidRatio) return null;
+    if (!quoteEnabled || !selected || maxNanos === undefined || invalidRatio) return null;
     const { kind, model } = selected[1];
     if (providerOrder.mode === "ordered" && !providerOrder.order.length) return null;
     const preference = providerOrder.mode === "inherit" ? {} : {
@@ -141,7 +144,7 @@ function ComparisonForm({ scope, clientRef, children }: {
         ? { kind, count, aspect_ratio: aspectRatio, max_relative_error_bps: tolerance ?? null }
         : { kind, max_input_tokens: inputTokens, max_output_tokens: outputTokens },
     };
-  }, [selected, maxNanos, invalidRatio, count, aspectRatio, tolerance, inputTokens, outputTokens, preset, providerOrder, videoPreset]);
+  }, [quoteEnabled, selected, maxNanos, invalidRatio, count, aspectRatio, tolerance, inputTokens, outputTokens, preset, providerOrder, videoPreset]);
 
   useEffect(() => {
     if (!input) return;
@@ -255,15 +258,42 @@ function ComparisonWorkspace() {
 
 function ScopedComparison() {
   const { scope, project } = useProject();
-  const { state } = useLocation();
   const [params] = useSearchParams();
   const [attribution, setAttribution] = useState<{ projectId: string; value: string }>();
-  const defaultClient = params.has("webhook_subscription_id")
-    ? (typeof state?.webhookClient === "string" ? state.webhookClient : "")
-    : "client_demo_42";
-  const clientRef = project?.client_ref ?? (attribution && attribution.projectId === scope?.project_id ? attribution.value : defaultClient);
+  const [webhook, setWebhook] = useState<{ key: string; clientRef: string | null } | { key: string; error: string }>();
   const canSubmit = project?.role === "admin" || project?.role === "developer";
   const quoteScope = canSubmit ? scope : undefined;
+  const webhookId = canSubmit ? params.get("webhook_subscription_id") : null;
+  const webhookKey = quoteScope && webhookId !== null
+    ? JSON.stringify([quoteScope.account_id, quoteScope.project_id, webhookId])
+    : null;
+
+  useEffect(() => {
+    setWebhook(undefined);
+    if (!quoteScope || webhookId === null || !webhookKey) return;
+    const controller = new AbortController();
+    webhooksApi.subscription(quoteScope, webhookId, controller.signal).then((record) => {
+      if (controller.signal.aborted) return;
+      const clientRef = record.client_ref;
+      const validClient = clientRef === null
+        || (typeof clientRef === "string" && clientRef !== "" && parseClientReference(clientRef) === clientRef);
+      setWebhook(record.id === webhookId && !record.revoked_at && !record.workflow_app_id && validClient
+        ? { key: webhookKey, clientRef }
+        : { key: webhookKey, error: "This subscription is unavailable for request delivery." });
+    }).catch((error) => {
+      if (!controller.signal.aborted) setWebhook({ key: webhookKey, error: errorMessage(error) || "Webhook metadata is unavailable." });
+    });
+    return () => controller.abort();
+  }, [quoteScope, webhookId, webhookKey]);
+
+  const resolved = webhook?.key === webhookKey ? webhook : undefined;
+  const delivery: RequestDelivery | undefined = webhookId === null ? undefined
+    : !resolved ? { id: webhookId, status: "loading" }
+      : "error" in resolved ? { id: webhookId, status: "unavailable", error: resolved.error }
+        : { id: webhookId, status: "ready" };
+  const requiredClient = project?.client_ref ?? (resolved && "clientRef" in resolved ? resolved.clientRef : null);
+  const clientDraft = requiredClient ?? (attribution?.projectId === scope?.project_id ? attribution?.value ?? "" : "");
+  const clientRef = parseClientReference(clientDraft);
   return (
     <>
       <div className="flex flex-wrap items-end gap-4">
@@ -272,12 +302,14 @@ function ScopedComparison() {
       </div>
       {!scope || !project ? <ProjectStatus /> : (
         <ComparisonForm key={JSON.stringify([scope.account_id, scope.project_id, canSubmit])}
-          scope={quoteScope} clientRef={canSubmit ? clientRef : undefined}>
+          scope={quoteScope} clientRef={canSubmit ? clientRef : undefined}
+          quoteEnabled={clientRef !== undefined && (!delivery || delivery.status === "ready")}>
           {(quote, promptMode) => project.role === "billing_viewer" ? (
             <p className="text-sm text-muted">Your billing viewer role can read usage for this project.</p>
           ) : <RequestActivity scope={scope} quote={quote} promptMode={promptMode}
-            readOnly={project.role === "client_viewer"} boundClient={project.client_ref}
-            submissionClient={{ value: clientRef, onChange: (value) => setAttribution({ projectId: scope.project_id, value }) }} />}
+            readOnly={project.role === "client_viewer"} boundClient={project.client_ref} delivery={delivery}
+            submissionClient={{ value: clientDraft, reference: clientRef, locked: requiredClient !== null,
+              onChange: (value) => setAttribution({ projectId: scope.project_id, value }) }} />}
         </ComparisonForm>
       )}
     </>

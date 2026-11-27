@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepareModelSubmission, readModelReceipt } from "../frontend/src/surfaces/comparison/modelSubmission.ts";
+import { parseClientReference, prepareModelSubmission, readModelReceipt } from "../frontend/src/surfaces/comparison/modelSubmission.ts";
 
 const requestId = "req_01m8des3gv2esdtx1bxekn3bqg";
+
+test("optional client reference uses the same normalized value in the quote and submission", () => {
+  assert.equal(parseClientReference("  "), "");
+  assert.equal(parseClientReference("  studio.customer-42:render  "), "studio.customer-42:render");
+  assert.equal(parseClientReference("studio/customer"), undefined);
+  assert.equal(parseClientReference("a".repeat(65)), undefined);
+});
 
 test("a staged submission keeps the original quote, scope, prompt, and delivery settings", () => {
   const scope = { account_id: "original-account", project_id: "original-project" };

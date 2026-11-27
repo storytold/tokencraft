@@ -3384,6 +3384,71 @@
       }
     },
     "/v1/projects/{project}/webhooks/{subscription}": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "getProjectWebhookSubscription",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subscription",
+            "in": "path",
+            "description": "Subscription ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "description": "Organization account ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription metadata, including its client scope and revocation status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSubscription"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription unavailable in this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestErrorResponse"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
       "delete": {
         "tags": [
           "webhooks"
