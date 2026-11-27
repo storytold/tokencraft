@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { chmod, lstat, mkdtemp, rm, symlink } from 'node:fs/promises';
+import fs, { chmod, lstat, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { queueServer, readJson, send } from './queue.mjs';
 import { kinovi } from './provider.mjs';
@@ -52,6 +53,79 @@ test('opens only a private state directory', async (t) => {
 
   await chmod(state, 0o750);
   await assert.rejects(start(state), /plugin state must be a private directory/);
+});
+
+test('a failed intent write leaves the job safe to submit after restart', { timeout: 5000 }, async (t) => {
+  const state = await mkdtemp(join(tmpdir(), 'tokencraft-plugin-intent-'));
+  const id = 'write-interrupted';
+  const receipt = join(state, id + '.json');
+  const openFile = fs.open;
+  let faulted = false;
+  let submissions = 0;
+  let plugin;
+  const vendor = createServer(async (request, response) => {
+    assert.equal(request.url, submitPath);
+    check(await readJson(request));
+    submissions += 1;
+    return send(response, 200, acknowledgement);
+  });
+  t.mock.method(fs, 'open', async (path, ...options) => {
+    const file = await openFile(path, ...options);
+    if (!faulted && dirname(path) === state && options[0] === 'wx') {
+      const write = file.writeFile.bind(file);
+      file.writeFile = async (data) => {
+        faulted = true;
+        await write(data.slice(0, 1));
+        throw new Error('fixture interrupted the intent write');
+      };
+    }
+    return file;
+  });
+  syncBuiltinESMExports();
+  t.after(async () => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await close(plugin);
+    await close(vendor);
+    await rm(state, { recursive: true });
+  });
+
+  const origin = await listen(vendor);
+  const provider = kinovi({ origin, key: 'test-vendor-key', artifactOrigins: [origin] });
+  const start = async () => {
+    plugin = await queueServer({ state, token: 'test-gateway-key', provider });
+    return (await listen(plugin)) + '/v1/jobs';
+  };
+  let jobs = await start();
+  const headers = { authorization: 'Bearer test-gateway-key' };
+  const submit = (requestId = id) => fetch(jobs, {
+    method: 'POST',
+    headers: { ...headers, 'idempotency-key': requestId },
+    body: JSON.stringify({ version: 1, request_id: requestId, model, input: jobInput }),
+  });
+  const first = await submit();
+  assert.equal(first.status, 502);
+  await first.json();
+  assert.equal(faulted, true);
+  assert.equal(submissions, 0);
+
+  await close(plugin);
+  jobs = await start();
+  const lookup = await fetch(jobs + '/by-request/' + id, { headers });
+  assert.equal(lookup.status, 404, 'an incomplete write must not publish a receipt');
+  await lookup.json();
+  assert.deepEqual(await readdir(state), []);
+  const accepted = { version: 1, request_id: id, outcome: { status: 'accepted', handle: id } };
+  assert.deepEqual(await (await submit()).json(), accepted);
+  assert.deepEqual(await (await submit()).json(), accepted);
+  assert.equal(submissions, 1);
+  assert.deepEqual(await readdir(state), [id + '.json']);
+  assert.equal((await lstat(receipt)).mode & 0o777, 0o600);
+
+  const legacy = 'previously-interrupted';
+  await writeFile(join(state, legacy + '.json'), '{', { mode: 0o600 });
+  assert.deepEqual((await (await submit(legacy)).json()).outcome, { status: 'uncertain' });
+  assert.equal(submissions, 1);
 });
 
 test('retries a confirmed throttle once across a restart', async () => {

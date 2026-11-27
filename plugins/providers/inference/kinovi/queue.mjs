@@ -1,7 +1,7 @@
 import { logRequestTrace, monitoringProbe, serviceAuthorization } from './service-auth.mjs';
 import { delegatedKey, keyTag, matchesKey } from './tenant-keys.mjs';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -116,11 +116,24 @@ export async function queueServer({ state: statePath, token, provider, tenantKey
     }
   }
 
-  async function save(id, record) {
+  async function save(id, record, { create = false } = {}) {
     const pending = join(state, `.${randomUUID()}.json`);
-    await writeFile(pending, JSON.stringify(record), { mode: 0o600, flush: true, flag: 'wx' });
-    await rename(pending, recordPath(id));
-    await syncDirectory();
+    const file = await open(pending, 'wx', 0o600);
+    try {
+      try {
+        await file.writeFile(JSON.stringify(record));
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      if (create) await link(pending, recordPath(id));
+      else await rename(pending, recordPath(id));
+      await syncDirectory();
+    } finally {
+      await unlink(pending).catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
   }
 
   async function submit(request, response) {
@@ -139,32 +152,28 @@ export async function queueServer({ state: statePath, token, provider, tenantKey
     const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const reserved = await serialize(id, async () => {
       const intent = { fingerprint, credentialTag };
-      let file;
-      try {
-        file = await open(recordPath(id), 'wx', 0o600);
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        const recorded = await load(id).catch(() => undefined);
-        if (recorded?.fingerprint !== fingerprint || !matchesKey(recorded.credentialTag, credentialTag)) {
-          return {};
+      // An unreadable receipt may belong to an already-submitted job.
+      let recorded = await load(id).catch(() => null);
+      if (recorded === undefined) {
+        try {
+          await save(id, intent, { create: true });
+          return { intent };
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          recorded = await load(id).catch(() => null);
         }
-        const { outcome, retryAt } = recorded;
-        if (outcome?.status !== 'unavailable') return { outcome };
-        if (!Number.isFinite(retryAt)) return { outcome: { status: 'unavailable' } };
-        if (Date.now() < retryAt) return { outcome };
-        // Save the unresolved retry intent before the upstream call.
-        const retry = { ...intent, retried: true };
-        await save(id, retry);
-        return { intent: retry };
       }
-      try {
-        await file.writeFile(JSON.stringify(intent));
-        await file.sync();
-      } finally {
-        await file.close();
+      if (recorded?.fingerprint !== fingerprint || !matchesKey(recorded.credentialTag, credentialTag)) {
+        return {};
       }
-      await syncDirectory();
-      return { intent };
+      const { outcome, retryAt } = recorded;
+      if (outcome?.status !== 'unavailable') return { outcome };
+      if (!Number.isFinite(retryAt)) return { outcome: { status: 'unavailable' } };
+      if (Date.now() < retryAt) return { outcome };
+      // Save the unresolved retry intent before the upstream call.
+      const retry = { ...intent, retried: true };
+      await save(id, retry);
+      return { intent: retry };
     });
     const publicOutcome = (outcome) => outcome?.status === 'accepted'
       ? { status: 'accepted', handle: id } : outcome ?? { status: 'uncertain' };

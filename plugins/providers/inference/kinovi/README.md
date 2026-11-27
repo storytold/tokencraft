@@ -11,11 +11,11 @@ npm test
 npm start
 ```
 
-The listener defaults to `127.0.0.1:4023`. Set `PORT` to override it. Keep `.state/` or set `TOKENCRAFT_PLUGIN_STATE` to a persistent directory with mode `0700`. Point to the directory itself. Run one process with its own state directory per binding.
+The listener defaults to `127.0.0.1:4023`. Set `PORT` to override it. Keep `.state/` or set `TOKENCRAFT_PLUGIN_STATE` to a persistent directory with mode `0700` on a filesystem that supports hard links and atomic renames. Point to the directory itself. Run one process with its own state directory per binding.
 
 Copy the [example binding](bindings.example.json) and [catalog offer](catalog.example.json) into your [TokenCraft profile](../README.md#start-a-plugin). Set the same gateway token in the gateway environment and fill in reviewed rates before serving live traffic. The sample catalog uses zero as its placeholder price. Keep `KINOVI_KEY` in the plugin environment.
 
-The plugin saves the task handle before acknowledging the gateway. The example binding enables [receipt lookup](../../../../docs/provider-connectors.md#recover-a-lost-submission-receipt) for saved jobs whose gateway acknowledgement was lost. A task without a confirmed supplier handle remains in reconciliation. The loopback test covers task creation, result polling, restart and file retrieval. Verify the API contract and artifact origin with your Kinovi account before a live rollout.
+The plugin publishes a complete submission intent before contacting Kinovi and saves the task handle before acknowledging the gateway. The example binding enables [receipt lookup](../../../../docs/provider-connectors.md#recover-a-lost-submission-receipt) for saved jobs whose gateway acknowledgement was lost. A task without a confirmed supplier handle remains in reconciliation. The loopback tests cover task creation, an interrupted write, result polling, restart and file retrieval. Verify the API contract and artifact origin with your Kinovi account before a live rollout.
 
 On success, the plugin can report the exact credit quantity from Kinovi's `recordInfo` response. Gateways opt in with `X-TokenCraft-Provider-Charge: 1` on the status poll. Reserved or refunded credits are omitted. [Kinovi billing](https://kinovi.ai/docs/credits-billing)
 
