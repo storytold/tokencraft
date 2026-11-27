@@ -5,6 +5,46 @@ CREATE INDEX IF NOT EXISTS export_events_usage_scope_idx
     ON tokencraft_export.events (source_url, project_id, (payload->>'type'), (payload->>'request_id'))
     WHERE payload->>'type' IN ('request.accepted', 'usage.observed', 'usage.supplier_settled');
 
+CREATE INDEX IF NOT EXISTS export_events_lifecycle_scope_idx
+    ON tokencraft_export.events (source_url, project_id, (payload->>'request_id'))
+    WHERE payload->>'type' IN ('request.dispatched', 'request.outcome_unconfirmed',
+                             'request.succeeded', 'request.failed', 'request.canceled');
+
+CREATE OR REPLACE VIEW tokencraft_export.request_lifecycle AS
+SELECT admission.source_url,
+       admission.project_id,
+       admission.payload->>'request_id' AS request_id,
+       admission.payload->>'client_ref' AS client_ref,
+       admission.payload#>>'{data,app_ref}' AS app_ref,
+       (admission.payload->>'occurred_at')::timestamptz AS accepted_at,
+       coalesce(observed.status, 'queued') AS status,
+       coalesce(observed.status_at, (admission.payload->>'occurred_at')::timestamptz) AS status_at
+FROM tokencraft_export.events AS admission
+LEFT JOIN LATERAL (
+    SELECT CASE event.payload->>'type'
+               WHEN 'request.dispatched' THEN 'running'
+               WHEN 'request.outcome_unconfirmed' THEN 'awaiting_reconciliation'
+               WHEN 'request.succeeded' THEN 'succeeded'
+               WHEN 'request.failed' THEN 'failed'
+               WHEN 'request.canceled' THEN 'canceled'
+           END AS status,
+           (event.payload->>'occurred_at')::timestamptz AS status_at
+    FROM tokencraft_export.events AS event
+    WHERE event.source_url = admission.source_url
+      AND event.project_id = admission.project_id
+      AND event.payload->>'request_id' = admission.payload->>'request_id'
+      AND event.payload->>'type' IN ('request.dispatched', 'request.outcome_unconfirmed',
+                                   'request.succeeded', 'request.failed', 'request.canceled')
+    -- A terminal event supersedes an unconfirmed outcome, even if imported out of order.
+    ORDER BY CASE event.payload->>'type'
+                 WHEN 'request.dispatched' THEN 0
+                 WHEN 'request.outcome_unconfirmed' THEN 1
+                 ELSE 2
+             END DESC, status_at DESC, event.event_id DESC
+    LIMIT 1
+) observed ON true
+WHERE admission.payload->>'type' = 'request.accepted';
+
 CREATE OR REPLACE VIEW tokencraft_export.supplier_settlement_postings AS
 SELECT source_url,
        project_id,

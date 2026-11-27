@@ -52,11 +52,28 @@ For the feed, pass the `project_id` and optional `client_ref` and `after`. Valid
 
 ## Reconcile costs
 
-The reporting SQL also installs an index for scoped request and cost lookups. Run it as the destination table owner. On an existing destination, PostgreSQL holds a write lock on the events table while it builds the index, so use a quiet sync window for a large table.
+The reporting SQL installs indexes for scoped request lifecycle and cost lookups. Run it as the destination table owner. On an existing destination, PostgreSQL holds a write lock on the events table while it builds the indexes, so use a quiet sync window for a large table. Rerun the reporting SQL to add the lifecycle view to an existing importer database.
 
 `tokencraft_export.request_usage` shows the admitted model and offer, attribution, estimate, provider observations, and latest supplier settlement for each imported request. `tokencraft_export.supplier_settlement_postings` keeps every supplier revision and its signed delta. A zero settlement stays zero, and an unknown amount stays null. Older events may have no app attribution.
 
-`tokencraft_export.provider_charge_observations` exposes connector charges in their original billing units. They arrive as `usage.observed` events with `data.source` set to `connector_charge` and a decimal string at `data.provider_charge.quantity`. For example, Kinovi reports credits. Group amounts by provider and unit, and use the separate USD fields for dollar totals. The request and usage APIs expose the same observations even if artifact delivery is still pending.
+`tokencraft_export.provider_charge_observations` exposes connector charges in their original billing units. They arrive as `usage.observed` events with `data.source` set to `connector_charge` and a decimal string at `data.provider_charge.quantity`. For example, Kinovi reports credits. Group amounts by provider and unit, and use the separate USD fields for dollar totals. The request and usage APIs expose the same observations while delivery is pending and after a failed request.
+
+`tokencraft_export.request_lifecycle` shows each imported request's status and the time that state was recorded. A terminal event supersedes an unconfirmed outcome even if the unconfirmed event arrives later. The view uses the events committed to the destination, so the status reflects the importer's current checkpoint.
+
+Join the lifecycle and charge views to report charged requests that failed to deliver an output.
+
+```sql
+SELECT lifecycle.request_id, lifecycle.client_ref, lifecycle.status_at,
+       charge.provider, charge.unit, charge.quantity
+FROM tokencraft_export.request_lifecycle AS lifecycle
+JOIN tokencraft_export.provider_charge_observations AS charge
+USING (source_url, project_id, request_id)
+WHERE lifecycle.source_url = 'http://localhost:4000'
+  AND lifecycle.project_id = 'proj_REPLACE_WITH_YOUR_PROJECT_ID'
+  AND lifecycle.status = 'failed';
+```
+
+Summarize estimates and costs by app and client.
 
 ```sql
 SELECT app_ref, client_ref, count(*) AS requests,

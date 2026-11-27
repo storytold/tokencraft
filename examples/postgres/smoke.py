@@ -177,6 +177,42 @@ def main():
         verify_import(*relay)
 
 
+def verify_lifecycle():
+    origin = "https://lifecycle.example.test"
+    sibling = "https://second-source.example.test"
+    cases = [
+        (origin, "queued", ["request.content_removed"], "queued", 0),
+        (origin, "running", ["request.dispatched"], "running", 1),
+        (origin, "uncertain", ["request.outcome_unconfirmed", "request.dispatched"],
+         "awaiting_reconciliation", 1),
+        (origin, "success", ["request.dispatched", "request.succeeded", "request.content_removed"],
+         "succeeded", 2),
+        (origin, "failure", ["request.failed", "request.outcome_unconfirmed"], "failed", 1),
+        (sibling, "failure", ["request.canceled"], "canceled", 1),
+    ]
+    request_id = "req_" + token_hex(16)
+    events = [
+        {"source_url": source, "project_id": project, "event_id": "evt_" + token_hex(16),
+         "payload": {"type": kind, "request_id": request_id, "occurred_at": f"2026-11-01T00:00:{offset:02}Z"}}
+        for source, project, event_types, _, _ in cases
+        for offset, kind in enumerate(["request.accepted", *event_types])
+    ]
+    rows = json.loads(importer.postgres("""
+        BEGIN;
+        INSERT INTO tokencraft_export.events (source_url, project_id, event_id, payload)
+        SELECT source_url, project_id, event_id, payload
+        FROM jsonb_to_recordset(:'events'::jsonb)
+            AS event(source_url text, project_id text, event_id text, payload jsonb);
+        SELECT json_agg(json_build_array(source_url, project_id, status,
+                                         extract(epoch FROM status_at - accepted_at)::integer))
+        FROM tokencraft_export.request_lifecycle WHERE request_id = :'request';
+        ROLLBACK;
+    """, {"events": json.dumps(list(reversed(events))), "request": request_id}))
+    assert sorted(map(tuple, rows)) == sorted((source, project, status, offset)
+                                              for source, project, _, status, offset in cases)
+    print("PASS Request lifecycle projected all six states across isolated sources and projects.", flush=True)
+
+
 def verify_import(source, armed, retry_started, release_retry, attempts):
     _, headers = http("/v1/auth/signup", 201, body={
         "email": f"export-{token_hex(8)}@example.test",
@@ -240,6 +276,12 @@ def verify_import(source, armed, retry_started, release_retry, attempts):
     assert {event["client_ref"] for event in local_events} == {"art-client"}
     assert export_key not in json.dumps(local_events) and PROMPT not in json.dumps(local_events)
     print("PASS Snapshot import checkpointed only the authorized client and excluded request content.", flush=True)
+    lifecycle_sql = "SELECT json_agg(l) FROM tokencraft_export.request_lifecycle l;"
+    lifecycle, = json.loads(importer.postgres(lifecycle_sql, {}))
+    assert lifecycle["source_url"] == source and lifecycle["project_id"] == project_id
+    assert lifecycle["request_id"] == art_request and lifecycle["client_ref"] == "art-client"
+    assert lifecycle["app_ref"] == "artcraft" and lifecycle["status"] == "succeeded"
+    verify_lifecycle()
 
     watcher = subprocess.Popen(command + ["--no-init", "--watch", "--interval", "1"],
                                env=env, stdout=subprocess.DEVNULL)
@@ -374,6 +416,7 @@ def verify_import(source, armed, retry_started, release_retry, attempts):
         event, = removal
         assert event["request_id"] == art_request and event["client_ref"] == "art-client"
         assert http("/v1/usage", token=art)[0]["totals"] == live
+        assert json.loads(importer.postgres(lifecycle_sql, {})) == [lifecycle]
         print("PASS Expiry denied content reads and exported one scoped removal while preserving usage.", flush=True)
 
 
