@@ -16,6 +16,7 @@ pub(super) enum Observation<T> {
     StillRunning(&'static str),
     Ready(T),
     Rejected(&'static str),
+    Uncertain(&'static str),
     Retry,
 }
 

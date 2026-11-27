@@ -29,7 +29,7 @@ use super::catalog_refresh::CatalogStore;
 use super::chat_input::ChatInput;
 use super::data_handling::{DataHandling, DataRequirements};
 use super::routing_policy::Policies;
-use connector::Connectors;
+use connector::{Connectors, FetchError};
 use queue::{Observation, Submission};
 use chat_transport::{ChatCall, ChatDispatch, StreamSink};
 pub(super) use chat_transport::{stream_chunk_purpose, ChatClient, SubmitOutcome};
@@ -536,29 +536,38 @@ async fn observe_queue(
     mut task: ClaimedQueuePoll,
 ) -> sqlx::Result<()> {
     let id = task.request_id.as_str();
-    let observed = match runtime.connectors.by_digest(&task.binding_digest) {
-            Some(connector) => {
-                let key = runtime.pinned_credential(pool, id, &task.binding_digest, task.credential_version).await?;
-                if connector.tenant_keys != task.credential_version.is_some()
-                    || (connector.tenant_keys && key.is_none())
-                {
-                    return gateway_requests::finish_provider_run(
-                        pool, id, task.lease, RunOutcome::Uncertain("provider_credential_unavailable"), Default::default(),
-                    ).await;
-                }
-                let status = connector.poll(&task, key.as_ref()).await;
-                let media = fetch_observed_result(pool, &task, status, async || {
-                    connector.fetch(&task, key.as_ref()).await
-                }).await?;
-                Some(media)
-            }
-        None => None,
-    };
-    let Some(result) = observed else {
+    let Some(connector) = runtime.connectors.by_digest(&task.binding_digest) else {
         return gateway_requests::finish_provider_run(
-            pool, id, task.lease, RunOutcome::Uncertain("provider_binding_unavailable"), Default::default(),
-        ).await;
+            pool,
+            id,
+            task.lease,
+            RunOutcome::Uncertain("provider_binding_unavailable"),
+            Default::default(),
+        )
+        .await;
     };
+    let fresh_key = || {
+        runtime.pinned_credential(pool, id, &task.binding_digest, task.credential_version)
+    };
+    let status = {
+        let key = fresh_key().await?;
+        if connector.tenant_keys != task.credential_version.is_some()
+            || (connector.tenant_keys && key.is_none())
+        {
+            return gateway_requests::finish_provider_run(
+                pool,
+                id,
+                task.lease,
+                RunOutcome::Uncertain("provider_credential_unavailable"),
+                Default::default(),
+            )
+            .await;
+        }
+        connector.poll(&task, key.as_ref()).await
+    };
+    // An already-authorized poll may finish during revocation. Each later
+    // artifact call obtains the pinned key again.
+    let result = fetch_observed_result(pool, &task, status, connector.fetch(&task, &fresh_key)).await?;
     let observation = UpstreamObservation {
         model: Some(&task.upstream_model),
         provider: None,
@@ -578,6 +587,11 @@ async fn observe_queue(
                 observation,
             )
             .await
+        }
+        Observation::Uncertain(reason) => {
+            gateway_requests::finish_provider_run(
+                pool, id, task.lease, RunOutcome::Uncertain(reason), observation,
+            ).await
         }
         Observation::Ready(media) => {
             let Ok(request) = id.parse() else {
@@ -633,17 +647,24 @@ async fn fetch_observed_result(
     pool: &db::PgPool,
     task: &ClaimedQueuePoll,
     status: Observation<Option<queued_runs::ProviderCharge>>,
-    fetch: impl AsyncFnOnce() -> Option<artifacts::FetchedMedia>,
+    fetch: impl std::future::Future<Output = Result<artifacts::FetchedMedia, FetchError>> + Send,
 ) -> sqlx::Result<Observation<artifacts::FetchedMedia>> {
     Ok(match status {
         Observation::Ready(charge) => {
             if !queued_runs::record_result_observed(pool, task, charge.as_ref()).await? {
                 return Ok(Observation::Retry);
             }
-            fetch().await.map_or(Observation::StillRunning("completed"), Observation::Ready)
+            match fetch.await {
+                Ok(media) => Observation::Ready(media),
+                Err(FetchError::Unavailable) => Observation::StillRunning("completed"),
+                Err(FetchError::CredentialUnavailable) =>
+                    Observation::Uncertain("provider_credential_unavailable"),
+                Err(FetchError::Database(error)) => return Err(error),
+            }
         }
         Observation::StillRunning(state) => Observation::StillRunning(state),
         Observation::Rejected(reason) => Observation::Rejected(reason),
+        Observation::Uncertain(reason) => Observation::Uncertain(reason),
         Observation::Retry => Observation::Retry,
     })
 }

@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    future::Future,
     io::{Cursor, Read},
     time::Duration,
 };
@@ -490,78 +491,122 @@ impl Connector {
         }
     }
 
-    pub(super) async fn fetch(&self, task: &ClaimedQueuePoll, key: Option<&header::HeaderValue>) -> Option<FetchedMedia> {
-        tokio::time::timeout(Duration::from_secs(11), self.fetch_media(task, key))
+    pub(super) async fn fetch<F>(
+        &self,
+        task: &ClaimedQueuePoll,
+        fresh_key: &(impl Fn() -> F + Sync),
+    ) -> Result<FetchedMedia, FetchError>
+    where
+        F: Future<Output = sqlx::Result<Option<header::HeaderValue>>> + Send,
+    {
+        tokio::time::timeout(Duration::from_secs(11), self.fetch_media(task, fresh_key))
             .await
-            .ok()?
+            .unwrap_or(Err(FetchError::Unavailable))
     }
 
-    async fn fetch_media(&self, task: &ClaimedQueuePoll, key: Option<&header::HeaderValue>) -> Option<FetchedMedia> {
-        let workload: Workload = serde_json::from_value(task.workload.clone()?).ok()?;
+    async fn fetch_media<F>(
+        &self,
+        task: &ClaimedQueuePoll,
+        fresh_key: &(impl Fn() -> F + Sync),
+    ) -> Result<FetchedMedia, FetchError>
+    where
+        F: Future<Output = sqlx::Result<Option<header::HeaderValue>>> + Send,
+    {
+        use FetchError::Unavailable;
+        let workload: Workload = serde_json::from_value(task.workload.clone().ok_or(Unavailable)?)
+            .map_err(|_| Unavailable)?;
         let handle = &task.handle;
         if !valid_handle(handle) {
-            return None;
+            return Err(Unavailable);
         }
         match workload {
             Workload::Image { count, .. } if (1..=8).contains(&count) => {
-                let ratio = task.applied_aspect_ratio.as_deref().and_then(parse_ratio)?;
+                let ratio = task
+                    .applied_aspect_ratio
+                    .as_deref()
+                    .and_then(parse_ratio)
+                    .ok_or(Unavailable)?;
                 let mut images = Vec::with_capacity(usize::from(count));
-                for slot in 0..i16::try_from(count).ok()? {
-                    let bytes = self.artifact(task, slot, ArtifactSpec::Png, key).await?;
+                for slot in 0..i16::try_from(count).map_err(|_| Unavailable)? {
+                    let bytes = self.artifact(task, slot, ArtifactSpec::Png, fresh_key).await?;
                     images.push(
                         tokio::task::spawn_blocking(move || png(bytes, slot, ratio))
                             .await
-                            .ok()??,
+                            .map_err(|_| Unavailable)?
+                            .ok_or(Unavailable)?,
                     );
                 }
-                Some(FetchedMedia::Images(images))
+                Ok(FetchedMedia::Images(images))
             }
             Workload::Video {
                 duration_seconds,
                 resolution,
                 ..
             } => {
-                let ratio = task.applied_aspect_ratio.as_deref().and_then(parse_ratio)?;
-                let expected_size = video_size(ratio, &resolution)?;
-                let bytes = self.artifact(task, 0, ArtifactSpec::Mp4, key).await?;
-                video::parse(bytes, duration_seconds, expected_size).map(FetchedMedia::Video)
+                let ratio = task
+                    .applied_aspect_ratio
+                    .as_deref()
+                    .and_then(parse_ratio)
+                    .ok_or(Unavailable)?;
+                let expected_size = video_size(ratio, &resolution).ok_or(Unavailable)?;
+                let bytes = self.artifact(task, 0, ArtifactSpec::Mp4, fresh_key).await?;
+                video::parse(bytes, duration_seconds, expected_size)
+                    .map(FetchedMedia::Video)
+                    .ok_or(Unavailable)
             }
             Workload::Audio {
                 duration_seconds,
                 format,
             } if format == "wav" => {
-                let bytes = self.artifact(task, 0, ArtifactSpec::Wav, key).await?;
-                audio_format::parse(bytes, duration_seconds).map(FetchedMedia::Audio)
+                let bytes = self.artifact(task, 0, ArtifactSpec::Wav, fresh_key).await?;
+                audio_format::parse(bytes, duration_seconds)
+                    .map(FetchedMedia::Audio)
+                    .ok_or(Unavailable)
             }
             Workload::Mesh { format } if format == "glb" => {
-                let bytes = self.artifact(task, 0, ArtifactSpec::Glb, key).await?;
-                mesh_format::parse(bytes).map(FetchedMedia::Mesh)
+                let bytes = self.artifact(task, 0, ArtifactSpec::Glb, fresh_key).await?;
+                mesh_format::parse(bytes)
+                    .map(FetchedMedia::Mesh)
+                    .ok_or(Unavailable)
             }
-            _ => None,
+            _ => Err(Unavailable),
         }
     }
 
-    async fn artifact(
+    async fn artifact<F>(
         &self,
         task: &ClaimedQueuePoll,
         slot: i16,
         spec: ArtifactSpec,
-        key: Option<&header::HeaderValue>,
-    ) -> Option<Vec<u8>> {
+        fresh_key: &(impl Fn() -> F + Sync),
+    ) -> Result<Vec<u8>, FetchError>
+    where
+        F: Future<Output = sqlx::Result<Option<header::HeaderValue>>> + Send,
+    {
+        let key = fresh_key().await.map_err(FetchError::Database)?;
+        if self.tenant_keys != key.is_some() {
+            return Err(FetchError::CredentialUnavailable);
+        }
         let url = self.endpoint(&["v1", "jobs", &task.handle, "artifacts", &slot.to_string()]);
         let response = attach_provider_trace(
-            self.authorize(self.client.get(url), key),
+            self.authorize(self.client.get(url), key.as_ref()),
             task.trace_id.as_deref(),
         )
         .send()
         .await
-        .ok()?;
+        .map_err(|_| FetchError::Unavailable)?;
         let (media_type, limit) = spec.contents();
         if !successful_media(&response, media_type) {
-            return None;
+            return Err(FetchError::Unavailable);
         }
-        read_body(response, limit).await.ok()
+        read_body(response, limit).await.map_err(|_| FetchError::Unavailable)
     }
+}
+
+pub(super) enum FetchError {
+    Unavailable,
+    CredentialUnavailable,
+    Database(sqlx::Error),
 }
 
 enum ArtifactSpec {

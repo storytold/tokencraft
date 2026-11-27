@@ -282,7 +282,7 @@ Set `"tenant_keys": true` on a new queue binding in `TOKENCRAFT_CONNECTORS` and 
 
 TokenCraft sends the pinned key on submission, polling, and artifact requests. The connector saves a per-job key tag and compares it on later calls. Keep the key header out of proxy and connector logs. Authenticate upstream API requests with the key. The connector fetches outputs from reviewed artifact URLs. The completion notification and the request-to-handle lookup authenticate with their own grants.
 
-Rotation keeps the original key available for a scheduled submission retry, polling, and a permitted recheck. New requests use the active key. Revoking the pinned version before dispatch blocks submission, including a scheduled retry after a confirmed throttle. Revocation after acceptance stops polling, records an uncertain outcome, and retains the original job handle. Rolling an existing queue binding to tenant keys changes its identity. Preserve the previous instance and binding in drain mode until their jobs finish.
+Rotation keeps the original key available for a scheduled submission retry, polling, artifact downloads, and a permitted recheck. New requests use the active key. Revoking the pinned version before dispatch blocks submission, including a scheduled retry after a confirmed throttle. The gateway checks the pinned key before each poll and each artifact download. A call already authorized may finish. If another call needs a revoked key, the gateway stops and records an uncertain outcome, retaining the original job handle and any observed charge. Rolling an existing queue binding to tenant keys changes its identity. Preserve the previous instance and binding in drain mode until their jobs finish.
 
 ## Rotate a connector service token
 
