@@ -25,6 +25,8 @@ Read the [request diagnostics guide](../../docs/request-diagnostics.md) for scop
 
 Native submissions and published workflow invocations make one attempt by default. Set `submitMaxAttempts: 3` to enable retries after a connection error, an interrupted success response, or a `429` or `503` with a valid `Retry-After` in seconds or as an HTTP date. The limit includes the first attempt. Every retry uses the same serialized body and idempotency key within the original `timeoutMs`. Persist the quote, submission options, and key so you can replay the same intent if the client exhausts its attempts. During polling, `wait` follows the same HTTP hints within its own deadline and retains the last request validator.
 
+For a shared project key, pass the same `clientRef` to `quote(input, { clientRef })` and `submit(quote, { idempotencyKey, clientRef, ...options })`.
+
 To link the active span of your application, pass its trace header to `submit(quote, { idempotencyKey, traceparent })`. Call `trace(receipt.id)` to read the stored correlation, or use `list({ traceId: callerTraceId })` to find the request by the caller's trace ID. [Trace correlation](../../docs/request-diagnostics.md#link-a-caller-trace)
 
 ## Compare priced offers

@@ -29,6 +29,8 @@ The reference renders the checked-in [OpenAPI 3.1 contract](../contracts/openapi
 
 Automatic quotes retain `input.model: "auto"` for submission and idempotent replay. Match `selected_offer_id` to a candidate to find its resolved `model`. Model request status and usage use the resolved model. [Routing policy precedence](deployment.md#routing-policy-precedence)
 
+Signed quotes bind the resolved account, project, and client reference. With a shared project key, send `client_ref` in the scoped quote's query and the same value in the native submission body. On a flat media endpoint, send `X-TokenCraft-Client-Ref` on both the dry run and submission. Keys already bound to a client inherit that reference. If the attribution changes, obtain a fresh quote.
+
 ### Provider data handling
 
 Send `data_requirements.allowed_regions` or `data_requirements.max_retention_seconds` to constrain upstream handling. The gateway intersects allowed regions and applies the shortest retention limit across the request, project, and organization. With a requirement in place, an offer must declare compatible handling for its full upstream path, including any downstream aggregator. The quote returns the effective limits under `routing.data_requirements` for inspection. Submit the normalized `input` as returned so the signed quote and stable idempotency key can be reused.

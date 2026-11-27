@@ -6,7 +6,8 @@ use ring::hmac;
 use super::quote::{Quote, Reason};
 use crate::error::{ApiError, ApiResult};
 
-const DOMAIN: &[u8] = b"tokencraft/scoped-quote/v1";
+const DOMAIN: &[u8] = b"tokencraft/scoped-quote/v2";
+// Keep the wire format recognizable for accepted requests admitted with an earlier seal.
 const PREFIX: &str = "quo_s1_";
 const TTL_SECONDS: i64 = 300;
 const SEAL_BYTES: usize = 72;
@@ -88,6 +89,7 @@ fn binding(proof: &[u8], scope: RequestScope<'_>) -> Vec<u8> {
     for field in [
         scope.account.as_str(),
         scope.project.as_str(),
+        scope.client_ref.unwrap_or_default(),
     ] {
         message.extend_from_slice(&(field.len() as u64).to_be_bytes());
         message.extend_from_slice(field.as_bytes());
@@ -136,5 +138,26 @@ mod tests {
         let mut bad = decode(&sealed.id).unwrap();
         bad[0] ^= 1;
         assert!(seals.verify(&format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(bad)), &original, scope, before).is_err());
+    }
+
+    #[test]
+    fn binds_each_client_and_the_unattributed_scope() {
+        let seals = QuoteSeals::new("a-synthetic-fixture-secret");
+        let account = AccountId::generate();
+        let project = GatewayProjectId::generate();
+        let project_scope = RequestScope { account: &account, project: &project, client_ref: None };
+        let client = RequestScope { client_ref: Some("client-a"), ..project_scope };
+        let sibling = RequestScope { client_ref: Some("client-b"), ..project_scope };
+        let mut client_quote = quote();
+        seals.seal(&mut client_quote, client).unwrap();
+        let before = client_quote.expires_at.unwrap() - chrono::Duration::seconds(1);
+        assert!(seals.verify(&client_quote.id, &quote(), client, before).is_ok());
+        for other in [sibling, project_scope] {
+            assert!(matches!(seals.verify(&client_quote.id, &quote(), other, before), Err(ApiError::QuoteStale)));
+        }
+        let mut project_quote = quote();
+        seals.seal(&mut project_quote, project_scope).unwrap();
+        assert!(seals.verify(&project_quote.id, &quote(), project_scope, before).is_ok());
+        assert!(matches!(seals.verify(&project_quote.id, &quote(), client, before), Err(ApiError::QuoteStale)));
     }
 }

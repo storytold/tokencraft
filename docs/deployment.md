@@ -70,6 +70,8 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 
 A schema-70 fleet can move directly to schema 83 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
+Deploy client-bound quote signing to the API replicas together. Refresh unused quotes issued before the upgrade. Requests already admitted replay with their original quote, payload, and idempotency key.
+
 Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
 Use the same drain and restart when moving to schema 78. It adds a separate encrypted attachment for queued workflow first frames. The new worker can still read inline frames queued by earlier versions. Reapply the runtime grants before starting the new fleet.
