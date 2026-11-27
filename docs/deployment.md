@@ -349,6 +349,7 @@ Set `FOUNDATION_ENV=production` or `FOUNDATION_ENV=staging` and set `TOKENCRAFT_
 | `APP_BASE_URL` | HTTPS console origin, for example `https://console.example.com`. Use the origin without a path. |
 | `COOKIE_SECURE` | `true`. The hosted session cookie is bound to the API host. |
 | `SESSION_SECRET`, `TOKENCRAFT_DEMO_PAYLOAD_KEY` | Generate a separate value for each with `openssl rand -hex 32`. Share the same values across replicas and preserve the payload key with the database backup. |
+| `TOKENCRAFT_CONTENT_ENCRYPTION_KEY`, `TOKENCRAFT_CONTENT_ENCRYPTION_READ_KEYS` | Optional settings for [rotating request content encryption](chat-history.md#rotate-the-request-content-encryption-key). Stage read keys on all API and worker replicas before promoting a new write key. |
 | `TOKENCRAFT_LISTEN_IP`, `API_GATEWAY_PORT` | Private HTTP listener. Defaults to `127.0.0.1:4000`. Set a literal IP explicitly if an ingress or probe needs to reach it from another container. |
 | `TOKENCRAFT_CORE_CATALOG`, binding registries | Configure the real services that will execute the offers. The hosted profile accepts connector-backed offers. |
 

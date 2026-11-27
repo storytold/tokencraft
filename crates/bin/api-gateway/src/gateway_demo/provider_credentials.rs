@@ -20,13 +20,14 @@ use super::{
 pub(super) struct Vault(SealedBytes);
 
 impl Vault {
-    pub(super) fn load(payload_key: &[u8; 32]) -> anyhow::Result<Self> {
+    pub(super) fn load<'a>(request_keys: impl IntoIterator<Item = &'a [u8; 32]>) -> anyhow::Result<Self> {
         let raw = std::env::var("TOKENCRAFT_PROVIDER_CREDENTIAL_KEY")
             .context("set TOKENCRAFT_PROVIDER_CREDENTIAL_KEY for tenant bindings")?;
         let mut key = [0u8; 32];
         ensure!(hex::decode_to_slice(raw, &mut key).is_ok() && key.iter().any(|byte| *byte != key[0]),
             "TOKENCRAFT_PROVIDER_CREDENTIAL_KEY must be a generated 32-byte hex key");
-        ensure!(&key != payload_key, "provider credential and request content keys must be independent");
+        ensure!(request_keys.into_iter().all(|root| root != &key),
+            "provider credential and request content keys must be independent");
         Ok(Self(SealedBytes::new(&key, b"tokencraft/chat-connector-credentials/aes256/v1")))
     }
 

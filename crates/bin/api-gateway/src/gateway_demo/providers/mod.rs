@@ -33,7 +33,7 @@ use connector::{Connectors, FetchError};
 use queue::{Observation, Submission};
 use chat_transport::{ChatCall, ChatDispatch, StreamSink};
 pub(super) use chat_transport::{stream_chunk_purpose, ChatClient, SubmitOutcome};
-use payloads::Payloads;
+use payloads::{ContentEncryption, Payloads};
 
 pub struct ProviderRuntime {
     pub payloads: Payloads,
@@ -54,7 +54,7 @@ struct Binding<T> {
 type ChatBindings = BTreeMap<String, Binding<ChatClient>>;
 
 impl ProviderRuntime {
-    pub(super) fn load(catalog: &Catalog) -> anyhow::Result<Option<Self>> {
+    pub(super) fn load(catalog: &Catalog, session_secret: &str) -> anyhow::Result<Option<Self>> {
         let (local_chat, connectors) = load_bindings(catalog)?;
         if local_chat.is_empty() && connectors.is_empty() { return Ok(None); }
         let root = std::env::var("TOKENCRAFT_DEMO_PAYLOAD_KEY")
@@ -63,11 +63,13 @@ impl ProviderRuntime {
         hex::decode_to_slice(root, &mut payload_key).map_err(|_| {
             anyhow::anyhow!("TOKENCRAFT_DEMO_PAYLOAD_KEY must be a 32-byte hex key")
         })?;
+        let content = ContentEncryption::load(&payload_key, session_secret)?;
         let tenant_keys = connectors.has_tenant_keys() || local_chat.values().any(|binding| binding.client.requires_tenant_key());
         let vault = tenant_keys
-            .then(|| super::provider_credentials::Vault::load(&payload_key)).transpose()?;
+            .then(|| super::provider_credentials::Vault::load(std::iter::once(&payload_key).chain(content.roots())))
+            .transpose()?;
         Ok(Some(Self {
-            payloads: Payloads::new(&payload_key),
+            payloads: Payloads::new(&payload_key, &content),
             completion_tokens: completion::CompletionTokens::new(&payload_key),
             artifact_storage: ArtifactStorage::load()?.map(Arc::new),
             content_archive: super::content_history::Store::load()?.map(Arc::new),

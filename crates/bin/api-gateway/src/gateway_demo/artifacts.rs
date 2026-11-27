@@ -20,7 +20,7 @@ use super::catalog::digest;
 use super::handlers::parse_request_id;
 use super::providers::ProviderRuntime;
 use super::response_bytes;
-use super::sealed::SealedBytes;
+use super::sealed::SealedKeyRing;
 use super::SHA256_HEADER;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -153,7 +153,7 @@ fn binding(request: &str, slot: i16, content_type: &str, sha256: &str) -> String
 pub(super) async fn prepare(
     pool: &db::PgPool,
     storage: Option<&ArtifactStorage>,
-    cipher: &SealedBytes,
+    cipher: &SealedKeyRing,
     request: &GatewayRequestId,
     media: FetchedMedia,
 ) -> Option<(MediaResult, Vec<NewArtifact>)> {
@@ -209,7 +209,7 @@ pub(super) async fn prepare(
 async fn store_file(
     pool: &db::PgPool,
     storage: Option<&ArtifactStorage>,
-    cipher: &SealedBytes,
+    cipher: &SealedKeyRing,
     request: &GatewayRequestId,
     slot: i16,
     content_type: &'static str,

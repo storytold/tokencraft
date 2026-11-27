@@ -2,7 +2,7 @@
 
 TokenCraft can keep encrypted chat and generated media available for 30 days and archived until day 395. The clock starts at the first recorded completion, cancellation, failure, or unconfirmed outcome. A replay of the same admitted request uses its original policy and deadlines.
 
-Set `TOKENCRAFT_CONTENT_ARCHIVE_DIR` to a private operator-managed filesystem directory to opt in for newly admitted connected chat, images, video, audio, and 3D. Use a dedicated mounted volume at the same canonical path on API and worker replicas. The content and event archive directories have separate lifecycles. Keep the persistent `TOKENCRAFT_DEMO_PAYLOAD_KEY`, PostgreSQL database, and filesystem archive together for recovery.
+Set `TOKENCRAFT_CONTENT_ARCHIVE_DIR` to a private operator-managed filesystem directory to opt in for newly admitted connected chat, images, video, audio, and 3D. Use a dedicated mounted volume at the same canonical path on API and worker replicas. The content and event archive directories have separate lifecycles. Keep PostgreSQL, the archive, and the keys that protect the retained data in the same recovery plan.
 
 Deployments using `TOKENCRAFT_CHAT_ARCHIVE_DIR` can keep that setting for chat-only retention. To include media on disk, set `TOKENCRAFT_CONTENT_ARCHIVE_DIR` to the existing canonical path. TokenCraft keeps the existing chat manifests readable across the upgrade.
 
@@ -20,9 +20,19 @@ Set the following options on the API and workers. New requests use the bucket wh
 | `TOKENCRAFT_CONTENT_ARCHIVE_S3_AUTO_RESTORE` | Set to `1` to let project administrators request temporary cold copies. Grant the gateway `s3:RestoreObject` on the content prefix. |
 | `TOKENCRAFT_CONTENT_ARCHIVE_S3_PREFIX` | Defaults to `tokencraft-content/v1`. Use a dedicated prefix for each environment. |
 
-Keep the same endpoint, bucket, region, and prefix across replicas and restarts until all requests pinned to the target have expired and cleanup has finished. Retain the original payload key. TokenCraft conditionally writes encrypted objects and reads them back before removing the warm copy. Deletion is retried until storage acknowledges every object deletion. A versioned delete marker does not count as deletion. [S3 object deletion](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html)
+Keep the same endpoint, bucket, region, and prefix across replicas and restarts until all requests pinned to the target have expired and cleanup has finished. TokenCraft conditionally writes encrypted objects and reads them back before removing the warm copy. Deletion is retried until storage acknowledges every object deletion. A versioned delete marker does not count as deletion. [S3 object deletion](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html)
 
 To use a cold storage class, configure a prefix lifecycle transition after a read window that allows sealing and retries to finish. Keep objects available through their saved TokenCraft deadline. When a storage class requires retrieval, the history API returns HTTP `409` with `archive_retrieval_required`. A storage administrator can restore the request's `<request-id>.tch` manifest and, for media, its `<request-id>-<slot>.tcm` objects under the configured prefix. Retry the history read or artifact download once the object is readable. The gateway uses its original deadlines when reading temporary copies. [S3 lifecycle transitions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html) · [Restoring archived objects](https://docs.aws.amazon.com/AmazonS3/latest/userguide/restoring-objects.html)
+
+## Rotate the request content encryption key
+
+The gateway defaults to `TOKENCRAFT_DEMO_PAYLOAD_KEY` for request content encryption. Set `TOKENCRAFT_CONTENT_ENCRYPTION_KEY` to choose a separate key for new encryption of dispatch inputs, results, chat deltas, and media. The gateway can also read with up to eight distinct keys in `TOKENCRAFT_CONTENT_ENCRYPTION_READ_KEYS`, a comma-separated list of 32-byte hex values. Keep `TOKENCRAFT_DEMO_PAYLOAD_KEY` stable across the rollout because it signs request intent fingerprints and connector completion tokens.
+
+1. Generate a separate key with `openssl rand -hex 32` and store it in your secret manager. Add it to `TOKENCRAFT_CONTENT_ENCRYPTION_READ_KEYS` on every API and worker. Deploy rotation-capable binaries on all replicas with their current write key.
+2. Set `TOKENCRAFT_CONTENT_ENCRYPTION_KEY` to the new key. Move the old write key into the read list and remove the new key from that list. For the first rotation, the old write key is `TOKENCRAFT_DEMO_PAYLOAD_KEY`. Roll the API and workers with both generations readable.
+3. Verify a saved receipt replay, an older archive download, and a new result. A rollback after new writes needs a rotation-capable build with the same read overlap. Keep each historical key available for retained data, queued work, and backups that need it.
+
+Archived bundles can contain entries encrypted under different generations. The worker copies their verified ciphertext when sealing. TokenCraft rotates [event archive encryption](event-archives.md#rotate-the-event-archive-key) through its own settings.
 
 ## Restore from Requests
 

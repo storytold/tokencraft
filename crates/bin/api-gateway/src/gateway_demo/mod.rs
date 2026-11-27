@@ -230,7 +230,7 @@ pub(crate) fn startup_config(
         !hosted || catalog.offers.iter().all(|offer| offer.adapter != catalog::Adapter::Mock),
         "the hosted catalog requires connector-backed offers"
     );
-    let providers = providers::ProviderRuntime::load(&catalog)?.map(Arc::new);
+    let providers = providers::ProviderRuntime::load(&catalog, session_secret)?.map(Arc::new);
     if let Some(runtime) = &providers {
         runtime.pin_catalog(&mut catalog)?;
     }

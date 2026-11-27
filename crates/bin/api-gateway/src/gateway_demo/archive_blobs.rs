@@ -15,12 +15,13 @@ use ids::{AccountId, GatewayArchiveId};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
-use self::keys::{ArchiveKeys, READ_KEYS};
+use self::keys::READ_KEYS;
 use super::{
     archive_bucket::{ArchiveBucket, RestoreDispatch},
     catalog::digest,
     exports::ndjson::MAX_BYTES as MAX_PLAINTEXT,
     local_files,
+    sealed::SealedKeyRing,
 };
 
 const MAGIC: &[u8] = b"TCA1";
@@ -30,7 +31,7 @@ const FILES: &str = "files";
 pub(super) struct ArchiveStorage {
     root: Option<PathBuf>,
     bucket: Option<ArchiveBucket>,
-    keys: ArchiveKeys,
+    keys: SealedKeyRing,
     io_slots: Arc<Semaphore>,
     pub(super) automatic_after_days: Option<i32>,
     pub(super) retire_after_days: Option<i32>,
@@ -131,7 +132,7 @@ impl ArchiveStorage {
         Ok(Some(Self {
             root,
             bucket,
-            keys: ArchiveKeys::load()?,
+            keys: keys::load()?,
             io_slots: Arc::new(Semaphore::new(4)),
             automatic_after_days,
             retire_after_days,
