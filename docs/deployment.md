@@ -65,7 +65,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 
 1. Pause new submissions while the old API still serves status and results. Use the [cell admission control](#pause-new-admissions-in-a-cell) on schema 88 or later. For earlier fleets, apply the pause at ingress. Let active provider jobs and deliveries drain, then stop the old API and workers so the backup captures a stable recovery point.
 2. Retain the old image and deployment configuration. Back up PostgreSQL and record the corresponding recovery points for artifact storage, connector job state, and retained keys. Verify that the backup can be restored to a separate database before depending on it.
-3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress) against the live deployment before reopening submissions.
+3. Keep ingress paused and the new fleet stopped while applying the target image's migrations. Use `admin-cli migrate --pause-admissions` on schema 88 or later and `admin-cli migrate` on earlier releases. Reapply [runtime grants](#separate-migration-and-runtime-roles) and run `admin-cli schema-status` as the runtime role. On schema 88 or later, confirm `admin-cli admissions status` reports `paused` before starting the new fleet. Run the [public and read-only authenticated checks](#run-behind-an-https-ingress), then resume the database gate if active and lift the ingress pause.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
 A schema-70 fleet can move directly to schema 88 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
@@ -96,7 +96,7 @@ Migration 87 adds a receipt digest for recoverable webhook key rotations. Schema
 
 ### Pause new admissions in a cell
 
-Schema 88 adds a pause shared by every API replica using the cell database. Stop earlier gateway binaries before applying migration 88, then reapply runtime grants and start the matching fleet. A newly migrated cell starts with admissions open. When installing the gate during a cutover, maintain the ingress pause until the database pause is active.
+Schema 88 adds a pause shared by every API replica using the cell database. Stop earlier gateway binaries before applying migration 88. A fresh migration creates the control in the open state. During a cutover, `admin-cli migrate --pause-admissions` applies the migrations and then commits the pause before reporting success. Keep ingress paused and the new fleet stopped until the runtime role can confirm the pause. If the pause step fails, the migrations can already be applied. Check the schema and set the pause before starting replicas. Plain `admin-cli migrate` preserves the recorded admission state.
 
 Run the command from the matching release with `DATABASE_URL` pointing to the target cell. The migration owner can change the pause. The restricted runtime role can read it.
 

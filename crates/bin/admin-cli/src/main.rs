@@ -1,7 +1,7 @@
 //! admin-cli — migrations and ops one-offs (codebase_layout_backend.md §2). Migrations
 //! are applied here. Hosted demo startup can initialize an empty database by explicit opt-in.
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use db::SchemaState;
 
 #[tokio::main]
@@ -23,10 +23,23 @@ async fn main() -> Result<()> {
 
     match cmd.as_str() {
         "migrate" => {
+            let pause_admissions = match args.next().as_deref() {
+                None => false,
+                Some("--pause-admissions") if args.next().is_none() => true,
+                _ => bail!("Usage: admin-cli migrate [--pause-admissions]"),
+            };
             let pool = connect(&cfg).await?;
             db::migrate(&pool).await?;
+            if pause_admissions {
+                db::admission_control::set_paused(&pool, true)
+                    .await
+                    .context("could not pause admissions after applying migrations")?;
+            }
             let n = db::table_count(&pool).await?;
             println!("migrations applied · {n} application tables in {}", db_name(&cfg.database_url));
+            if pause_admissions {
+                println!("admissions: paused");
+            }
         }
         "initialize-demo" => {
             let pool = connect(&cfg).await?;
@@ -87,7 +100,7 @@ async fn main() -> Result<()> {
         }
         "" | "help" | "-h" | "--help" => {
             eprintln!(
-                "admin-cli <command>\n  --version        show the version and source revision\n  migrate          apply pending migrations\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count\n  admissions       status, pause, or resume new admissions in this cell"
+                "admin-cli <command>\n  --version        show the version and source revision\n  migrate [--pause-admissions]  apply pending migrations and optionally pause admissions\n  schema-status    inspect the database migration ledger without changing it\n  initialize-demo  initialize an empty demo or verify its existing schema\n  db-info          show db name, reachability, table count\n  admissions       status, pause, or resume new admissions in this cell"
             );
         }
         other => bail!("unknown command: {other} (try `help`)"),

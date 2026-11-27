@@ -293,7 +293,7 @@ def rehearse(args, folder, stack):
         )
         auth = {"Authorization": "Bearer " + principal["token"]}
 
-        def submit(port, app_ref, *, notify=False):
+        def prepare_submission(port, app_ref, *, notify=False):
             quote, _ = smoke.call(
                 port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
                 body={"model": "example_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}},
@@ -305,6 +305,10 @@ def rehearse(args, folder, stack):
             if notify:
                 body["delivery"] = {"webhook_subscription_id": subscription["id"]}
             headers = {**auth, "Idempotency-Key": token_hex(16)}
+            return headers, body
+
+        def submit(port, app_ref, *, notify=False):
+            headers, body = prepare_submission(port, app_ref, notify=notify)
             receipt, _ = smoke.call(port, "/v1/requests", 202, method="POST", headers=headers, body=body)
             return receipt, headers, body
 
@@ -346,9 +350,11 @@ def rehearse(args, folder, stack):
     saved_artifact, = artifact_files(saved_artifacts, completed)
     assert saved_artifact.read_bytes() == original_artifact.read_bytes()
     run(pg / "pg_dump", "--format=custom", "--file", dump, "postgres", settings=pg_env)
-    run(args.candidate_admin, "migrate", settings=owner)
+    migration = run(args.candidate_admin, "migrate", "--pause-admissions", settings=owner)
+    assert migration.endswith("\nadmissions: paused"), migration
     grant()
     check_schema(runtime, "current", database=str(latest))
+    assert run(args.candidate_admin, "admissions", "status", settings=runtime) == "admissions: paused"
     versions = psql(
         "SELECT string_agg(version::text, ',' ORDER BY version) FROM public._sqlx_migrations WHERE success"
     )
@@ -358,7 +364,6 @@ def rehearse(args, folder, stack):
     blocked = subprocess.run([args.baseline_gateway], cwd=folder, env=old_settings, capture_output=True, text=True, timeout=15)
     assert blocked.returncode == 1 and "apply the matching TokenCraft migrations" in blocked.stderr
     print(f"PASS explicit migration and grants reached schema {latest} and preserved the queued native delivery", flush=True)
-    assert run(args.candidate_admin, "admissions", "pause", settings=owner) == "admissions: paused"
 
     def replay(port, receipt, headers, body):
         returned, _ = smoke.call(port, "/v1/requests", 200, method="POST", headers=headers, body=body)
@@ -387,6 +392,11 @@ def rehearse(args, folder, stack):
         verify_connector_state()
         api = gateway(args.candidate_gateway, "api", upgraded)
         gateway(args.candidate_gateway, "worker", upgraded)
+        upgraded_headers, upgraded_body = prepare_submission(api, "after-upgrade")
+        rejection, retry = smoke.call(api, "/v1/requests", 503, method="POST",
+                                      headers=upgraded_headers, body=upgraded_body)
+        assert rejection["error"]["code"] == "admissions_paused" and retry.get("Retry-After") == "5"
+        assert psql("SELECT count(*) FROM public.gateway_requests WHERE app_ref = 'after-upgrade'") == "0"
         replay(api, completed, completed_headers, completed_body)
         replay(api, running, running_headers, running_body)
         replay(api, queued, queued_headers, queued_body)
@@ -405,12 +415,15 @@ def rehearse(args, folder, stack):
         verify_legacy_delivery(api)
         assert psql(payload) == legacy_hex
         assert run(args.candidate_admin, "admissions", "resume", settings=owner) == "admissions: open"
-        upgraded_only, upgrade_headers, upgrade_body = submit(api, "after-upgrade")
+        upgraded_only, _ = smoke.call(api, "/v1/requests", 202, method="POST",
+                                      headers=upgraded_headers, body=upgraded_body)
         read_image(api, upgraded_only, auth)
         upgraded_handle = psql(handle_query + "'after-upgrade'")
         assert upgraded_handle and upgraded_handle != handle
-        replay(api, upgraded_only, upgrade_headers, upgrade_body)
+        replay(api, upgraded_only, upgraded_headers, upgraded_body)
         verify_usage(api, "after-upgrade")
+    print("PASS the migrated cell rejected fresh admission before resume and then accepted the same intent and key",
+          flush=True)
     relay.assert_submissions(completed, running, queued, upgraded_only)
     upgraded_artifact, = artifact_files(artifacts, upgraded_only)
     assert not artifact_files(saved_artifacts, upgraded_only)
