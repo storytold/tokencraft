@@ -161,5 +161,5 @@ pub struct RequestRow {
 }
 mod read_route_retries;
 pub use read_route_retries::read_route_retries;
-mod reschedule_queue_submission;
-pub use reschedule_queue_submission::reschedule_queue_submission;
+mod record_queue_throttle;
+pub use record_queue_throttle::record_queue_throttle;

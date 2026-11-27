@@ -423,7 +423,7 @@ pub(crate) fn mount_api_routes(base: Router<AppState>, config: DemoConfig) -> Ro
 
 pub(crate) fn spawn_background_tasks(pool: db::PgPool, config: &DemoConfig) {
     Arc::clone(&config.readiness).observe_database(pool.clone());
-    // Workflow admission and dispatch fallback also evaluate rates on worker replicas.
+    // Worker replicas also evaluate rates when admitting workflow steps.
     config.catalog.spawn();
     if let Some(storage) = config.providers.as_ref().and_then(|runtime| runtime.artifact_storage.as_ref()) {
         Arc::clone(storage).spawn(pool.clone(), Arc::clone(&config.readiness), config.role.runs_workers());

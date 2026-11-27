@@ -523,15 +523,9 @@ async fn record_queue_submission(
             }
         }
         Submission::Unavailable(limit) => {
-            gateway_requests::queue_cooldowns::record(pool, run, limit.cooldown_ms).await?;
-            let scheduled = match limit.retry_after_ms {
-                Some(wait) => gateway_requests::reschedule_queue_submission(pool, run, wait.max(50), 1).await?,
-                None => false,
-            };
-            if scheduled {
-                return Ok(());
-            }
-            RunOutcome::Rejected("provider_rate_limited")
+            return gateway_requests::record_queue_throttle(
+                pool, run, limit.cooldown_ms, limit.retry_after_ms.map(|wait| wait.max(50)),
+            ).await;
         }
         Submission::Rejected(reason) => RunOutcome::Rejected(reason),
         Submission::Uncertain(reason) => RunOutcome::Uncertain(reason),

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgExecutor, PgPool};
+use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use super::{ClaimedProviderRun, RequestScope};
 
@@ -25,22 +25,27 @@ pub async fn active<'e>(
 }
 
 /// Extend a cooldown from an explicit pre-acceptance rejection on the current lease.
-pub async fn record(pool: &PgPool, run: &ClaimedProviderRun, wait_ms: i32) -> sqlx::Result<()> {
-    sqlx::query!(
+pub(super) async fn record(
+    conn: &mut PgConnection,
+    run: &ClaimedProviderRun,
+    wait_ms: i32,
+) -> sqlx::Result<bool> {
+    let changed = sqlx::query!(
         "INSERT INTO gateway_queue_cooldowns (account_id, project_id, binding_digest, upstream_model, available_after)
          SELECT r.account_id, r.project_id, p.binding_digest, p.upstream_model,
                 statement_timestamp() + $3::integer * interval '1 millisecond'
          FROM gateway_requests r JOIN gateway_provider_runs p ON p.request_id = r.id
-         WHERE r.id = $1 AND r.adapter IN ('fal_queue', 'kinovi_queue', 'connector_queue') AND r.dispatched_at IS NOT NULL
-           AND p.lease_until = $2 AND p.lease_until > statement_timestamp()
+         WHERE r.id = $1 AND r.dispatched_at IS NOT NULL AND p.request_payload IS NOT NULL
+           AND p.lease_until = $2 AND p.lease_until > clock_timestamp()
            AND p.accepted_at IS NULL AND p.upstream_handle IS NULL
+           AND num_nonnulls(r.succeeded_at, r.failed_at, r.canceled_at, r.uncertain_at) = 0
          ON CONFLICT (account_id, project_id, binding_digest, upstream_model) DO UPDATE
          SET available_after = greatest(gateway_queue_cooldowns.available_after, excluded.available_after)",
         run.request_id, run.lease, wait_ms,
     )
-    .execute(pool)
+    .execute(conn)
     .await?;
-    Ok(())
+    Ok(changed.rows_affected() == 1)
 }
 
 pub async fn purge_expired(pool: &PgPool) -> sqlx::Result<()> {

@@ -342,6 +342,8 @@ Echo the request ID and return one outcome.
 - `unavailable` means the connector can prove no upstream work was accepted. It may supply `retry_after_ms` up to 2000 for one bounded retry.
 - `uncertain` means the request may have been accepted. Timeouts, malformed replies, and non-protocol HTTP errors also leave the request awaiting reconciliation without a fresh submission.
 
+When a connector reports `unavailable`, the gateway commits the model's cooldown for that project and binding together with the retry or terminal failure. The retry keeps the admitted offer and estimated price. If a completion notification was already recorded, the gateway verifies the original receipt before proceeding.
+
 The fal and Kinovi plugins close unused supplier response bodies promptly when an upstream response fails. They persist the cooldown after a supplier throttle. A matching replay after that delay can make the one permitted supplier retry. A retry without a conclusive outcome remains in reconciliation. A fresh quote during a recorded cooldown can select another eligible offer.
 
 ### Observe and fetch

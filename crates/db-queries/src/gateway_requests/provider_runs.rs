@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use ids::{AccountId, GatewayProjectId, GatewayRequestId};
-use sqlx::{PgExecutor, PgPool};
+use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use super::{artifacts, connector_completions, queue_turns::QueueLane, RequestScope};
 
@@ -146,7 +146,7 @@ pub async fn finish_provider_run(
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
     let outcome = match outcome {
-        RunOutcome::Rejected("provider_rate_limited" | "connector_rejected")
+        RunOutcome::Rejected("connector_rejected")
             if connector_completions::lock_request(&mut tx, request).await?
                 && connector_completions::received(&mut tx, request).await? =>
         {
@@ -154,6 +154,17 @@ pub async fn finish_provider_run(
         }
         outcome => outcome,
     };
+    finish_provider_run_in(&mut tx, request, lease, outcome, observation).await?;
+    tx.commit().await
+}
+
+pub(super) async fn finish_provider_run_in(
+    conn: &mut PgConnection,
+    request: &str,
+    lease: DateTime<Utc>,
+    outcome: RunOutcome<'_>,
+    observation: UpstreamObservation<'_>,
+) -> sqlx::Result<bool> {
     let (state, failure_code, output, outputs, media) = match outcome {
         RunOutcome::Completed {
             payload,
@@ -179,7 +190,7 @@ pub async fn finish_provider_run(
         state,
         lease,
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?;
     if let Some(row) = updated {
         let expiry = sqlx::query_scalar!(
@@ -198,10 +209,10 @@ pub async fn finish_provider_run(
             request, failure_code, output, observation.handle, observation.model, observation.provider, observation.finish_reason,
             state, !media.is_empty(),
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
         if let Some(expires_at) = expiry {
-            artifacts::insert(&mut tx, request, expires_at, media).await?;
+            artifacts::insert(conn, request, expires_at, media).await?;
         }
         if output.is_some() || observation.partial_usage {
             let source = match (row.adapter.as_str(), observation.partial_usage) {
@@ -221,11 +232,12 @@ pub async fn finish_provider_run(
                 source,
                 observation.reported_usd_nanos, outputs, observation.input_tokens, observation.output_tokens,
             )
-            .execute(&mut *tx)
+            .execute(conn)
             .await?;
         }
+        return Ok(true);
     }
-    tx.commit().await
+    Ok(false)
 }
 
 pub async fn expire_provider_work(pool: &PgPool) -> sqlx::Result<()> {
