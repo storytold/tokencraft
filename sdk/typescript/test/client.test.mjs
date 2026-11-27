@@ -571,9 +571,10 @@ test("verifies exact webhook bytes during signing-key overlap and rejects tamper
   const second = Buffer.alloc(32, 42);
   const secret = (key) => `whsec_${key.toString("base64")}`;
   const id = requestId.replace(/^req_/, "whd_");
+  const scoped = { project_id: requestId.replace(/^req_/, "proj_"), status: "succeeded", fetch_url: "/v1/requests/" + requestId };
   const event = {
     id, schema_version: 1, occurred_at: new Date(now * 1000).toISOString(), sequence: 3,
-    type: "request.succeeded", data: { request_id: requestId },
+    type: "request.succeeded", data: { request_id: requestId, ...scoped },
   };
   const body = Buffer.from(JSON.stringify(event, null, 2));
   const sign = (key, value) => "v1," + createHmac("sha256", key).update(`${id}.${now}.`).update(value).digest("base64");
@@ -583,6 +584,22 @@ test("verifies exact webhook bytes during signing-key overlap and rejects tamper
   };
   assert.deepEqual(await verifyWebhook(body, headers, secret(first), { now }), event);
   assert.deepEqual(await verifyWebhook(body, headers, [secret(second), secret(first)], { now }), event);
+  const verify = (input) => {
+    const raw = Buffer.from(JSON.stringify(input));
+    return verifyWebhook(raw, { ...headers, "Webhook-Signature": sign(first, raw) }, secret(first), { now });
+  };
+  for (const status of ["succeeded", "failed", "canceled"]) {
+    const terminal = { ...event, type: "request." + status, data: { ...event.data, status } };
+    assert.deepEqual(await verify(terminal), terminal);
+  }
+  const otherId = "req_00000000000000000000000000";
+  for (const fields of [
+    { status: "failed" }, { project_id: undefined }, { project_id: requestId },
+    { fetch_url: "/v1/requests/" + otherId }, { fetch_url: undefined },
+    { request_id: otherId, fetch_url: "/v1/requests/" + otherId },
+  ]) {
+    await assert.rejects(verify({ ...event, data: { ...event.data, ...fields } }), { code: "payload" });
+  }
   const tagged = { ...event, data: { ...event.data, client_ref: "studio:customer-42" } };
   const taggedBody = Buffer.from(JSON.stringify(tagged));
   assert.deepEqual(await verifyWebhook(taggedBody, { ...headers, "Webhook-Signature": sign(first, taggedBody) }, secret(first), { now }), tagged);

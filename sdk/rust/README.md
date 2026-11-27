@@ -96,7 +96,7 @@ let event = verify_webhook(&headers, &raw_body, &[&signing_secret], WebhookOptio
 handle_event_once(&event.id, &event)?;
 ```
 
-Use `event.data.client_ref()` to read the optional client reference on native request events.
+Native request verification checks the project ID, terminal status, and request fetch path in `event.data.attributes`. Use `event.data.client_ref()` for the optional client reference.
 
 For [workflow terminal events](../../docs/workflows.md#receive-terminal-events), use `verify_workflow_webhook` with the same arguments. Its verified data contains the workflow run ID, terminal state, relative status URL, and the optional `data.client_ref` supplied at invocation.
 

@@ -21,7 +21,7 @@ Retrieve one subscription with `GET /v1/projects/{project}/webhooks/{subscriptio
 
 Delivery records identify their subject with `request_id` or `workflow_run_id`. App subscriptions only receive terminal events for the assigned app.
 
-New native request events include `data.client_ref` when the admitted request has a client reference. This applies to successful, failed, and canceled requests. Use the optional signed field to route events for a shared receiver. Unattributed requests omit it. Retry and redrive keep the original event ID and body, including deliveries created before this field was available.
+Native request events carry `data.request_id`, `data.project_id`, a status matching the event type, and `data.fetch_url` in the form `/v1/requests/{id}`. The event ID uses the same suffix as the request ID. New events include `data.client_ref` when the admitted request has a client reference. This applies to successful, failed, and canceled requests. Use the optional signed field to route events for a shared receiver. Unattributed requests omit it. Retry and redrive keep the original event ID and body, including deliveries created before this field was available.
 
 ## Inspect a workflow run
 

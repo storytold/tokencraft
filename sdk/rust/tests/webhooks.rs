@@ -26,7 +26,8 @@ fn verifies_raw_bytes_with_both_keys_and_enforces_envelope_and_time() {
         "type": "request.succeeded",
         "occurred_at": "2026-11-24T12:00:00Z",
         "sequence": 3,
-        "data": { "request_id": REQUEST, "provider": "kinovi" },
+        "data": { "request_id": REQUEST, "project_id": REQUEST.replace("req_", "proj_"),
+                  "status": "succeeded", "fetch_url": format!("/v1/requests/{REQUEST}"), "provider": "kinovi" },
     });
     let body = serde_json::to_vec_pretty(&event).unwrap();
     let old = [22; 32];
@@ -71,6 +72,36 @@ fn verifies_raw_bytes_with_both_keys_and_enforces_envelope_and_time() {
         verify_webhook(&tagged_headers, &invalid, &[&new_secret], options).unwrap_err(),
         VerificationError::Payload
     );
+
+    let mut verify = |event: &serde_json::Value| {
+        let encoded = serde_json::to_vec(event).unwrap();
+        tagged_headers.insert("webhook-signature", sign(&new, &encoded).parse().unwrap());
+        verify_webhook(&tagged_headers, &encoded, &[&new_secret], options)
+    };
+    for status in ["succeeded", "failed", "canceled"] {
+        let mut terminal = event.clone();
+        terminal["type"] = format!("request.{status}").into();
+        terminal["data"]["status"] = status.into();
+        assert!(verify(&terminal).is_ok());
+    }
+    for (field, value) in [
+        ("status", "failed"),
+        ("project_id", REQUEST),
+        ("fetch_url", "/v1/requests/req_00000000000000000000000000"),
+    ] {
+        let mut invalid = event.clone();
+        invalid["data"][field] = value.into();
+        assert_eq!(verify(&invalid).unwrap_err(), VerificationError::Payload);
+    }
+    for field in ["project_id", "fetch_url"] {
+        let mut missing = event.clone();
+        missing["data"].as_object_mut().unwrap().remove(field);
+        assert_eq!(verify(&missing).unwrap_err(), VerificationError::Payload);
+    }
+    let mut mismatched = event.clone();
+    mismatched["data"]["request_id"] = "req_00000000000000000000000000".into();
+    mismatched["data"]["fetch_url"] = "/v1/requests/req_00000000000000000000000000".into();
+    assert_eq!(verify(&mismatched).unwrap_err(), VerificationError::Payload);
 
     let normalized = serde_json::to_vec(&event).unwrap();
     assert_eq!(

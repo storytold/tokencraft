@@ -19,8 +19,11 @@ export async function verifyWebhook(
   signingSecrets: string | readonly string[],
   options: VerifyWebhookOptions = {},
 ): Promise<WebhookEvent> {
-  const { event, type, data } = await verifyEnvelope(body, headers, signingSecrets, options);
+  const { event, id, type, data } = await verifyEnvelope(body, headers, signingSecrets, options);
   if (!eventTypes.has(type) || !isRequestId(data.request_id)
+      || id.slice(4) !== data.request_id.slice(4)
+      || !hasIdPrefix(data.project_id, "proj_") || data.status !== type.slice("request.".length)
+      || data.fetch_url !== `/v1/requests/${data.request_id}`
       || (data.client_ref != null && !isClientReference(data.client_ref))) {
     throw invalidPayload();
   }
@@ -110,7 +113,7 @@ async function verifyEnvelope(
       || !object(event.data)) {
     throw invalidPayload();
   }
-  return { event, type: event.type, data: event.data };
+  return { event, id, type: event.type, data: event.data };
 }
 
 function invalidPayload() {

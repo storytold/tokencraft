@@ -482,7 +482,13 @@ export interface WebhookEvent {
   type: "request.succeeded" | "request.canceled" | "request.failed";
   occurred_at: string;
   sequence: number;
-  data: Record<string, unknown> & { request_id: string; client_ref?: string | null };
+  data: Record<string, unknown> & {
+    request_id: string;
+    project_id: string;
+    status: "succeeded" | "canceled" | "failed";
+    fetch_url: string;
+    client_ref?: string | null;
+  };
 }
 
 export type WorkflowWebhookStatus = "succeeded" | "failed" | "canceled" | "expired";

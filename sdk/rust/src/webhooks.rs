@@ -129,12 +129,25 @@ pub fn verify_webhook(
     let id = verify_signature(headers, body, signing_secrets, options)?;
     let event: VerifiedWebhook =
         serde_json::from_slice(body).map_err(|_| VerificationError::Payload)?;
+    let request_id = &event.data.request_id;
+    let attributes = &event.data.attributes;
+    let status = match event.kind {
+        WebhookKind::Succeeded => "succeeded",
+        WebhookKind::Canceled => "canceled",
+        WebhookKind::Failed => "failed",
+    };
+    let fetch_url = format!("/v1/requests/{request_id}");
     if event.id != id
         || event.schema_version != 1
         || event.sequence == 0
         || event.occurred_at.is_empty()
-        || !valid_id(&event.data.request_id, "req_")
-        || event.data.attributes.get("client_ref").is_some_and(|value| {
+        || !valid_id(request_id, "req_")
+        || id.strip_prefix("whd_") != request_id.strip_prefix("req_")
+        || !attributes.get("project_id").and_then(serde_json::Value::as_str)
+            .is_some_and(|project| valid_id(project, "proj_"))
+        || attributes.get("status").and_then(serde_json::Value::as_str) != Some(status)
+        || attributes.get("fetch_url").and_then(serde_json::Value::as_str) != Some(fetch_url.as_str())
+        || attributes.get("client_ref").is_some_and(|value| {
             !value.is_null() && event.data.client_ref().is_none()
         })
     {
