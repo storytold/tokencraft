@@ -452,6 +452,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dotenvy",
+ "ids",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2828,6 +2831,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "config",
  "db",
  "hex",
  "hmac",

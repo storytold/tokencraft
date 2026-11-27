@@ -24,8 +24,8 @@ from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from postgres_tools import postgres_bin
-from smoke_native_backup import defer_workflow, prepare_webhook, prepare_workflow, verify_backup
-from smoke_workflow_contract import webhook_receiver
+from smoke_native_backup import defer_workflow, packaged_delivery_tool, prepare_webhook, prepare_workflow, verify_backup
+from smoke_workflow_contract import provision, webhook_receiver
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,9 +301,14 @@ def smoke_package(archive, name, pg_bin):
         if console.is_dir():
             command += ["--console-dir", console]
         opener = build_opener(ProxyHandler({}))
+        tool_registry = None
+        tool_env = {}
 
         def launch(state_path):
-            return packaged_gateway([*command, "--state-dir", state_path], state_path, env, opener, api)
+            args = [*command, "--state-dir", state_path]
+            if tool_registry is not None:
+                args += ["--workflow-tools", tool_registry]
+            return packaged_gateway(args, state_path, {**env, **tool_env}, opener, api)
 
         with launch(state):
             verify_migrations(package, state, pg_bin, db_port, env)
@@ -324,7 +329,11 @@ def smoke_package(archive, name, pg_bin):
             verify_webhook = prepare_webhook(api_port, web_port, receiver)
             verify_webhook()
             print("PASS packaged launcher delivered and retried a signed localhost webhook")
-            workflow = prepare_workflow(api_port, web_port)
+            session, account, project = provision(api_port, origin=f"http://localhost:{web_port}")
+        tool_registry, tool_env = fixtures.enter_context(
+            packaged_delivery_tool(work, package / MEDIA_WORKER, env, account, project))
+        with launch(state):
+            workflow = prepare_workflow(api_port, session, account, project)
             parked = defer_workflow(work, state, pg_bin, db_port, env, workflow.receipt)
         verify_backup(launcher, api_port, env, state, launch, workflow, parked, verify_webhook)
 

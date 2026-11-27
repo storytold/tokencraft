@@ -1,5 +1,6 @@
 mod console;
 mod profile;
+mod workflow_tools;
 
 use std::{
     env,
@@ -20,6 +21,7 @@ use tokio::{
 };
 
 use self::profile::Profile;
+use self::workflow_tools::WorkflowTools;
 use crate::{
     connector,
     postgres::{Mode, Postgres},
@@ -46,6 +48,7 @@ Options:
   --console-dir DIR     Serve a packaged frontend build on the web port
   --gateway-bin PATH    Use an existing api-gateway binary
   --webhook-config PATH Use a local webhook destination registry
+  --workflow-tools PATH Use a project-scoped workflow tool registry
   --offline             Build api-gateway using cached Cargo dependencies
   --help                Show this help
 ";
@@ -60,6 +63,7 @@ struct Options {
     profile: Option<PathBuf>,
     console_dir: Option<PathBuf>,
     webhook_config: Option<PathBuf>,
+    workflow_tools: Option<PathBuf>,
     offline: bool,
 }
 
@@ -75,6 +79,7 @@ impl Default for Options {
             profile: None,
             console_dir: None,
             webhook_config: None,
+            workflow_tools: None,
             offline: false,
         }
     }
@@ -137,6 +142,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
             Some("--profile") => options.profile = Some(value()?.into()),
             Some("--console-dir") => options.console_dir = Some(value()?.into()),
             Some("--webhook-config") => options.webhook_config = Some(value()?.into()),
+            Some("--workflow-tools") => options.workflow_tools = Some(value()?.into()),
             Some("--offline") => options.offline = true,
             _ => bail!(
                 "unknown option {}. Use tokencraft --help",
@@ -173,6 +179,7 @@ async fn run(options: Options) -> Result<()> {
                 .with_context(|| format!("webhook configuration {} was not found", path.display()))
         })
         .transpose()?;
+    let workflow_tools = options.workflow_tools.as_deref().map(WorkflowTools::load).transpose()?;
     let console = match options.console_dir.as_deref() {
         Some(directory) => Some(console::Console::prepare(directory, options.web_port, options.api_port).await?),
         None => None,
@@ -194,7 +201,7 @@ async fn run(options: Options) -> Result<()> {
     private_dir(&artifacts)?;
     let (mut postgres, database_url) = Postgres::start(&state, options.db_port, Mode::Dev).await?;
     tokio::select! {
-        result = run_stack(&state, &options, providers, database_url, artifacts, webhook_config) => result,
+        result = run_stack(&state, &options, providers, database_url, artifacts, webhook_config, workflow_tools) => result,
         result = async {
             match console {
                 Some(console) => console.serve().await,
@@ -253,13 +260,16 @@ async fn run_stack(
     database_url: String,
     artifacts: PathBuf,
     webhook_config: Option<Vec<u8>>,
+    workflow_tools: Option<WorkflowTools>,
 ) -> Result<()> {
     let (archives, archive_key) = state.local_archives()?;
     let profile = match &providers {
         Providers::Reviewed(profile) => Some(profile),
         Providers::Example(_) => None,
     };
-    let binary = gateway_binary(options, &database_url, profile).await?;
+    let credential_names = profile.into_iter().flat_map(Profile::credential_names)
+        .chain(workflow_tools.iter().flat_map(WorkflowTools::credential_names));
+    let binary = gateway_binary(options, &database_url, credential_names).await?;
     let mut gateway = Command::new(binary);
     gateway
         .current_dir(&state.root)
@@ -293,6 +303,9 @@ async fn run_stack(
     } else {
         None
     };
+    let _workflow_tools = workflow_tools
+        .map(|tools| tools.configure(&mut gateway, state))
+        .transpose()?;
     let (example, _profile_files) = match providers {
         Providers::Example(example) => {
             gateway
@@ -370,10 +383,10 @@ struct CargoTarget {
     name: String,
 }
 
-async fn gateway_binary(
+async fn gateway_binary<'a>(
     options: &Options,
     database_url: &str,
-    profile: Option<&Profile>,
+    credential_names: impl Iterator<Item = &'a str>,
 ) -> Result<PathBuf> {
     if let Some(path) = &options.gateway_bin {
         ensure!(
@@ -414,8 +427,8 @@ async fn gateway_binary(
     if options.offline {
         command.arg("--offline");
     }
-    if let Some(profile) = profile {
-        profile.exclude_credentials(&mut command);
+    for name in credential_names {
+        command.env_remove(name);
     }
     let mut build = command
         .current_dir(workspace)

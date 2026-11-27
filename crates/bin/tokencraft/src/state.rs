@@ -149,6 +149,24 @@ pub(crate) fn random_secret() -> Result<String> {
     Ok(hex::encode(bytes))
 }
 
+pub(crate) struct PrivateDirectory {
+    pub path: PathBuf,
+}
+
+impl PrivateDirectory {
+    pub(crate) fn create(parent: &Path) -> Result<Self> {
+        let path = parent.join(format!(".tmp-{}", random_secret()?));
+        DirBuilder::new().mode(0o700).create(&path)?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for PrivateDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 pub(crate) struct PrivateFile {
     pub path: PathBuf,
 }

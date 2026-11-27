@@ -97,7 +97,7 @@ Start the [worker](../plugins/tools/media/README.md#run-from-an-audited-checkout
 }
 ```
 
-Set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the gateway and workflow workers. Set the named environment variable in their secret configuration to the worker's `TOKENCRAFT_MEDIA_SERVICE_TOKEN`. A loopback sidecar can use HTTP. A separate host requires HTTPS. Use the matching reviewed manifest on the worker and in the registry. Add a separate binding for each additional pack with a distinct binding name, token variable, origin, and reviewed manifest.
+For the native development launcher, pass `--workflow-tools ./tool-bindings.json` and reuse the state directory that contains the scoped account and project. For a directly managed deployment, set `TOKENCRAFT_WORKFLOW_TOOL_BINDINGS` to the binding registry path on both the gateway and workflow workers. Set the named environment variable in the launch environment to the worker's `TOKENCRAFT_MEDIA_SERVICE_TOKEN`. A loopback sidecar can use HTTP. A separate host requires HTTPS. Use the matching reviewed manifest on the worker and in the registry. Add a separate binding for each additional pack with a distinct binding name, token variable, origin, and reviewed manifest.
 
 Project developers and admins can discover their approved bindings at `GET /v1/projects/{project}/workflow-tools?account_id={account}` with a session cookie. An admin can add `&verify=studio-media` to verify the selected binding against the live worker. A successful check returns `reachable: true` and the matching manifest. Ordinary discovery uses the reviewed local manifest and succeeds during a worker outage. The gateway keeps connector origins and credentials out of the discovery response.
 

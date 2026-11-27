@@ -1,11 +1,16 @@
 """Exercise a published workflow through the native package's backup and restore."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 from secrets import token_hex
 import subprocess
+import sys
 
-from smoke_workflow_contract import call, command, provision, verify_signed_delivery, wait_for_run
+from smoke_workflow_contract import (
+    call, command, loopback_port, provision, ready, service, verify_output, verify_signed_delivery, wait_for_run,
+)
 
 
 @dataclass(frozen=True)
@@ -51,18 +56,56 @@ def prepare_webhook(port, web_port, receiver):
     return verify
 
 
-def prepare_workflow(port, web_port):
-    session, account, project = provision(port, origin=f"http://localhost:{web_port}")
+@contextmanager
+def packaged_delivery_tool(work, media, env, account, project):
+    port, token = loopback_port(), token_hex(32)
+    profile = work / "reviewed-tools"
+    profile.mkdir()
+    (profile / "delivery.json").write_bytes((media / "delivery.manifest.json").read_bytes())
+    registry = profile / "tool-bindings.json"
+    token_env = "TOKENCRAFT_CONNECTOR_TOKEN_NATIVE_DELIVERY"
+    registry.write_text(json.dumps({"version": 1, "bindings": [{
+        "name": "native-delivery", "revision": "v1", "origin": f"http://127.0.0.1:{port}/",
+        "token_env": token_env, "manifest": "delivery.json", "account": account, "projects": [project],
+    }]}), encoding="utf-8")
+    with service("packaged-delivery", [sys.executable, "-B", media / "server.py", "--pack", "delivery",
+                 "--port", str(port), "--state", work / "delivery-state"], work,
+                 dict(env, TOKENCRAFT_MEDIA_SERVICE_TOKEN=token), lambda: ready(port)):
+        yield registry, {token_env: token}
+
+
+def verify_workflow_outputs(port, receipt, auth):
+    wait_for_run(port, receipt, auth)
+    content, _ = call(port, receipt["status_url"] + "/outputs/image", 200, headers=auth)
+    assert content.startswith(b"\x89PNG\r\n\x1a\n")
+    verify_output(port, receipt, auth, sha256(content).hexdigest(), len(content))
+    return content
+
+
+def prepare_workflow(port, session, account, project):
     project_path = f"/v1/projects/{project}"
     scope = f"?account_id={account}"
+    tools, _ = call(port, project_path + "/workflow-tools" + scope + "&verify=native-delivery", 200, headers=session)
+    (binding,) = tools
+    assert binding["reachable"] and binding["manifest"]["plugin"] == "tokencraft-delivery"
+    sibling, _ = call(port, "/v1/projects" + scope, 201, method="POST", headers=session,
+                      body={"name": "Unbound native project"})
+    hidden, _ = call(port, f"/v1/projects/{sibling['id']}/workflow-tools" + scope, 200, headers=session)
+    assert hidden == []
     draft, _ = call(port, project_path + "/workflows" + scope, 201, method="POST", headers=session, body={
         "schema": 1, "title": "Native backup fixture", "max_usd_nanos": 0, "inputs": {},
-        "nodes": [{"id": "generate", "title": "Generate", "kind": "image", "model": "example_image",
-                   "max_usd_nanos": 0, "settings": {
-                       "prompt": {"source": "fixed", "value": "Synthetic recovery fixture"},
-                       "aspect_ratio": {"source": "fixed", "value": "4:3"},
-                   }}],
-        "outputs": {"image": "generate"},
+        "nodes": [
+            {"id": "generate", "title": "Generate", "kind": "image", "model": "example_image",
+             "max_usd_nanos": 0, "settings": {
+                 "prompt": {"source": "fixed", "value": "Synthetic recovery fixture"},
+                 "aspect_ratio": {"source": "fixed", "value": "4:3"},
+             }},
+            {"id": "fingerprint", "title": "Fingerprint image", "kind": "tool", "model": "delivery.fingerprint",
+             "max_usd_nanos": 0, "settings": {"source": {"source": "step", "step": "generate"}},
+             "tool": {"binding_revision": binding["revision"], "revision": 1, "inputs": {"source": "media"},
+                      "output": "metadata", "parameters": {}}},
+        ],
+        "outputs": {"image": "generate", "fingerprint": "fingerprint"},
     })
     workflow = project_path + f"/workflows/{draft['id']}"
     trial, _ = call(port, workflow + "/test-runs" + scope, 202, method="POST",
@@ -79,9 +122,8 @@ def prepare_workflow(port, web_port):
     key = token_hex(16)
     receipt, _ = call(port, endpoint, 202, method="POST", headers={**auth, "Idempotency-Key": key},
                       body={"inputs": {}})
-    wait_for_run(port, receipt, auth)
-    content, _ = call(port, receipt["status_url"] + "/outputs/image", 200, headers=auth)
-    assert content.startswith(b"\x89PNG\r\n\x1a\n")
+    content = verify_workflow_outputs(port, receipt, auth)
+    print("PASS packaged media runner fingerprinted generated output and stayed scoped to its project")
     return PublishedRun(endpoint, receipt, auth, key, content)
 
 
@@ -126,8 +168,12 @@ def verify_backup(launcher, port, env, state, launch, workflow, parked, verify_w
         path = workflow.receipt["status_url"]
         saved, _ = call(port, path, 200, headers=workflow.auth)
         assert saved["id"] == workflow.receipt["id"] and saved["status"] == "succeeded"
-        actual, _ = call(port, path + "/outputs/image", 200, headers=workflow.auth)
+        actual = verify_workflow_outputs(port, workflow.receipt, workflow.auth)
         assert actual == workflow.content
+        new_run, _ = call(port, workflow.endpoint, 202, method="POST", body={"inputs": {}},
+                          headers={**workflow.auth, "Idempotency-Key": token_hex(16)})
+        assert new_run["id"] != workflow.receipt["id"]
+        verify_workflow_outputs(port, new_run, workflow.auth)
         verify_webhook()
-    print("PASS native backup restored the original workflow app key, replayed receipt, and PNG bytes")
+    print("PASS native backup restored the app key, receipt, outputs, and pinned workflow tool")
     print("PASS restored native state signed a new client webhook with the original subscription secret")

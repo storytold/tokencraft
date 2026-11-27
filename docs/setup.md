@@ -52,7 +52,7 @@ Use `sha256sum -c` on systems with GNU coreutils. From a second terminal in the 
 
 Archives ending in `-console.tar.gz` include a `console/` directory. Run `./bin/tokencraft dev --console-dir ./console` and open the localhost console URL printed by the launcher. The same command accepts `--profile` for a reviewed catalog. Use `--web-port` when the default port 3000 is occupied.
 
-Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. Select **Include the compiled console** to build a console from the same commit. The workflow records that commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. The packager compares the version and source revision reported by each extracted binary with `VERSION.json` before starting the demo. It then runs `admin-cli` on a fresh database, compares its migration ledger and checksums with the launcher's, and rehearses backup and restoration of a published workflow. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
+Maintainers can run the **Native packages** workflow to build Ubuntu x86-64 and Apple Silicon archives as workflow artifacts. Select **Include the compiled console** to build a console from the same commit. The workflow records that commit in `VERSION.json`. To build on your own host, install the pinned Rust toolchain, PostgreSQL 17 and Python 3.12 or newer, then run the packaging script from the source checkout. The packager compares the version and source revision reported by each extracted binary with `VERSION.json`. It then compares migration checksums, exercises signed webhook delivery, and restores a published workflow that uses the packaged media runner. The package test uses Bash, curl, jq, OpenSSL, and a SHA-256 command. [Workflow artifacts](https://github.com/actions/upload-artifact/blob/v4/README.md)
 
 ```sh
 python3 scripts/native_package.py --output ./native-packages
@@ -100,6 +100,16 @@ tokencraft dev --profile ./reviewed-models --state-dir ./.tokencraft-reviewed
 The profile starts a private PostgreSQL cluster and gateway. It uses the supplied connector services in place of the bundled image connector. The launcher reads the catalog and binding files once at startup and supplies the referenced binding credentials. Restart to apply catalog or binding changes or to add a rate feed to a profile that started without one. When `rates.json` is present at startup, the gateway checks it every 15 seconds. Use an atomic file replacement after validating it with `catalog check-rate-feed`. Reuse the state directory to keep accounts, encryption keys, and request history. Let in-flight work finish before retiring its original binding.
 
 Check the loaded models at `GET /v1/catalog/models`. Use `GET /v1/catalog/models/scoped` with a project credential that has `requests:submit` to discover private models shared with that project. [Import ArtCraft presets into the catalog](provider-connectors.md#prepare-offers-from-the-artcraft-catalog)
+
+### Attach a workflow tool to the native gateway
+
+Start the launcher once to create your account and project. Use their IDs in a [reviewed workflow tool registry](media-tools.md#attach-a-tool-runner-to-a-self-hosted-gateway) and configure each named service token to match its runner's token. Start the runner independently, then restart the launcher with the registry and the same dev state.
+
+```sh
+tokencraft dev --workflow-tools ./reviewed-tools/tool-bindings.json
+```
+
+The launcher reads a snapshot of the registry and manifests on startup. Relative manifest paths resolve from the registry's directory. Use the same flag with `--profile` to attach tools to a reviewed provider catalog. After changing a binding or manifest, restart the launcher. Keep the registry, manifests, and runner credentials with your recovery configuration.
 
 ### Receive a signed webhook locally
 
@@ -154,7 +164,7 @@ Use `cargo run --locked -p tokencraft --` before the subcommand when running fro
 
 Use a new destination each time. Restore verifies the file checksums before loading the database in one transaction and checks that PostgreSQL records a clean shutdown before publishing the new state. The next `dev` launch applies any pending migrations. Keep backups in private storage and restore from trusted copies. The backup holds the keys that protect local content as well as the database.
 
-Keep the reviewed profile, its service credentials, and any webhook destination file with your deployment configuration. Pass the same `--profile` and `--webhook-config` options when reopening restored state.
+Keep the reviewed profile, its service credentials, and any webhook and workflow tool configuration with your deployment files. Supply that configuration when reopening restored state.
 
 These commands cover state managed by `tokencraft dev`. Restore recovers the contents as of the backup. For a separately deployed gateway, coordinate PostgreSQL, object storage, connector state, and secret recovery with the deployment's retention and content-removal records.
 

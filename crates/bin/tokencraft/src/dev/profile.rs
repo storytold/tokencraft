@@ -13,7 +13,7 @@ use tokio::process::Command;
 
 use crate::state::{PrivateFile, State};
 
-const QUEUE_TOKEN_PREFIX: &str = "TOKENCRAFT_CONNECTOR_TOKEN_";
+pub(super) const QUEUE_TOKEN_PREFIX: &str = "TOKENCRAFT_CONNECTOR_TOKEN_";
 const CHAT_KEY_PREFIX: &str = "TOKENCRAFT_LOCAL_CHAT_KEY_";
 
 pub(super) struct Profile {
@@ -50,14 +50,7 @@ impl Profile {
             }
             files.push(("TOKENCRAFT_LOCAL_CHAT_BINDINGS", bytes));
         }
-        let credentials = names
-            .into_iter()
-            .map(|name| {
-                let value = env::var_os(&name)
-                    .with_context(|| format!("set {name} for the dev profile"))?;
-                Ok((name, value))
-            })
-            .collect::<Result<_>>()?;
+        let credentials = read_credentials(names)?;
         let rate_path = directory.join("rates.json");
         let rate_feed = config_path(&rate_path, 64 * 1024)?.map(Path::to_owned);
         Ok(Self { files, credentials, rate_feed })
@@ -87,10 +80,8 @@ impl Profile {
             .collect()
     }
 
-    pub(super) fn exclude_credentials(&self, build: &mut Command) {
-        for name in self.credentials.keys() {
-            build.env_remove(name);
-        }
+    pub(super) fn credential_names(&self) -> impl Iterator<Item = &str> {
+        self.credentials.keys().map(String::as_str)
     }
 }
 
@@ -121,7 +112,7 @@ fn bindings<T: serde::de::DeserializeOwned>(bytes: &[u8], label: &str) -> Result
         .map_err(|_| anyhow::anyhow!("invalid {label} credential references"))
 }
 
-fn register(names: &mut BTreeSet<String>, name: String, prefix: &str) -> Result<()> {
+pub(super) fn register(names: &mut BTreeSet<String>, name: String, prefix: &str) -> Result<()> {
     ensure!(
         name.len() <= 96
             && name.strip_prefix(prefix).is_some_and(|suffix| {
@@ -134,6 +125,17 @@ fn register(names: &mut BTreeSet<String>, name: String, prefix: &str) -> Result<
     );
     names.insert(name);
     Ok(())
+}
+
+pub(super) fn read_credentials(names: BTreeSet<String>) -> Result<BTreeMap<String, OsString>> {
+    names
+        .into_iter()
+        .map(|name| {
+            let value = env::var_os(&name)
+                .with_context(|| format!("set {name} for the local gateway"))?;
+            Ok((name, value))
+        })
+        .collect()
 }
 
 fn config_path(path: &Path, limit: u64) -> Result<Option<&Path>> {

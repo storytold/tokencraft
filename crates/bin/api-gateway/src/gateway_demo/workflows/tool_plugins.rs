@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{ensure, Context};
 use axum::{extract::{Path as RoutePath, Query, State}, Extension, Json};
+use config::workflow_tools::{Binding as BindingConfig, Registry, MAX_MANIFEST_BYTES, MAX_REGISTRY_BYTES};
 use ids::{AccountId, GatewayProjectId};
 use reqwest::{header, Client, Url};
 use serde::{Deserialize, Serialize};
@@ -22,30 +23,7 @@ use crate::gateway_demo::{
     providers::connector::{valid_origin, validate_token_env},
 };
 
-pub(super) const CONFIG: &str = "TOKENCRAFT_WORKFLOW_TOOL_BINDINGS";
-const MAX_CONFIG: usize = 32 * 1024;
-const MAX_MANIFEST: usize = 128 * 1024;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Configuration {
-    version: u8,
-    bindings: Vec<BindingConfig>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BindingConfig {
-    name: String,
-    revision: String,
-    origin: String,
-    token_env: String,
-    manifest: String,
-    account: AccountId,
-    projects: BTreeSet<GatewayProjectId>,
-    #[serde(default)]
-    drain_only: bool,
-}
+pub(super) use config::workflow_tools::ENV as CONFIG;
 
 #[derive(Default)]
 pub(super) struct Bindings(BTreeMap<String, Binding>);
@@ -125,12 +103,11 @@ impl Bindings {
             return Ok(Self::default());
         };
         let path = Path::new(&path);
-        let bytes = bounded_file(path, MAX_CONFIG)?;
-        let config: Configuration = serde_json::from_slice(&bytes).context("read workflow tool bindings")?;
-        ensure!(config.version == 1 && config.bindings.len() <= 32, "invalid workflow tool binding registry");
+        let bytes = bounded_file(path, MAX_REGISTRY_BYTES)?;
+        let config = Registry::parse(&bytes)?;
         let mut entries = BTreeMap::new();
         for entry in config.bindings {
-            let binding = entry.build(path.parent().unwrap_or_else(|| Path::new(".")))?;
+            let binding = build_binding(entry, path.parent().unwrap_or_else(|| Path::new(".")))?;
             ensure!(entries.insert(binding.name.clone(), binding).is_none(), "duplicate workflow tool binding name");
         }
         Ok(Self(entries))
@@ -244,43 +221,41 @@ impl Tool {
     }
 }
 
-impl BindingConfig {
-    fn build(self, location: &Path) -> anyhow::Result<Binding> {
-        let origin = Url::parse(&self.origin).context("invalid workflow tool origin")?;
-        ensure!(
-            valid_identifier(&self.name) && valid_identifier(&self.revision) && valid_origin(&origin)
-                && (1..=64).contains(&self.projects.len()),
-            "invalid workflow tool connection or project list"
-        );
-        validate_token_env(&self.token_env)?;
-        let credential = std::env::var(&self.token_env)
-            .with_context(|| format!("set {} for tool binding {}", self.token_env, self.name))?;
-        ensure!(
-            (32..=128).contains(&credential.len())
-                && credential.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
-            "invalid workflow tool service token"
-        );
-        let mut authorization = header::HeaderValue::from_str(&format!("Bearer {credential}"))?;
-        authorization.set_sensitive(true);
-        let bytes = bounded_file(&location.join(self.manifest), MAX_MANIFEST)?;
-        let (manifest, parsed) = checked_manifest(&bytes)?;
-        let canonical = serde_json::to_string(&manifest)?;
-        let identity = digest(format!(
-            "workflow_tool/v1/{}/{}/{}/{}",
-            self.name, self.revision, origin, digest(canonical),
-        ));
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(4))
-            .build()?;
-        Ok(Binding {
-            name: self.name, digest: identity, account: self.account, projects: self.projects,
-            drain_only: self.drain_only, manifest, parsed, origin, authorization, client,
-        })
-    }
+fn build_binding(config: BindingConfig, location: &Path) -> anyhow::Result<Binding> {
+    let origin = Url::parse(&config.origin).context("invalid workflow tool origin")?;
+    ensure!(
+        valid_identifier(&config.name) && valid_identifier(&config.revision) && valid_origin(&origin)
+            && (1..=64).contains(&config.projects.len()),
+        "invalid workflow tool connection or project list"
+    );
+    validate_token_env(&config.token_env)?;
+    let credential = std::env::var(&config.token_env)
+        .with_context(|| format!("set {} for tool binding {}", config.token_env, config.name))?;
+    ensure!(
+        (32..=128).contains(&credential.len())
+            && credential.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+        "invalid workflow tool service token"
+    );
+    let mut authorization = header::HeaderValue::from_str(&format!("Bearer {credential}"))?;
+    authorization.set_sensitive(true);
+    let bytes = bounded_file(&location.join(config.manifest), MAX_MANIFEST_BYTES)?;
+    let (manifest, parsed) = checked_manifest(&bytes)?;
+    let canonical = serde_json::to_string(&manifest)?;
+    let identity = digest(format!(
+        "workflow_tool/v1/{}/{}/{}/{}",
+        config.name, config.revision, origin, digest(canonical),
+    ));
+    let client = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(4))
+        .build()?;
+    Ok(Binding {
+        name: config.name, digest: identity, account: config.account, projects: config.projects,
+        drain_only: config.drain_only, manifest, parsed, origin, authorization, client,
+    })
 }
 
 fn checked_manifest(bytes: &[u8]) -> anyhow::Result<(Value, Manifest)> {
@@ -407,7 +382,7 @@ impl Binding {
             .header(header::ACCEPT, "application/json")
             .send().await else { return false; };
         if response.status() != reqwest::StatusCode::OK
-            || response.content_length().is_some_and(|size| size > MAX_MANIFEST as u64)
+            || response.content_length().is_some_and(|size| size > MAX_MANIFEST_BYTES as u64)
             || response.headers().get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.split(';').next()) != Some("application/json")
@@ -417,7 +392,7 @@ impl Binding {
         let mut bytes = Vec::new();
         loop {
             match response.chunk().await {
-                Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_MANIFEST => bytes.extend_from_slice(&chunk),
+                Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_MANIFEST_BYTES => bytes.extend_from_slice(&chunk),
                 Ok(None) => break,
                 _ => return false,
             }
