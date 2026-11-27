@@ -356,6 +356,16 @@ fn prepare(
         version: 1, offers: Vec::new(),
         connection_access: Default::default(), rate_feed_offers: None,
     });
+    // A revision identifies one publication even when a deployment imports its offers separately.
+    for offer in &catalog.offers {
+        if let Some(installed) = &offer.artcraft_reference {
+            ensure!(
+                installed.revision != source.revision || installed.sha256 == reference_sha256,
+                "the reference revision already names a different snapshot in local offer {}",
+                offer.id,
+            );
+        }
+    }
     let additions = selection.offers.iter().filter(|choice| choice.update_from_sha256.is_none()).count();
     ensure!(
         selection.offers.len() <= MAX_OFFERS && catalog.offers.len() + additions <= MAX_OFFERS,
@@ -557,6 +567,35 @@ mod tests {
         let catalog = Catalog::parse(&bytes).unwrap();
         let error = prepare(&input, SELECTION, Some(catalog)).unwrap_err();
         assert!(error.to_string().contains("fixture_image already exists"));
+    }
+
+    #[test]
+    fn retains_one_snapshot_per_installed_reference_revision() {
+        let original = Reference::parse(SNAPSHOT.to_vec()).unwrap();
+        let installed = prepare(&original, SELECTION, None).unwrap();
+        let mut selection: Value = serde_json::from_slice(SELECTION).unwrap();
+        selection["offers"][0]["id"] = "another_image".into();
+        let additional = serde_json::to_vec(&selection).unwrap();
+        let merged = prepare(&original, &additional, Some(Catalog::parse(&installed).unwrap())).unwrap();
+        assert_eq!(Catalog::parse(&merged).unwrap().offers.len(), 2);
+
+        let mut revised: Value = serde_json::from_slice(SNAPSHOT).unwrap();
+        revised["offers"][0]["rates"][0]["usd_nanos"] = 25.into();
+        let conflicting = Reference::parse(serde_json::to_vec(&revised).unwrap()).unwrap();
+        let error = prepare(&conflicting, &additional, Some(Catalog::parse(&installed).unwrap())).unwrap_err();
+        assert!(error.to_string().contains("reference revision already names a different snapshot"));
+
+        revised["revision"] = "ref-2".into();
+        selection["reference_revision"] = "ref-2".into();
+        let fresh = Reference::parse(serde_json::to_vec(&revised).unwrap()).unwrap();
+        let merged = prepare(
+            &fresh, &serde_json::to_vec(&selection).unwrap(), Some(Catalog::parse(&installed).unwrap()),
+        ).unwrap();
+        let result = Catalog::parse(&merged).unwrap();
+        assert_eq!(result.offers.len(), 2);
+        let retained = result.offers.iter().find(|offer| offer.id == "fixture_image").unwrap();
+        let before = Catalog::parse(&installed).unwrap();
+        assert_eq!(serde_json::to_value(retained).unwrap(), serde_json::to_value(&before.offers[0]).unwrap());
     }
 
     #[test]

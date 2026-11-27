@@ -21,10 +21,6 @@ pub(super) fn apply(
         installed == &preset || installed.sha256.eq_ignore_ascii_case(previous_sha256),
         "the installed preset SHA-256 changed"
     );
-    ensure!(
-        installed.revision != preset.revision || installed.sha256 == preset.sha256,
-        "the reference revision already names a different snapshot"
-    );
     if let Some(previous_key) = &installed.public_key_sha256 {
         let key = preset.public_key_sha256.as_ref().context("the installed preset requires a verified signature")?;
         ensure!(previous_key == key || verified_key_pinned, "pin reference_public_key_sha256 to rotate the verified signer");

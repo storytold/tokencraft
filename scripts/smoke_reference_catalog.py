@@ -174,6 +174,26 @@ def verify_release(binary, directory):
     installed.write_bytes(prepare(initial, first, BASE, {
         "model": "studio_image", "binding": "studio-provider", "rates": {"usd_nanos_per_image": 31_876_543},
     }))
+    extra = {"id": "another_preset", "model": "another_image", "binding": "studio-provider",
+             "rates": {"usd_nanos_per_image": 4_000_000}}
+    same_snapshot = json.loads(prepare(initial, first, installed, extra))
+    assert {offer["id"] for offer in same_snapshot["offers"]} >= {"studio_preset", "another_preset"}
+
+    conflicting_bundle = catalog(
+        "pack-reference", "--reference", conflict, "--signature", directory / f"{conflict.name}.sig.json",
+        "--public-key", public,
+    )
+    conflicting_report = {**initial, "reference_sha256": sha256(conflict.read_bytes()).hexdigest()}
+    installed_bytes = installed.read_bytes()
+    try:
+        prepare(conflicting_report, conflicting_bundle, installed, extra)
+    except RuntimeError as error:
+        assert "reference revision already names a different snapshot" in str(error), error
+    else:
+        raise AssertionError("adding a preset under a conflicting installed revision succeeded")
+    assert installed.read_bytes() == installed_bytes
+    print("Signed import kept the installed revision bound to one snapshot across local offers.")
+
     updated_local = prepare(updated, second, installed, {"update_from_sha256": initial["reference_sha256"]})
     old_offers, new_offers = (json.loads(data)["offers"] for data in (installed.read_bytes(), updated_local))
     old_preset, new_preset = (

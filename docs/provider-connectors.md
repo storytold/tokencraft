@@ -76,7 +76,7 @@ api-gateway catalog prepare --reference artcraft-v1.json --selection selection.j
   --base catalog.json > catalog.next.json
 ```
 
-Omit `--base` to create a new catalog. The command writes the validated catalog to stdout. Choose a separate output path and point `TOKENCRAFT_CORE_CATALOG` at the reviewed file when ready. Use an optional `reference_sha256` field to pin the exact bytes of the saved snapshot. Use `id` and `model` to choose local names. Give each new offer a distinct local ID.
+Omit `--base` to create a new catalog. The command writes the validated catalog to stdout. Choose a separate output path and point `TOKENCRAFT_CORE_CATALOG` at the reviewed file when ready. Use an optional `reference_sha256` field to pin the exact bytes of the saved snapshot. Use `id` and `model` to choose local names. Give each new offer a distinct local ID. Each ArtCraft revision label identifies one exact snapshot across the catalog's retained and imported offers. Publish changed snapshot bytes under a fresh revision before importing them.
 
 Set explicit USD nanodollar rates in the gateway's billing units. Image offers use `usd_nanos_per_image`, video and audio use `usd_nanos_per_second`, 3D uses `usd_nanos_per_mesh`, and chat uses both rates per 1,000 tokens. Supplier list prices stay in the reference snapshot with their original terms. A supplier may charge per megapixel, per generation, or in credits. Use an operator rate that accounts for the actual provider contract.
 
