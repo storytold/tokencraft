@@ -3,7 +3,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::MatchedPath;
+use axum::extract::{ConnectInfo, MatchedPath};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, RETRY_AFTER};
 use axum::http::{HeaderName, HeaderValue, Method};
 use axum::routing::{delete, get, post, put};
@@ -16,7 +16,7 @@ use crate::auth::token::JwtKeys;
 use crate::{gateway_demo, hosted};
 use crate::handlers::{
   account, api_keys, audit_logs, auth, avatar, catalog, files, invitations, login_methods, org, root,
-  sessions,
+  sessions, support::forwarded_client_ip,
 };
 use crate::middleware::trace_context::{self, TraceContext, TRACE_ID_HEADER};
 use crate::state::AppState;
@@ -222,16 +222,11 @@ fn build_router_inner(
   let on_response = DefaultOnResponse::new().level(Level::INFO);
   let trace = TraceLayer::new_for_http()
     .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
-      let ip = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+      let ip = forwarded_client_ip(request.headers())
         .or_else(|| {
           request
             .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .get::<ConnectInfo<SocketAddr>>()
             .map(|ci| ci.0.ip())
         });
       let route = request.extensions().get::<MatchedPath>().map_or("<unmatched>", MatchedPath::as_str);

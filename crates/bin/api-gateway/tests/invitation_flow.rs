@@ -315,15 +315,13 @@ async fn sessions_record_ip_and_creation_type() {
   assert_eq!(sessions[0].ip.as_deref(), Some("203.0.113.9"), "client ip (first x-forwarded-for hop) must be stored");
   assert_eq!(sessions[0].created_via, enums::SessionCreationType::Signup);
 
-  // Login → a second session, created_via=login.
-  let login = app
-    .clone()
-    .oneshot(post("/v1/auth/login", json!({ "email": email, "password": "password1" }), None))
-    .await
-    .unwrap();
+  let mut login = post("/v1/auth/login", json!({ "email": email, "password": "password1" }), None);
+  login.headers_mut().insert("x-forwarded-for", "unknown".parse().unwrap());
+  let login = app.clone().oneshot(login).await.unwrap();
   assert_eq!(login.status(), StatusCode::OK);
   let sessions = db_queries::sessions::list_live_sessions_for_user(&pool, &user_id).await.unwrap();
   assert_eq!(sessions.len(), 2);
+  assert_eq!(sessions[0].ip, None);
   assert_eq!(sessions[0].created_via, enums::SessionCreationType::Login); // newest first
 
   // Invited signup → created_via=invited_signup.
