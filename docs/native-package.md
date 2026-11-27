@@ -43,5 +43,5 @@ From the package directory, run `export PATH="$PWD/bin:$PATH"` before following 
 - [Read the OpenAPI contract](contracts/openapi.json) and [connector primitives](contracts/connector-primitives.json)
 - [Browse the documentation](docs/README.md) and [interactive backend design](frontend/public/design/index.html)
 - [Inspect the Operations console](deploy/monitoring/README.md)
-- [Read ArtCraft’s security and Daybreak guidance](SECURITY.md)
+- [Report a security issue](SECURITY.md)
 - [Get SDK and gateway source](https://github.com/storytold/tokencraft)

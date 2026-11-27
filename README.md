@@ -1,14 +1,10 @@
 # TokenCraft
 
-TokenCraft is ArtCraft’s open-source gateway for securing and routing AI requests across providers. The Rust gateway handles accounts, project keys, quotes, budgets, asynchronous requests, and artifact delivery. Providers connect through versioned HTTP bindings and operator-reviewed catalog entries.
+TokenCraft is ArtCraft’s open-source AI provider aggregator. Route image, video, audio, language model, and 3D requests through one gateway. Compare prices, configure routing, and trace requests across providers. The Rust gateway handles accounts, project keys, quotes, budgets, asynchronous requests, and artifact delivery. Providers connect through versioned HTTP bindings and operator-reviewed catalog entries.
 
 The [ArtCraft reference catalog](catalog/artcraft-v1.json) describes supported provider plugins, model capabilities, and supplier list prices for each snapshot. A self-hosted gateway loads the operator's own catalog. Start with your own models or import selected ArtCraft presets with local bindings and rates. [Catalog setup](docs/provider-connectors.md#curate-your-own-catalog)
 
 [TokenCraft Operations](deploy/monitoring/README.md) is the operator console for self-hosted cells, provider plugins, compute targets, queues and delivery.
-
-## Cyber protection for ArtCraft open source
-
-TokenCraft applies project and client isolation, scoped credential access, and verifiable artifact retention to ArtCraft’s open-source AI infrastructure. Daybreak complements the built-in controls with defensive review and triage. [Security and reporting](SECURITY.md)
 
 ## Backend design
 
@@ -35,3 +31,4 @@ The launcher starts a private PostgreSQL cluster, applies migrations, starts the
 - [Set up the gateway and submit an image](docs/setup.md)
 - [Start with your own catalog and provider bindings](docs/setup.md#start-with-a-reviewed-catalog)
 - [Browse all documentation](docs/README.md)
+- [Report a security issue](SECURITY.md)
