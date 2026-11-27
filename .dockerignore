@@ -4,6 +4,7 @@
 !rust-toolchain.toml
 !LICENSE
 !README.md
+!SECURITY.md
 !catalog/
 !catalog/artcraft-v1.json
 !contracts/
@@ -34,6 +35,7 @@
 !examples/postgres/smoke.py
 !examples/mapping/
 !examples/mapping/example-image.map.json
+!frontend/public/design/index.html
 !plugins/
 !plugins/tools/
 !plugins/tools/media/

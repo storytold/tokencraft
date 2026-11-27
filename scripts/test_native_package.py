@@ -2,13 +2,36 @@
 
 import json
 from pathlib import Path
+import sys
 import tarfile
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
+import native_package
 from native_package import (
     BINARIES, archive_package, smoke_package, verify_binary_versions, verify_documentation,
 )
+
+
+class NativePackageInputsTest(unittest.TestCase):
+    def test_reports_all_missing_release_inputs_before_looking_up_build_tools(self):
+        missing = {"SECURITY.md", "frontend/public/design/index.html"}
+        with TemporaryDirectory() as directory, patch.object(native_package, "ROOT", Path(directory)):
+            for source in native_package.package_assets().values():
+                if source.relative_to(directory).as_posix() not in missing:
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.touch()
+            output = Path(directory) / "packages"
+            with (patch.object(sys, "argv", ["native_package.py", "--output", str(output)]),
+                  patch.object(native_package, "postgres_bin") as postgres_bin,
+                  self.assertRaises(SystemExit) as failure):
+                native_package.main()
+
+            self.assertEqual(str(failure.exception).splitlines(),
+                             ["Missing native package inputs:", *sorted(missing)])
+            postgres_bin.assert_not_called()
+            self.assertFalse(output.exists())
 
 
 class NativePackageDocumentationTest(unittest.TestCase):

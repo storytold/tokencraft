@@ -29,7 +29,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/tokencraft
-COPY --from=build /tmp/tokencraft-package/LICENSE /tmp/tokencraft-package/VERSION.json ./
+COPY --from=build /tmp/tokencraft-package/LICENSE /tmp/tokencraft-package/SECURITY.md /tmp/tokencraft-package/VERSION.json ./
 COPY --from=build /tmp/tokencraft-package/catalog/ ./catalog/
 COPY --from=build /tmp/tokencraft-package/contracts/ ./contracts/
 COPY --from=build /tmp/tokencraft-package/deploy/postgres/ ./deploy/postgres/

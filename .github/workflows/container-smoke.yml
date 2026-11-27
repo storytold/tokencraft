@@ -45,13 +45,15 @@ jobs:
                   | .version
                   | select(type == "string" and test("\\A[0-9][0-9A-Za-z.-]{0,127}\\z"))')
             package_version=${package_version:-$image_version}
-            for file in catalog/artcraft-v1.json contracts/openapi.json deploy/postgres/grant-runtime.sql; do
+            for file in SECURITY.md catalog/artcraft-v1.json contracts/openapi.json deploy/postgres/grant-runtime.sql; do
               docker run --rm --network none --entrypoint cat "$image" "$file" | cmp - "$file"
             done
             docker run --rm --network none --entrypoint cat "$image" contracts/connector-primitives.json \
               | cmp - crates/core/provider-mapping/schemas/v1.json
             test "$package_version" = "$image_version"
           done
+          docker run --rm --network none --entrypoint cat tokencraft-demo:local frontend/public/design/index.html \
+            | cmp - frontend/public/design/index.html
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$package_version" ]]; then
             echo "Tag $GITHUB_REF_NAME must match package version v$package_version" >&2
             exit 1

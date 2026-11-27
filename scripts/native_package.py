@@ -81,6 +81,25 @@ SUPPORT_FILES = (
 )
 
 
+def package_assets():
+    """Map archive paths to their source files."""
+    return {
+        **{relative: ROOT / relative for relative in SUPPORT_FILES},
+        "README.md": ROOT / "docs/native-package.md",
+        PRIMITIVE_CONTRACT: ROOT / PRIMITIVE_SOURCE,
+    }
+
+
+def check_package_inputs():
+    missing = sorted({
+        path.relative_to(ROOT).as_posix()
+        for path in package_assets().values()
+        if not path.is_file()
+    })
+    if missing:
+        raise SystemExit("Missing native package inputs:\n" + "\n".join(missing))
+
+
 def run(args, **options):
     return subprocess.run(args, check=True, **options)
 
@@ -135,10 +154,8 @@ def archive_package(binary_dir, stage, name, metadata, console_dir=None):
     for binary, _ in files.values():
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise SystemExit(f"Missing executable {binary}")
-    files.update({relative: (ROOT / relative, 0o755 if relative.endswith(".sh") else 0o644)
-                  for relative in SUPPORT_FILES})
-    files["README.md"] = (ROOT / "docs/native-package.md", 0o644)
-    files[PRIMITIVE_CONTRACT] = (ROOT / PRIMITIVE_SOURCE, 0o644)
+    files.update({relative: (source, 0o755 if relative.endswith(".sh") else 0o644)
+                  for relative, source in package_assets().items()})
     if console_dir is not None:
         for path in console_dir.rglob("*"):
             relative = path.relative_to(console_dir)
@@ -390,6 +407,7 @@ def main():
     args = parser.parse_args()
     if args.source_revision is not None and not re.fullmatch(r"[0-9a-f]{40}", args.source_revision):
         parser.error("--source-revision must be a full Git commit SHA")
+    check_package_inputs()
     pg_bin = postgres_bin()
     version = tomllib.loads((ROOT / "crates/bin/tokencraft/Cargo.toml").read_text())["package"]["version"]
     host = host_identifier()
