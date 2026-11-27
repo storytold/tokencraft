@@ -10,13 +10,15 @@ from secrets import token_hex
 import signal
 import subprocess
 from tempfile import TemporaryDirectory
-from time import sleep
+from time import monotonic, sleep
 from urllib.parse import urlsplit
 
 from postgres_tools import postgres_bin
 from smoke_cell_faults import Connector, eventually, serve
 from smoke_connector_recovery import wait_for_status
-from smoke_workflow_contract import HOST, ROOT, call, command, loopback_port, ready, rehearse, service
+from smoke_workflow_contract import (
+    HOST, ROOT, call, command, loopback_port, provision, ready, rehearse, service, wait_for_run,
+)
 
 
 @contextmanager
@@ -141,6 +143,51 @@ def verify_data_routing(port, policy, project, session, auth, workload, connecto
     print("PASS normalized data limits survive admission and tightened retention blocks queued provider submission")
 
 
+def worker_rate_probe(port):
+    session, account, project = provision(port)
+    scope = f"?account_id={account}"
+    project_path = f"/v1/projects/{project}"
+    draft, _ = call(port, project_path + "/workflows" + scope, 201, method="POST", headers=session, body={
+        "schema": 1, "title": "Worker rate refresh", "max_usd_nanos": 4_000_000,
+        "inputs": {}, "outputs": {"image": "generate"}, "nodes": [{
+            "id": "generate", "title": "Generate an image", "kind": "image", "model": "example_image",
+            "max_usd_nanos": 4_000_000, "settings": {
+                "prompt": {"source": "fixed", "value": "Synthetic worker rate fixture"},
+                "aspect_ratio": {"source": "fixed", "value": "1:1"},
+            },
+        }],
+    })
+    management = project_path + f"/workflows/{draft['id']}"
+
+    def verify(quote, connector, *, published=False):
+        auth = session
+        path = management + "/test-runs" + scope
+        body = {"inputs": {}, "revision": draft["revision"]}
+        if published:
+            call(port, management + "/versions" + scope, 200, method="POST", headers=session,
+                 body={"revision": draft["revision"], "active_version": None})
+            app, _ = call(port, management + "/apps" + scope, 201, method="POST", headers=session, body={
+                "name": "Worker rate fixture", "days": 1,
+                "scopes": ["runs:submit", "runs:read", "outputs:read"],
+            })
+            auth = {"Authorization": "Bearer " + app["secret"]}
+            path = project_path + f"/workflow-endpoints/{draft['id']}/runs"
+            body = {"inputs": {}}
+        receipt, _ = call(port, path, 202, method="POST",
+                          headers={**auth, "Idempotency-Key": token_hex(16)}, body=body)
+        finished, _ = wait_for_run(port, receipt, auth)
+        request = finished["steps"][0]["request"]
+        child, _ = call(port, f"/v1/requests/{request}{scope}&project_id={project}", 200, headers=session)
+        stored = child["quote"]
+        assert stored["selected_offer_id"] == quote["selected_offer_id"] == "primary"
+        assert stored["catalog_revision"] == quote["catalog_revision"]
+        selected = next(row for row in stored["candidates"] if row["offer_id"] == "primary")
+        assert selected["estimated_usd_nanos"] == 4_000_000
+        assert connector.jobs[request] == 1
+
+    return verify
+
+
 def verify(gateway, directory, settings, session, account, project):
     port = int(settings["API_GATEWAY_PORT"])
     principal = f"/v1/projects/{project}/service-principals?account_id={account}"
@@ -260,6 +307,7 @@ def verify(gateway, directory, settings, session, account, project):
         command(gateway, "catalog", "check-rate-feed", "--catalog", catalog, "--previous-feed", feed,
                 "--feed", candidate, cwd=directory, env=settings)
         candidate.replace(feed)
+        published_at = monotonic()
         eventually(lambda: quote(4_000_000)["selected_offer_id"] == "primary", "the reviewed rate reload")
         assert quote(4_000_000)["candidates"][0]["estimated_usd_nanos"] == 4_000_000
         assert quote(3_000_000)["selected_offer_id"] is None
@@ -274,6 +322,31 @@ def verify(gateway, directory, settings, session, account, project):
         usage, _ = call(port, "/v1/usage", 200, headers=auth)
         assert usage["totals"]["requests"] == 3 and usage["totals"]["estimated_usd_nanos"] == "11000000"
         print("PASS an atomic rate refresh selected the cheaper reviewed offer and invalidated the old quote")
+        probe = worker_rate_probe(port)
+        # The API and worker have independent 15-second refresh schedules.
+        sleep(max(0, published_at + 16 - monotonic()))
+        probe(quote(4_000_000), connector)
+        assert worker.poll() is None
+        print("PASS the same worker admitted a workflow child at the refreshed rate")
+
+        valid = feed.read_bytes()
+        updated["rates"]["primary"]["schedule"]["usd_nanos_per_image"] = 2_000_000
+        candidate.write_text(json.dumps(updated))
+        candidate.replace(feed)
+        try:
+            def rejected():
+                message = "catalog rate feed rejected"
+                return all(message in (directory / f"rate-{role}.log").read_text() for role in ("api", "worker"))
+
+            eventually(rejected, "API and worker rate rejection")
+            accepted_quote = quote(4_000_000)
+            assert accepted_quote["candidates"][0]["estimated_usd_nanos"] == 4_000_000
+            probe(accepted_quote, connector, published=True)
+            print("PASS a published workflow kept the accepted rate after both replicas rejected a conflicting observation")
+        finally:
+            candidate.write_bytes(valid)
+            candidate.replace(feed)
+
         verify_automatic_routing(port, policy, project, session, auth, workload, connector)
         verify_data_routing(port, policy, project, session, auth, workload, connector, worker)
 
