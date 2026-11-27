@@ -6,7 +6,7 @@ use std::{
 };
 
 use db_queries::gateway_requests::{
-    self,
+    self, connector_completions,
     queued_runs::{self, ClaimedQueuePoll, PollBindings},
     ClaimedProviderRun, SubmitBindings,
 };
@@ -18,7 +18,7 @@ use crate::{
     middleware::trace_context::work_span,
 };
 
-use super::{dispatch, log_database_error, observe_queue, ProviderRuntime, MAX_PROVIDER_TASKS};
+use super::{completion, dispatch, log_database_error, observe_queue, ProviderRuntime, MAX_PROVIDER_TASKS};
 
 pub(super) async fn run(
     pool: db::PgPool,
@@ -40,7 +40,7 @@ pub(super) async fn run(
     let mut tasks = JoinSet::new();
     let mut timer = tokio::time::interval(Duration::from_millis(250));
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut prefer_poll = true;
+    let mut next_lane = Lane::Poll;
 
     loop {
         timer.tick().await;
@@ -68,17 +68,17 @@ pub(super) async fn run(
             let local_chat = slots.eligible(&chat, blocked);
             let connectors = slots.eligible_connectors(&submit_connectors, blocked);
             let polling = slots.eligible_connectors(&poll_connectors, blocked);
+            let lookups = slots.eligible_connectors(&recovery, blocked);
             let submit = SubmitBindings {
                 local_chat: &local_chat,
                 connectors: &connectors,
                 connector_recovery: &recovery,
             };
-            let work = claim_work(&pool, submit, &polling, prefer_poll).await;
+            let work = claim_work(&pool, submit, &polling, &lookups, next_lane).await;
             readiness.provider_observed(work.is_ok());
             match work {
                 Ok(Some(work)) => {
-                    // Give the other queue first choice on the next claim.
-                    prefer_poll = matches!(&work, Work::Submit(_));
+                    next_lane = work.lane().next();
                     let active = ActiveTask {
                         destination: slots.bindings[work.binding_digest()].clone(),
                         connector: work.uses_connector(),
@@ -177,44 +177,77 @@ impl<'a> WorkerSlots<'a> {
 enum Work {
     Submit(ClaimedProviderRun),
     Poll(ClaimedQueuePoll),
+    Lookup(connector_completions::Lookup),
+}
+
+#[derive(Clone, Copy)]
+enum Lane {
+    Poll,
+    Submit,
+    Lookup,
+}
+
+impl Lane {
+    fn next(self) -> Self {
+        match self {
+            Self::Poll => Self::Submit,
+            Self::Submit => Self::Lookup,
+            Self::Lookup => Self::Poll,
+        }
+    }
 }
 
 async fn claim_work(
     pool: &db::PgPool,
     submit: SubmitBindings<'_>,
     poll_connectors: &[String],
-    prefer_poll: bool,
+    lookup_connectors: &[String],
+    preferred: Lane,
 ) -> sqlx::Result<Option<Work>> {
-    for poll in [prefer_poll, !prefer_poll] {
-        let task = if poll {
-            if poll_connectors.is_empty() {
-                continue;
+    let mut lane = preferred;
+    for _ in 0..3 {
+        let task = match lane {
+            Lane::Poll if !poll_connectors.is_empty() => {
+                queued_runs::claim_queue_poll(pool, PollBindings { connectors: poll_connectors })
+                    .await?.map(Work::Poll)
             }
-            queued_runs::claim_queue_poll(pool, PollBindings { connectors: poll_connectors }).await?.map(Work::Poll)
-        } else if !submit.local_chat.is_empty() || !submit.connectors.is_empty() {
-            gateway_requests::claim_provider_run(pool, submit).await?.map(Work::Submit)
-        } else {
-            continue;
+            Lane::Submit if !submit.local_chat.is_empty() || !submit.connectors.is_empty() => {
+                gateway_requests::claim_provider_run(pool, submit).await?.map(Work::Submit)
+            }
+            Lane::Lookup if !lookup_connectors.is_empty() => {
+                connector_completions::claim_lookup(pool, lookup_connectors).await?.map(Work::Lookup)
+            }
+            _ => None,
         };
         if task.is_some() {
             return Ok(task);
         }
+        lane = lane.next();
     }
     Ok(None)
 }
 
 impl Work {
+    fn lane(&self) -> Lane {
+        match self {
+            Self::Submit(_) => Lane::Submit,
+            Self::Poll(_) => Lane::Poll,
+            Self::Lookup(_) => Lane::Lookup,
+        }
+    }
+
     fn binding_digest(&self) -> &str {
         match self {
             Self::Submit(run) => &run.binding_digest,
             Self::Poll(run) => &run.binding_digest,
+            Self::Lookup(lookup) => &lookup.binding_digest,
         }
     }
 
     fn uses_connector(&self) -> bool {
         match self {
             Self::Submit(run) => run.adapter == "connector_queue",
-            Self::Poll(_) => true,
+            Self::Poll(_) | Self::Lookup(_) => true,
         }
     }
 
@@ -226,12 +259,17 @@ impl Work {
             Self::Poll(run) => work_span(
                 "provider_poll", &run.request_id, run.trace_id.as_deref(), run.admission_span_id.as_deref(),
             ),
+            Self::Lookup(lookup) => work_span(
+                "connector_completion_lookup", &lookup.request_id, lookup.trace_id.as_deref(),
+                lookup.admission_span_id.as_deref(),
+            ),
         };
         async {
             let started = Instant::now();
             let result = match self {
                 Self::Submit(run) => dispatch(&pool, &runtime, &catalog.current(), run).await,
                 Self::Poll(task) => observe_queue(&pool, &runtime, task).await,
+                Self::Lookup(lookup) => completion::recover(&pool, &runtime, &lookup).await,
             };
             if let Err(error) = result {
                 log_database_error(&error);

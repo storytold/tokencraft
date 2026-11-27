@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
     extract::{Extension, Path, State},
@@ -8,13 +8,11 @@ use axum::{
 use db_queries::gateway_requests::connector_completions;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
-use tracing::Instrument;
 
 use super::ProviderRuntime;
 use crate::{
     error::{ApiError, ApiResult},
-    gateway_demo::{handlers::parse_request_id, readiness::Readiness, RequestErrorResponse},
-    middleware::trace_context::work_span,
+    gateway_demo::{handlers::parse_request_id, RequestErrorResponse},
     state::AppState,
 };
 
@@ -86,43 +84,20 @@ pub(crate) async fn receive(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(super) fn spawn(pool: db::PgPool, runtime: Arc<ProviderRuntime>, readiness: Arc<Readiness>) {
-    let bindings: Vec<_> = runtime.connectors.recovery_digests().map(str::to_owned).collect();
-    if bindings.is_empty() {
-        return;
-    }
-    tokio::spawn(async move {
-        let mut timer = tokio::time::interval(Duration::from_millis(500));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            readiness.work_tick(&mut timer).await;
-            if let Err(error) = recover(&pool, &runtime, &bindings).await {
-                tracing::warn!(sqlstate = ?error.as_database_error().and_then(|e| e.code()),
-                    "connector completion lookup deferred");
-            }
+pub(super) async fn recover(
+    pool: &db::PgPool,
+    runtime: &ProviderRuntime,
+    lookup: &connector_completions::Lookup,
+) -> sqlx::Result<()> {
+    if let Some(connector) = runtime.connectors.by_digest(&lookup.binding_digest) {
+        if let Some(handle) = connector
+            .lookup(&lookup.request_id, lookup.trace_id.as_deref())
+            .await
+        {
+            connector_completions::reconcile(pool, lookup, &handle).await?;
         }
-    });
-}
-
-async fn recover(pool: &db::PgPool, runtime: &ProviderRuntime, bindings: &[String]) -> sqlx::Result<()> {
-    let Some(lookup) = connector_completions::claim_lookup(pool, bindings).await? else {
-        return Ok(());
-    };
-    let span = work_span("connector_completion_lookup", &lookup.request_id, lookup.trace_id.as_deref(),
-                         lookup.admission_span_id.as_deref());
-    async {
-        if let Some(connector) = runtime.connectors.by_digest(&lookup.binding_digest) {
-            if let Some(handle) = connector
-                .lookup(&lookup.request_id, lookup.trace_id.as_deref())
-                .await
-            {
-                connector_completions::reconcile(pool, &lookup, &handle).await?;
-            }
-        }
-        Ok(())
     }
-    .instrument(span)
-    .await
+    Ok(())
 }
 
 #[cfg(test)]

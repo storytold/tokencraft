@@ -80,6 +80,13 @@ class Connector(BaseHTTPRequestHandler):
             if job is None:
                 self.reply(404, {})
                 return
+            if self.server.release_lookups is not None:
+                with self.server.lock:
+                    self.server.stalled_lookups.append((job["model"], monotonic()))
+                self.server.lookup_started.set()
+                self.server.release_lookups.wait(timeout=8)
+                self.close_connection = True
+                return
             handle = "first"
             if job["input"]["prompt"] == "second":
                 self.server.lookup_started.set()
@@ -105,13 +112,15 @@ class Connector(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def connector_server(token):
+def connector_server(token, *, stall_lookups=False):
     with ThreadingHTTPServer((HOST, 0), Connector) as server:
         server.authorization = f"Bearer {token}"
         server.lock = Lock()
         server.jobs, server.submissions, server.fetches = {}, Counter(), Counter()
         server.traces = []
         server.lookup_started, server.corrected = Event(), Event()
+        server.release_lookups = Event() if stall_lookups else None
+        server.stalled_lookups = []
         server.images = {"first": square_png((220, 50, 20)), "second": square_png((20, 50, 220))}
         server.charges = {"first": "2.17", "second": "5.21"}
         thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -119,6 +128,8 @@ def connector_server(token):
         try:
             yield server
         finally:
+            if server.release_lookups is not None:
+                server.release_lookups.set()
             server.shutdown()
             thread.join(timeout=2)
 
@@ -291,6 +302,67 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
             print("PASS dropped acknowledgement recovered by lookup with no callbacks and one provider submission")
 
 
+def verify_lookup_isolation(gateway, directory, settings, session, account, project):
+    token = token_hex(32)
+    port = int(settings["API_GATEWAY_PORT"])
+    with ExitStack() as apps:
+        stalled = apps.enter_context(connector_server(token, stall_lookups=True))
+        healthy = apps.enter_context(connector_server(token))
+        healthy.corrected.set()
+        bindings = directory / "lookup-bindings.json"
+        catalog = directory / "lookup-catalog.json"
+        offer = json.loads((ROOT / "examples/connector/catalog.json").read_bytes())["offers"][0]
+        destinations = {"slow_primary": stalled, "slow_alias": stalled, "healthy": healthy}
+        bindings.write_text(json.dumps({"version": 1, "bindings": [{
+            "name": name, "revision": "lookup-isolation", "origin": f"http://{HOST}:{server.server_port}/",
+            "token_env": "TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE", "receipt_lookup": True,
+        } for name, server in destinations.items()]}))
+        catalog.write_text(json.dumps({"version": 1, "offers": [{
+            **offer, "id": name, "model": name, "upstream_model": name, "local_binding": name,
+        } for name in destinations]}))
+        settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(catalog), TOKENCRAFT_CONNECTORS=str(bindings),
+                        TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE=token)
+        settings.pop("TOKENCRAFT_LOCAL_CHAT_BINDINGS", None)
+        apps.enter_context(service("lookup-api", [gateway], directory, settings, lambda: ready(port)))
+        worker_port = loopback_port()
+        worker = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
+        apps.enter_context(service("lookup-worker", [gateway], directory, worker, lambda: ready(worker_port)))
+        principal, _ = call(port, f"/v1/projects/{project}/service-principals?account_id={account}",
+                            201, method="POST", headers=session, body={
+                                "name": "Lookup isolation", "scopes": ["requests:submit", "requests:read", "usage:read"],
+                            })
+        auth = {"Authorization": "Bearer " + principal["token"]}
+
+        def submit(model):
+            return call(port, "/v1/image", 202, method="POST", body={
+                "model": model, "task": "text_to_image", "prompt": "second", "count": 1, "aspect_ratio": "1:1",
+            }, headers={**auth, "Idempotency-Key": token_hex(16)})[0]
+
+        submit("slow_primary")
+        assert stalled.lookup_started.wait(timeout=10), "The first receipt lookup did not start"
+        with stalled.lock:
+            first_lookup = stalled.stalled_lookups[0][1]
+        submit("slow_alias")
+        submit("slow_primary")
+        submit("slow_alias")
+        receipt = submit("healthy")
+        # The old single lookup loop cannot start the healthy lookup before its four-second HTTP timeout.
+        deadline = first_lookup + 3.4
+        remaining = deadline - monotonic()
+        assert remaining > 0, "The fixture did not submit before the first lookup timed out"
+        wait_for_status(port, receipt, auth, "succeeded", remaining)
+        recovered_in = monotonic() - first_lookup
+        assert recovered_in < 3.4
+        assert read_image(port, receipt, auth) == healthy.images["second"]
+        assert healthy.submissions == {receipt["id"]: 1}
+        sleep(max(0, deadline - monotonic()))
+        with stalled.lock:
+            started = [model for model, _ in stalled.stalled_lookups]
+        assert len(started) == 3 and set(started) == {"slow_primary", "slow_alias"}, started
+        assert not stalled.release_lookups.is_set()
+        print(f"PASS healthy receipt recovered in {recovered_in:.2f}s while two aliases shared three stalled slots")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gateway", type=Path)
@@ -299,7 +371,7 @@ def main():
     gateway = args.gateway.resolve(strict=True)
     admin = args.admin.resolve(strict=True)
     polling = partial(verify_recovery, webhooks=False, receipt_lookup=True)
-    for verify in (verify_recovery, polling):
+    for verify in (verify_recovery, polling, verify_lookup_isolation):
         with TemporaryDirectory(prefix="tokencraft-connector-recovery-") as directory:
             rehearse(gateway, admin, Path(directory), verification=verify)
 

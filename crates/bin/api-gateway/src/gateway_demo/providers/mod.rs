@@ -250,7 +250,6 @@ pub(super) fn spawn(
             }
         });
     }
-    completion::spawn(pool.clone(), Arc::clone(&runtime), Arc::clone(&readiness));
     tokio::spawn(worker::run(pool, runtime, catalog, readiness));
 }
 
