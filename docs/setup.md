@@ -150,6 +150,8 @@ Open [local sign-up](http://localhost:3000/signup). Use `localhost` for both bro
 
 In the signed-in Playground, choose **Compare routes** to compare prices for the selected project. The model picker includes custom models shared with that project. Each route shows its price deadline when it uses a reviewed rate feed. When a quote expires, choose **Refresh quote** to see the currently eligible routes before submitting. Submit from the comparison to follow the request trace in the same workspace.
 
+On the public **Compare models** page, gateway prices for configured models use the remaining eligible rates as individual prices expire. Choose **Refresh prices** to request new estimates from the connected gateway.
+
 ## Back up and restore dev state
 
 Use the native launcher to save a logical PostgreSQL dump together with the local encrypted artifacts, event archives, connector job records, and the keys needed to reopen them. Finish queued and running requests and any queued, running, or reconciling workflows, then stop the launcher.

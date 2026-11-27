@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ArrowUpRight, Box, ChevronDown, Clapperboard, FileText, Image, Images } from "lucide-react";
 import { ChoicePicker } from "@/components/ChoicePicker";
 import { ModelIcon } from "@/components/ModelArt";
-import { Badge, Card, Container } from "@/components/ui";
+import { Badge, Button, Card, Container } from "@/components/ui";
 import { MODALITY_LABEL, type Model, type Modality } from "@/lib/catalog";
 import { demoEnabled } from "@/lib/gateway";
 import {
@@ -12,11 +12,14 @@ import {
   suggestedExample, type ComparisonExample,
 } from "@/lib/model-comparison";
 import { loadPublishedResults, resultForPrompt, type PublishedResults } from "@/lib/model-examples";
-import { comparisonApi, type QuoteInput } from "@/surfaces/comparison/api";
+import { comparisonApi, type ModelQuote, type QuoteInput } from "@/surfaces/comparison/api";
+import { useDeadlineClock } from "@/surfaces/comparison/QuoteExpiry";
+import { lowestCurrentQuotePrice } from "./modelQuotePrice";
 
 const modalityIcons = { image: Image, video: Clapperboard, "3d": Box, world: Box, chat: FileText };
 const modalityLabels: Record<Modality, string> = { ...MODALITY_LABEL, "3d": "3D", world: "World", chat: "Text" };
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 });
+const priceReadTimeoutMs = 10_000;
 
 export default function CompareModelsPage() {
   const [params, setParams] = useSearchParams();
@@ -124,8 +127,10 @@ type Records = { key: string; results: ReadonlyMap<string, PublishedResults | un
 
 function ComparisonResults({ modelList, example }: { modelList: Model[]; example: ComparisonExample }) {
   const [records, setRecords] = useState<Records>();
-  const [quotes, setQuotes] = useState<{ key: string; prices: ReadonlyMap<string, number | null> }>();
+  const [quotes, setQuotes] = useState<{ key: string; refresh: number; values: ReadonlyMap<string, ModelQuote | null> }>();
+  const [refresh, setRefresh] = useState(0);
   const key = `${example.id}/${modelList.map(({ slug }) => slug).join(",")}`;
+  const workload = useMemo(() => demoEnabled ? quoteWorkload(modelList[0].modality, example) : null, [modelList, example]);
 
   useEffect(() => {
     const suite = example.suite;
@@ -141,46 +146,51 @@ function ComparisonResults({ modelList, example }: { modelList: Model[]; example
   }, [example, key, modelList]);
 
   useEffect(() => {
-    if (!demoEnabled) return;
-    const workload = quoteWorkload(modelList[0].modality, example);
     if (!workload) return;
     const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(priceReadTimeoutMs)]);
 
     async function loadPrices(workload: QuoteInput["workload"]) {
-      const catalog = await comparisonApi.models(controller.signal);
+      const catalog = await comparisonApi.models(signal);
       const offered = new Set(catalog.models.map(({ id }) => id));
-      const prices = await Promise.allSettled(modelList.filter(({ slug }) => offered.has(slug)).map(async ({ slug }) => {
+      const entries = await Promise.all(modelList.filter(({ slug }) => offered.has(slug)).map(async ({ slug }) => {
         const quote = await comparisonApi.modelQuote({
           model: slug, provider: null, max_total_usd_nanos: null, workload,
-        }, controller.signal);
-        const eligible = quote.candidates.flatMap((candidate) => (
-          candidate.reason === "eligible" && candidate.estimated_usd_nanos !== null
-            && Number.isFinite(candidate.estimated_usd_nanos) && candidate.estimated_usd_nanos >= 0
-            ? [candidate.estimated_usd_nanos] : []));
-        return [slug, eligible.length ? Math.min(...eligible) / 1_000_000_000 : null] as const;
+        }, signal).catch(() => null);
+        const valid = quote && Array.isArray(quote.candidates)
+          && quote.candidates.every((candidate) => candidate && typeof candidate === "object");
+        return [slug, valid ? quote : null] as const;
       }));
-      if (!controller.signal.aborted) {
-        setQuotes({ key, prices: new Map(prices.flatMap((price) => price.status === "fulfilled" ? [price.value] : [])) });
-      }
+      if (!controller.signal.aborted) setQuotes({ key, refresh, values: new Map(entries) });
     }
 
-    void loadPrices(workload).catch(() => {});
+    void loadPrices(workload).catch(() => {
+      if (!controller.signal.aborted) {
+        setQuotes({ key, refresh, values: new Map(modelList.map(({ slug }) => [slug, null])) });
+      }
+    });
     return () => controller.abort();
-  }, [example, key, modelList]);
+  }, [key, modelList, refresh, workload]);
 
   const published = records?.key === key ? records.results : undefined;
-  const prices = quotes?.key === key ? quotes.prices : undefined;
+  const currentQuotes = quotes?.key === key && quotes.refresh === refresh ? quotes.values : undefined;
+  const checkingPrices = workload !== null && !currentQuotes;
 
   return (
     <section className="space-y-3" aria-labelledby="compare-results-title">
-      <h2 id="compare-results-title" className="font-display text-xl font-bold">Model outputs</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="compare-results-title" className="font-display text-xl font-bold">Model outputs</h2>
+        {workload && <Button type="button" size="sm" variant="outline" disabled={checkingPrices}
+          onClick={() => setRefresh((value) => value + 1)}>Refresh prices</Button>}
+      </div>
       <div className={`grid items-start gap-4 ${modelList.length > 1 ? "sm:grid-cols-2" : ""} ${modelList.length === 3 ? "lg:grid-cols-3" : ""}`}>
         {modelList.map((model) => {
           const asset = example.suite
             ? resultForPrompt(example.suite, example, model.slug, published?.get(model.slug))?.artifact
             : undefined;
           return <ModelResult key={model.slug} model={model} example={example} asset={asset}
-            pending={!asset && Boolean(example.suite && !published)} gatewayPrice={prices?.get(model.slug)} />;
+            pending={!asset && Boolean(example.suite && !published)}
+            checkingPrice={checkingPrices} gatewayQuote={currentQuotes?.get(model.slug)} />;
         })}
       </div>
     </section>
@@ -200,10 +210,13 @@ function quoteWorkload(modality: Modality, example: ComparisonExample): QuoteInp
   }
 }
 
-function ModelResult({ model, example, asset, pending, gatewayPrice }: {
-  model: Model; example: ComparisonExample; asset?: string; pending: boolean; gatewayPrice?: number | null;
+function ModelResult({ model, example, asset, pending, checkingPrice, gatewayQuote }: {
+  model: Model; example: ComparisonExample; asset?: string; pending: boolean;
+  checkingPrice: boolean; gatewayQuote?: ModelQuote | null;
 }) {
-  const estimate = gatewayPrice === undefined ? lowestCatalogEstimate(model, example) : gatewayPrice;
+  const now = useDeadlineClock([gatewayQuote?.expires_at, ...(gatewayQuote?.candidates.map(row => row.rate_valid_until) ?? [])]);
+  const estimate = gatewayQuote ? lowestCurrentQuotePrice(gatewayQuote, now)
+    : checkingPrice || gatewayQuote === null ? null : lowestCatalogEstimate(model, example);
   return (
     <Card className="min-w-0 overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3.5">
@@ -218,13 +231,14 @@ function ModelResult({ model, example, asset, pending, gatewayPrice }: {
       </div>
       {asset ? <OutputAsset key={asset} model={model} asset={asset} /> : <UnavailableOutput pending={pending} />}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border p-4">
-        <div>
+        <div aria-live="polite" aria-busy={checkingPrice}>
           <p className="text-xs text-muted">Lowest estimated cost</p>
-          <p className="mt-0.5 font-mono text-lg font-semibold">{estimate === null ? "Unavailable" : money.format(estimate)}</p>
+          <p className="mt-0.5 font-mono text-lg font-semibold">{checkingPrice ? "Checking price…"
+            : estimate === null ? "Unavailable" : money.format(estimate)}</p>
         </div>
         <div className="text-right">
           <p className="text-xs text-muted">{priceBasis(model, example)}</p>
-          {estimate !== null && <Badge className="mt-1 text-[11px]">{gatewayPrice === undefined ? "Catalog estimate" : "Live quote"}</Badge>}
+          {estimate !== null && <Badge className="mt-1 text-[11px]">{gatewayQuote ? "Live quote" : "Catalog estimate"}</Badge>}
         </div>
       </div>
     </Card>
