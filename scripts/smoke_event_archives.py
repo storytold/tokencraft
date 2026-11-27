@@ -179,6 +179,12 @@ def verify(gateway, directory, settings, session, account, project):
         expected, expected_headers = read_feed(clients[0])
         assert {event["request_id"] for event in map(json.loads, expected.splitlines())} == {receipts[0]}
         assert receipts[1].encode() not in expected and b"Private fixture" not in expected
+        expected_project, _ = read_feed(project_reader)
+        first_page, first_headers = read_feed(clients[0], limit=1)
+        after_first = first_headers["X-TokenCraft-Next-After"]
+        second_page, _ = read_feed(clients[0], after=after_first)
+        assert first_headers["X-TokenCraft-Has-More"] == "true"
+        assert first_page + second_page == expected
 
         def archives():
             return call(port, archive_list, 200, headers=session)[0]["archives"]
@@ -191,9 +197,26 @@ def verify(gateway, directory, settings, session, account, project):
                               "WHERE id = :'archive';", archive=archive_id)
         eventually(lambda: any(row.get("retired_at") for row in archives()), "automatic retirement")
         assert read_feed(clients[0])[0] == expected
+        assert read_feed(project_reader)[0] == expected_project
+        archived_first, archived_headers = read_feed(clients[0], limit=1)
+        assert archived_first == first_page
+        for name in ("X-TokenCraft-Has-More", "X-TokenCraft-Next-After", "X-TokenCraft-Content-Sha256"):
+            assert archived_headers[name] == first_headers[name]
+        assert read_feed(clients[0], after=after_first)[0] == second_page
         print("PASS the automatic archive preserved the exact client feed after PostgreSQL retirement")
 
         archive = f"/v1/archives/{archive_id}"
+        with bucket.lock:
+            object_path, = (path for path in bucket.objects if archive_id in path)
+            sealed_object = bucket.objects[object_path]
+            bucket.objects[object_path] = sealed_object[:-1] + bytes([sealed_object[-1] ^ 1])
+        try:
+            response, headers = call(port, feed + f"?project_id={project}&limit=1", 500, headers=clients[0])
+            assert response["error"]["code"] == "internal_error"
+            assert "X-TokenCraft-Next-After" not in headers
+        finally:
+            with bucket.lock:
+                bucket.objects[object_path] = sealed_object
         restore = archive + "/restore?" + scope + "&retrieve=true"
         bucket.cold.set()
         response, _ = call(port, feed + f"?project_id={project}", 409, headers=clients[0])
@@ -220,6 +243,7 @@ def verify(gateway, directory, settings, session, account, project):
                    "verified cold restore")
         archive_data, archive_headers = call(port, archive + "/data", 200, headers=project_reader)
         assert archive_headers["X-TokenCraft-Content-Sha256"] == sha256(archive_data).hexdigest()
+        assert archive_data == expected_project
         assert {event["request_id"] for event in map(json.loads, archive_data.splitlines())} == set(receipts)
         call(port, archive + "/data", 404, headers=clients[0])
         recovered, headers = read_feed(clients[0])

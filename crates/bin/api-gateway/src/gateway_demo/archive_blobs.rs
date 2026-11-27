@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -6,8 +7,8 @@ use std::{
 };
 
 use anyhow::{ensure, Context};
+use db_queries::{gateway_archives::Archive, gateway_exports::ExportEvent};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
-use db_queries::gateway_archives::Archive;
 use ids::{AccountId, GatewayArchiveId};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
@@ -207,6 +208,24 @@ impl ArchiveStorage {
     }
 
     pub async fn read(self: &Arc<Self>, expected: Expected) -> Result<Vec<u8>, &'static str> {
+        self.read_with(expected, None, |plain, _| plain).await
+    }
+
+    pub async fn read_events(
+        self: &Arc<Self>,
+        expected: Expected,
+        ids: HashSet<String>,
+    ) -> Result<HashMap<String, ExportEvent>, &'static str> {
+        self.read_with(expected, Some(ids), |_, events| events)
+            .await
+    }
+
+    async fn read_with<T: Send + 'static>(
+        self: &Arc<Self>,
+        expected: Expected,
+        ids: Option<HashSet<String>>,
+        finish: impl FnOnce(Vec<u8>, HashMap<String, ExportEvent>) -> T + Send + 'static,
+    ) -> Result<T, &'static str> {
         let name = expected.key.name();
         let backend = self.backend(&expected.key.storage_target)?;
         let storage = self.clone();
@@ -231,7 +250,9 @@ impl ArchiveStorage {
         };
         tokio::task::spawn_blocking(move || {
             let _slot = slot;
-            storage.open(&object, &expected)
+            let plain = storage.open(&object, &expected)?;
+            let events = validate(&plain, &expected, ids.as_ref())?;
+            Ok(finish(plain, events))
         })
         .await
         .map_err(|_| IO_ERROR)?
@@ -285,7 +306,6 @@ impl ArchiveStorage {
         if plain.len() > MAX_PLAINTEXT || digest(&plain) != expected.content_sha256 {
             return Err(BAD_OBJECT);
         }
-        validate(&plain, expected)?;
         Ok(plain)
     }
 }
@@ -309,8 +329,13 @@ struct EventIdentity<'a> {
     schema_version: i32,
 }
 
-fn validate(plain: &[u8], expected: &Expected) -> Result<(), &'static str> {
+fn validate(
+    plain: &[u8],
+    expected: &Expected,
+    ids: Option<&HashSet<String>>,
+) -> Result<HashMap<String, ExportEvent>, &'static str> {
     let body = plain.strip_suffix(b"\n").ok_or(BAD_OBJECT)?;
+    let mut events = HashMap::with_capacity(ids.map_or(0, HashSet::len));
     let mut count = 0;
     let mut last = "";
     for line in body.split(|byte| *byte == b'\n') {
@@ -326,11 +351,21 @@ fn validate(plain: &[u8], expected: &Expected) -> Result<(), &'static str> {
         {
             return Err(BAD_OBJECT);
         }
+        // Verify every row against the manifest and decode only requested payloads.
+        if ids.is_some_and(|ids| ids.contains(row.id)) {
+            let event = serde_json::from_slice(line).map_err(|_| BAD_OBJECT)?;
+            if events.insert(row.id.to_owned(), event).is_some() {
+                return Err(BAD_OBJECT);
+            }
+        }
         last = row.id;
         count += 1;
     }
-    if count != expected.event_count || last != expected.last_event_id {
+    if count != expected.event_count
+        || last != expected.last_event_id
+        || ids.is_some_and(|ids| ids.len() != events.len())
+    {
         return Err(BAD_OBJECT);
     }
-    Ok(())
+    Ok(events)
 }

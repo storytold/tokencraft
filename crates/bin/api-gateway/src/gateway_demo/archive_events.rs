@@ -35,32 +35,31 @@ pub(super) async fn hydrate(
     scope: RequestScope<'_>,
     events: &mut [ExportEvent],
 ) -> ApiResult<()> {
-    let mut current = None;
-    let mut archived = HashMap::new();
-    for event in events {
-        let Some(raw) = event.archive_id.as_deref() else {
+    // Automatic archives retire contiguous publication ranges in the feed.
+    for partition in events.chunk_by_mut(|left, right| left.archive_id == right.archive_id) {
+        let Some(raw) = partition[0].archive_id.as_deref() else {
             continue;
         };
-        if current.as_deref() != Some(raw) {
-            let id: GatewayArchiveId = raw.parse().map_err(|_| invalid_event())?;
-            let storage = storage.ok_or_else(storage_unavailable)?;
-            archived = read(pool, storage, scope, &id).await?;
-            current = Some(raw.to_owned());
+        let id = raw.parse().map_err(|_| invalid_event())?;
+        let storage = storage.ok_or_else(storage_unavailable)?;
+        let ids = partition.iter().map(|event| event.id.clone()).collect();
+        let mut archived = read(pool, storage, scope, &id, ids).await?;
+        for event in partition {
+            let source = archived.remove(&event.id).ok_or_else(invalid_event)?;
+            if source.project_id != event.project_id
+                || source.request_id != event.request_id
+                || source.client_ref != event.client_ref
+                || source.event_type != event.event_type
+                || source.occurred_at != event.occurred_at
+                || !source
+                    .data
+                    .as_ref()
+                    .is_some_and(serde_json::Value::is_object)
+            {
+                return Err(invalid_event());
+            }
+            event.data = source.data;
         }
-        let source = archived.remove(&event.id).ok_or_else(invalid_event)?;
-        if source.project_id != event.project_id
-            || source.request_id != event.request_id
-            || source.client_ref != event.client_ref
-            || source.event_type != event.event_type
-            || source.occurred_at != event.occurred_at
-            || !source
-                .data
-                .as_ref()
-                .is_some_and(serde_json::Value::is_object)
-        {
-            return Err(invalid_event());
-        }
-        event.data = source.data;
     }
     Ok(())
 }
@@ -70,6 +69,7 @@ async fn read(
     storage: &Arc<ArchiveStorage>,
     scope: RequestScope<'_>,
     id: &GatewayArchiveId,
+    ids: HashSet<String>,
 ) -> ApiResult<HashMap<String, ExportEvent>> {
     // The page already contains only authorized event IDs. Read their project-wide
     // archive internally and return only payloads matching those event markers.
@@ -83,7 +83,7 @@ async fn read(
         .filter(|archive| archive.automatic && archive.retired_at.is_some())
         .ok_or_else(invalid_event)?;
     let expected = Expected::from_manifest(scope.account, &archive).ok_or_else(invalid_event)?;
-    let bytes = storage.read(expected).await.map_err(|code| match code {
+    storage.read_events(expected, ids).await.map_err(|code| match code {
         COLD_OBJECT => {
             let message = if scope.client_ref.is_none() {
                 format!("Restore archive {id} under Exports, then resume the export from the same cursor.")
@@ -94,14 +94,7 @@ async fn read(
         }
         BAD_OBJECT => invalid_event(),
         _ => storage_unavailable(),
-    })?;
-    let body = bytes.strip_suffix(b"\n").ok_or_else(invalid_event)?;
-    body.split(|byte| *byte == b'\n')
-        .map(|line| {
-            let event: ExportEvent = serde_json::from_slice(line).map_err(|_| invalid_event())?;
-            Ok((event.id.clone(), event))
-        })
-        .collect()
+    })
 }
 
 fn invalid_event() -> ApiError {

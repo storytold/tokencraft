@@ -344,10 +344,20 @@ async fn encode_page(
     if let Some(last) = events.last() {
         headers.insert(NEXT_AFTER_HEADER, header_value(&last.id));
     }
-    let body = encode_events(events)?;
-    headers.insert(SHA256_HEADER, header_value(&digest(&body)));
-    // Keep the slot allocated while the transport still owns the response buffer.
-    Ok((headers, Bytes::from_owner(ExportBytes { body, _permit: permit })))
+    let (body, checksum) = tokio::task::spawn_blocking(move || {
+        let body = encode_events(events)?;
+        let checksum = digest(&body);
+        // Keep the slot through encoding and while the transport owns the buffer.
+        let body = Bytes::from_owner(ExportBytes {
+            body,
+            _permit: permit,
+        });
+        Ok::<_, ApiError>((body, checksum))
+    })
+    .await
+    .map_err(|_| ApiError::Internal("could not encode export page".into()))??;
+    headers.insert(SHA256_HEADER, header_value(&checksum));
+    Ok((headers, body))
 }
 
 pub(super) fn encode_events(events: Vec<ExportEvent>) -> ApiResult<Vec<u8>> {
