@@ -172,6 +172,35 @@ def verify_console(opener, origin, package, api_port, revision):
                 raise RuntimeError("The packaged console source revision differs from VERSION.json.")
 
 
+def verify_migrations(package, state, pg_bin, db_port, env):
+    """Compare a fresh migration by the packaged CLI with the launcher's database."""
+    password = json.loads((state / "dev-keys.json").read_bytes())["database"]
+    db_env = dict(env, PGHOST="127.0.0.1", PGPORT=str(db_port), PGUSER="tokencraft", PGPASSWORD=password)
+    database = "tokencraft_package_check"
+    run([pg_bin / "createdb", "--maintenance-db=postgres", "-w", database],
+        cwd=package, env=db_env, timeout=10)
+    url = f"postgresql://tokencraft:{quote(password, safe='')}@127.0.0.1:{db_port}/{database}"
+    cli = package / "bin/admin-cli"
+    cli_env = dict(env, FOUNDATION_ENV="development", DATABASE_URL=url)
+    run([cli, "migrate"], cwd=package, env=cli_env, stdout=subprocess.DEVNULL, timeout=45)
+
+    def migration_ledger(name):
+        return run(
+            [pg_bin / "psql", "-XqAtw", "-v", "ON_ERROR_STOP=1", "-d", name, "-c",
+             "SELECT version, success, encode(checksum, 'hex') FROM public._sqlx_migrations ORDER BY version"],
+            cwd=package, env=db_env, stdout=subprocess.PIPE, timeout=10,
+        ).stdout
+
+    expected = migration_ledger("tokencraft_dev")
+    if not expected or migration_ledger(database) != expected:
+        raise RuntimeError("The packaged admin-cli and launcher disagree on the migration ledger.")
+    report = run([cli, "schema-status"], cwd=package, env=cli_env,
+                 stdout=subprocess.PIPE, text=True, timeout=10)
+    if not report.stdout.startswith("schema status: current\n"):
+        raise RuntimeError("The packaged admin-cli did not report a current migration ledger.")
+    print("PASS packaged admin-cli migrated a fresh database and matched the launcher migration checksums")
+
+
 def smoke_package(archive, name, pg_bin):
     """Run the extracted launcher with an explicit tool PATH and disposable state."""
     with TemporaryDirectory(prefix="tc-package-") as temp:
@@ -219,6 +248,7 @@ def smoke_package(archive, name, pg_bin):
             return packaged_gateway([*command, "--state-dir", state_path], state_path, env, opener, api)
 
         with launch(state):
+            verify_migrations(package, state, pg_bin, db_port, env)
             revision = json.loads((package / "VERSION.json").read_bytes()).get("source_revision")
             if revision is not None:
                 with opener.open(api + "/ready", timeout=3) as readiness:
