@@ -30,7 +30,7 @@ With gateway restores enabled, open archived content in Requests and select **Re
 
 The worker asks storage for a Standard retrieval with a one-day temporary copy. It checks restore metadata before retrying an unconfirmed submission and allows up to three submissions per object in a restore job. The worker checks every five minutes for up to 48 hours and keeps the original retention deadline. It verifies each object's stored checksum before marking it ready. An archive contains one manifest and up to eight media objects. Repeating the restore call returns the same job while pending or within 24 hours of its start. Retrieval can incur bucket charges. [S3 RestoreObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_RestoreObject.html) · [S3 HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)
 
-A replacement worker uses the recorded reservation and storage metadata to resume each pending object. When the status is ready, retrieve or download the archive from Requests. Expiry and administrator deletion remove queued restore work and still apply to any temporary copy.
+A replacement worker uses the recorded reservation and storage metadata to resume each pending object. A stalled storage read leaves the request available for removal. After removal or expiry, the worker discards a late verification result. When the status is ready, retrieve or download the archive from Requests. Expiry and administrator deletion remove queued restore work and still apply to any temporary copy.
 
 Requests verifies the saved artifact size and SHA-256 before saving the file. When the gateway is busy and supplies a retry delay of up to five seconds, the console retries once in place. You can cancel while the transfer is in progress.
 

@@ -9,7 +9,6 @@ use chrono::{DateTime, Utc};
 use db_queries::gateway_requests::content_restores::{self as jobs, Task, Update};
 use enums::AuditEvent;
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Transaction};
 
 use super::super::{
     access::{self, GatewayCaller, Permission, ScopeQuery},
@@ -124,64 +123,68 @@ pub(super) fn spawn(pool: db::PgPool, store: Arc<Store>, readiness: Arc<Readines
 }
 
 async fn work(pool: &db::PgPool, target: &Target) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
-    let Some(task) = jobs::claim(&mut tx, target.id()).await? else {
+    let Some(task) = jobs::claim(pool, target.id()).await? else {
         return Ok(());
     };
+    let outcome = verify_object(target, &task).await;
+    let mut tx = pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
+    if !jobs::lock_claim(&mut tx, target.id(), &task).await? {
+        return tx.rollback().await;
+    }
+    let name = match outcome {
+        Verification::Record(update) => {
+            jobs::update(&mut tx, &task, update).await?;
+            return tx.commit().await;
+        }
+        Verification::RequestRestore(name) => name,
+    };
+    let reservation = jobs::reserve(&mut tx, &task).await?;
+    tx.commit().await?;
+    let Some(reservation) = reservation else { return Ok(()) };
+
+    // Serialize the mutating storage call with administrator removal.
+    let mut tx = pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
+    if jobs::can_dispatch(&mut tx, target.id(), &task, reservation).await? {
+        match target.request_restore(&name).await {
+            Ok(RestoreDispatch::Confirmed) => jobs::update(&mut tx, &task, Update::Confirmed).await?,
+            Ok(RestoreDispatch::Unconfirmed) => {}
+            Err(_) => jobs::update(&mut tx, &task, Update::Failed).await?,
+        }
+    }
+    tx.commit().await
+}
+
+enum Verification {
+    Record(Update),
+    RequestRestore(String),
+}
+
+async fn verify_object(target: &Target, task: &Task) -> Verification {
     let Ok(id) = task.request_id.parse() else {
-        jobs::update(&mut tx, &task, Update::Failed).await?;
-        return tx.commit().await;
+        return Verification::Record(Update::Failed);
     };
     let name = if task.slot == -1 {
         format!("{id}.tch")
     } else {
         artifact_name(&id, task.slot)
     };
-    let update = match target.read(&name, task.byte_limit as usize).await {
-        Ok(ciphertext) if digest(&ciphertext) == task.checksum => Update::Ready,
-        Err(COLD_OBJECT) => return restore_cold_object(tx, pool, target, &task, &name).await,
-        Err(IO_ERROR) => Update::Wait,
-        _ => Update::Failed,
-    };
-    jobs::update(&mut tx, &task, update).await?;
-    tx.commit().await
-}
-
-async fn restore_cold_object(
-    mut tx: Transaction<'_, Postgres>,
-    pool: &db::PgPool,
-    target: &Target,
-    task: &Task,
-    name: &str,
-) -> sqlx::Result<()> {
+    match target.read(&name, task.byte_limit as usize).await {
+        Ok(ciphertext) if digest(&ciphertext) == task.checksum => return Verification::Record(Update::Ready),
+        Err(IO_ERROR) => return Verification::Record(Update::Wait),
+        Err(COLD_OBJECT) => {}
+        _ => return Verification::Record(Update::Failed),
+    }
     if task.retrieval_confirmed || task.retrieval_submissions >= jobs::MAX_RESTORE_SUBMISSIONS
         || !target.permits_restore()
     {
-        jobs::update(&mut tx, task, Update::Wait).await?;
-        return tx.commit().await;
+        return Verification::Record(Update::Wait);
     }
     if task.attempted {
-        let update = match target.restoration_exists(name).await {
-            Ok(true) => Some(Update::Confirmed),
-            Err(_) => Some(Update::Wait),
-            Ok(false) => None,
-        };
-        if let Some(update) = update {
-            jobs::update(&mut tx, task, update).await?;
-            return tx.commit().await;
+        match target.restoration_exists(&name).await {
+            Ok(true) => return Verification::Record(Update::Confirmed),
+            Ok(false) => {}
+            Err(_) => return Verification::Record(Update::Wait),
         }
     }
-
-    let submission = jobs::reserve(&mut tx, task).await?;
-    tx.commit().await?;
-    let Some(submission) = submission else { return Ok(()) };
-    let mut tx = pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
-    if jobs::can_dispatch(&mut tx, target.id(), task, submission).await? {
-        match target.request_restore(name).await {
-            Ok(RestoreDispatch::Confirmed) => jobs::update(&mut tx, task, Update::Confirmed).await?,
-            Ok(RestoreDispatch::Unconfirmed) => {}
-            Err(_) => jobs::update(&mut tx, task, Update::Failed).await?,
-        }
-    }
-    tx.commit().await
+    Verification::RequestRestore(name)
 }

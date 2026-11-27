@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use ids::GatewayRequestId;
-use sqlx::{PgExecutor, Postgres, Transaction};
+use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
 
 use super::RequestScope;
 
@@ -104,24 +104,40 @@ pub struct Task {
     pub attempted: bool,
     pub retrieval_submissions: i16,
     pub retrieval_confirmed: bool,
+    claim_until: DateTime<Utc>,
 }
 
-pub async fn claim(tx: &mut Transaction<'_, Postgres>, target: &str) -> sqlx::Result<Option<Task>> {
+pub async fn claim(pool: &PgPool, target: &str) -> sqlx::Result<Option<Task>> {
+    // Use check_at as the reclaim time while storage reads run. This also keeps
+    // earlier workers from claiming the same object during a rolling restart.
     sqlx::query_as(
-        "SELECT j.request_id, j.slot, j.requested_at, j.checksum, j.byte_limit, j.attempted,
-                j.retrieval_submissions, j.retrieval_confirmed
-         FROM gateway_content_restores j JOIN gateway_content_history c USING (request_id)
-         JOIN gateway_requests r ON r.id = j.request_id
-         WHERE c.target = $1 AND c.expires_at > clock_timestamp() AND r.content_removed_at IS NULL
-           AND j.state = 'pending' AND j.check_at <= statement_timestamp()
-           AND j.requested_at > statement_timestamp() - interval '48 hours'
-           AND NOT EXISTS (SELECT 1 FROM gateway_content_restores other
-                           WHERE other.request_id = j.request_id AND other.state = 'failed')
-         ORDER BY j.check_at, j.request_id, j.slot LIMIT 1 FOR UPDATE OF r, j SKIP LOCKED",
+        "WITH due AS (
+            SELECT j.request_id, j.slot
+              FROM gateway_content_restores j JOIN gateway_content_history c USING (request_id)
+              JOIN gateway_requests r ON r.id = j.request_id
+             WHERE c.target = $1 AND c.expires_at > clock_timestamp() AND r.content_removed_at IS NULL
+               AND j.state = 'pending' AND j.check_at <= statement_timestamp()
+               AND j.requested_at > statement_timestamp() - interval '48 hours'
+               AND NOT EXISTS (SELECT 1 FROM gateway_content_restores other
+                               WHERE other.request_id = j.request_id AND other.state = 'failed')
+             ORDER BY j.check_at, j.request_id, j.slot LIMIT 1 FOR UPDATE OF r, j SKIP LOCKED
+         )
+         UPDATE gateway_content_restores j SET check_at = clock_timestamp() + interval '45 seconds'
+           FROM due WHERE j.request_id = due.request_id AND j.slot = due.slot
+         RETURNING j.request_id, j.slot, j.requested_at, j.checksum, j.byte_limit, j.attempted,
+                   j.retrieval_submissions, j.retrieval_confirmed, j.check_at AS claim_until",
     )
     .bind(target)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(pool)
     .await
+}
+
+pub async fn lock_claim(
+    tx: &mut Transaction<'_, Postgres>,
+    target: &str,
+    task: &Task,
+) -> sqlx::Result<bool> {
+    lock_active_restore(tx, target, task, task.claim_until, None).await
 }
 
 pub enum Update {
@@ -131,6 +147,7 @@ pub enum Update {
     Failed,
 }
 
+/// Record an outcome while holding the validated request lock.
 pub async fn update(tx: &mut Transaction<'_, Postgres>, task: &Task, update: Update) -> sqlx::Result<()> {
     let (state, confirmed) = match update {
         Update::Wait => ("pending", false),
@@ -153,21 +170,31 @@ pub async fn update(tx: &mut Transaction<'_, Postgres>, task: &Task, update: Upd
     Ok(())
 }
 
-/// Reserve one submission under the same request lock used by the restore claim.
-pub async fn reserve(tx: &mut Transaction<'_, Postgres>, task: &Task) -> sqlx::Result<Option<i16>> {
-    sqlx::query_scalar(
+#[derive(sqlx::FromRow)]
+pub struct RestoreReservation {
+    number: i16,
+    check_at: DateTime<Utc>,
+}
+
+/// Reserve one submission while holding the validated request claim.
+pub async fn reserve(
+    tx: &mut Transaction<'_, Postgres>,
+    task: &Task,
+) -> sqlx::Result<Option<RestoreReservation>> {
+    sqlx::query_as(
         "UPDATE gateway_content_restores
          SET attempted = true, retrieval_submissions = greatest(retrieval_submissions, attempted::int) + 1,
              check_at = clock_timestamp() + interval '5 minutes'
          WHERE request_id = $1 AND slot = $2 AND requested_at = $3
-           AND state = 'pending' AND check_at <= clock_timestamp()
+           AND state = 'pending' AND check_at = $5 AND check_at > clock_timestamp()
            AND NOT retrieval_confirmed AND retrieval_submissions < $4
-         RETURNING retrieval_submissions",
+         RETURNING retrieval_submissions AS number, check_at",
     )
     .bind(&task.request_id)
     .bind(task.slot)
     .bind(task.requested_at)
     .bind(MAX_RESTORE_SUBMISSIONS)
+    .bind(task.claim_until)
     .fetch_optional(&mut **tx)
     .await
 }
@@ -176,9 +203,19 @@ pub async fn can_dispatch(
     tx: &mut Transaction<'_, Postgres>,
     target: &str,
     task: &Task,
-    submission: i16,
+    reservation: RestoreReservation,
 ) -> sqlx::Result<bool> {
-    // Read object state after taking the request lock, and keep the lock until the POST ends.
+    lock_active_restore(tx, target, task, reservation.check_at, Some(reservation.number)).await
+}
+
+async fn lock_active_restore(
+    tx: &mut Transaction<'_, Postgres>,
+    target: &str,
+    task: &Task,
+    check_at: DateTime<Utc>,
+    submission: Option<i16>,
+) -> sqlx::Result<bool> {
+    // Removal, expiry and restore enqueue all lock the request first.
     let locked: Option<String> = sqlx::query_scalar(
         "SELECT id FROM gateway_requests WHERE id = $1 AND content_removed_at IS NULL FOR UPDATE",
     )
@@ -189,11 +226,11 @@ pub async fn can_dispatch(
         return Ok(false);
     }
     sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM gateway_requests r JOIN gateway_content_history c ON c.request_id = r.id
-         JOIN gateway_content_restores j ON j.request_id = r.id
-         WHERE r.id = $1 AND j.slot = $2 AND j.requested_at = $3 AND c.target = $4
-           AND j.state = 'pending' AND j.retrieval_submissions = $5 AND NOT j.retrieval_confirmed
-           AND j.check_at > clock_timestamp() AND r.content_removed_at IS NULL
+        "SELECT EXISTS (SELECT 1 FROM gateway_content_history c
+         JOIN gateway_content_restores j USING (request_id)
+         WHERE c.request_id = $1 AND j.slot = $2 AND j.requested_at = $3 AND c.target = $4
+           AND j.state = 'pending' AND j.check_at = $5 AND j.check_at > clock_timestamp()
+           AND ($6::smallint IS NULL OR (j.retrieval_submissions = $6 AND NOT j.retrieval_confirmed))
            AND c.expires_at > clock_timestamp()
            AND j.requested_at > clock_timestamp() - interval '48 hours'
            AND NOT EXISTS (SELECT 1 FROM gateway_content_restores other
@@ -203,6 +240,7 @@ pub async fn can_dispatch(
     .bind(task.slot)
     .bind(task.requested_at)
     .bind(target)
+    .bind(check_at)
     .bind(submission)
     .fetch_one(&mut **tx)
     .await
