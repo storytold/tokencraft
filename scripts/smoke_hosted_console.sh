@@ -42,7 +42,7 @@ matches_contract() {
   jq -es 'length == 2 and .[0] == .[1]' "$root/contracts/openapi.json" -
 }
 
-probe_work=$(mktemp -d)
+probe_work=$(mktemp -d "${TMPDIR:-/tmp}/tokencraft-hosted-smoke.XXXXXXXX")
 trap 'rm -rf -- "$probe_work"' EXIT
 probe_body="$probe_work/body"
 probe_headers="$probe_work/headers"
