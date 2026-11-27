@@ -193,15 +193,24 @@ def verify_console_manifest(contents, revision):
         raise RuntimeError("The packaged console source revision differs from VERSION.json.")
 
 
-def verify_console(opener, origin, package, api_port, revision):
+def verify_console(opener, origin, package, api_port, revision, *, console_dir=None):
+    console_dir = package / "console" if console_dir is None else console_dir
+    index = (console_dir / "index.html").read_bytes()
+    script = re.search(rb'<script\b[^>]*\bsrc="(/assets/[\w.-]+\.js)"', index)
+    if script is None:
+        raise RuntimeError("The compiled console index has no entry script.")
+    entry = script[1][1:].decode()
     route = Request(origin + "/pricing", headers={"Accept": "text/html"})
     with opener.open(route, timeout=3) as result:
+        document = result.read()
         marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
-        if marker not in result.read():
+        if marker not in document:
             raise RuntimeError("The packaged console did not receive the active API port.")
-    for route, expected in (("docs/openapi.json", "contracts/openapi.json"),
-                            (REFERENCE_CATALOG, REFERENCE_CATALOG)):
-        asset = (package / expected).read_bytes()
+        if script[1] not in document:
+            raise RuntimeError("The packaged console did not load the compiled entry script.")
+    for route, expected in (("docs/openapi.json", package / "contracts/openapi.json"),
+                            (REFERENCE_CATALOG, package / REFERENCE_CATALOG), (entry, console_dir / entry)):
+        asset = expected.read_bytes()
         with opener.open(f"{origin}/{route}", timeout=3) as result:
             if result.read(len(asset) + 1) != asset:
                 raise RuntimeError(f"The packaged console {route} differs from the release asset.")

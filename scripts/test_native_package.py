@@ -1,7 +1,7 @@
 """Check the native package before its services start."""
 
 from contextlib import redirect_stderr
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 import sys
@@ -9,10 +9,11 @@ import tarfile
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import native_package
 from native_package import (
-    BINARIES, archive_package, smoke_package, verify_binary_versions, verify_console_manifest, verify_documentation,
+    BINARIES, archive_package, smoke_package, verify_binary_versions, verify_console, verify_console_manifest, verify_documentation,
 )
 
 
@@ -79,6 +80,43 @@ class NativeConsoleBuildTest(unittest.TestCase):
             verify_console_manifest(unstamped, revision)
         with self.assertRaisesRegex(RuntimeError, "manifest is invalid"):
             verify_console_manifest(b"<html>", None)
+
+    def test_mounted_console_serves_its_compiled_entry_module(self):
+        revision = "a" * 40
+        marker = b'<meta name="tokencraft-api-port" content="4000">'
+        index = b'<html><head><script type="module" src="/assets/index-fixture.js"></script></head></html>'
+        javascript = b"console.log('matching console')"
+        manifest = json.dumps({"launcher_api": True, "source_revision": revision}).encode()
+        with TemporaryDirectory() as directory:
+            package = Path(directory)
+            files = {
+                "console/index.html": index,
+                "console/assets/index-fixture.js": javascript,
+                "contracts/openapi.json": b"{}",
+                "catalog/artcraft-v1.json": b"{}",
+            }
+            for name, contents in files.items():
+                path = package / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(contents)
+
+            served = {
+                "/pricing": index.replace(b"<head>", b"<head>" + marker),
+                "/assets/index-fixture.js": javascript,
+                "/docs/openapi.json": files["contracts/openapi.json"],
+                "/catalog/artcraft-v1.json": files["catalog/artcraft-v1.json"],
+                "/release.json": manifest,
+            }
+
+            class Opener:
+                def open(self, request, *, timeout):
+                    url = request if isinstance(request, str) else request.full_url
+                    return BytesIO(served[urlsplit(url).path])
+
+            verify_console(Opener(), "http://localhost:3000", package, 4000, revision)
+            served["/assets/index-fixture.js"] = served["/pricing"]
+            with self.assertRaisesRegex(RuntimeError, "assets/index-fixture.js differs from the release asset"):
+                verify_console(Opener(), "http://localhost:3000", package, 4000, revision)
 
 
 class NativeBinaryVersionsTest(unittest.TestCase):
