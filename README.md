@@ -6,6 +6,10 @@ The [ArtCraft reference catalog](catalog/artcraft-v1.json) describes supported p
 
 [TokenCraft Operations](deploy/monitoring/README.md) is the operator console for self-hosted cells, provider plugins, compute targets, queues and delivery.
 
+## Cyber protection for ArtCraft open source
+
+TokenCraft applies project and client isolation, scoped credential access, and verifiable artifact retention to ArtCraft’s open-source AI infrastructure. Daybreak complements the built-in controls with defensive review and triage. [Security and reporting](SECURITY.md)
+
 ## Backend design
 
 [Open the interactive design source](frontend/public/design/index.html). The console build serves it at `/design/`, with shareable links such as `/design/#overview/caller`. The diagrams identify observed code and proposed hosted architecture.
