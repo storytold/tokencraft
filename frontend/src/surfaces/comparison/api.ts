@@ -1,5 +1,7 @@
 import { gatewayRequest as request, gatewayResponse, isGatewayEndpointUnavailable, isProviderId, type ProjectScope, type Provider } from "@/lib/gateway";
+import { ApiError } from "@/lib/api";
 import type { DataHandling, DataRequirements, PolicyResolution, PolicySetting } from "@/lib/routing-policy";
+import { readModelReceipt, type ModelSubmission } from "./modelSubmission";
 export { demoEnabled, errorMessage } from "@/lib/gateway";
 
 export type { Provider } from "@/lib/gateway";
@@ -407,21 +409,16 @@ export const comparisonApi = {
     scope ? `/v1/quotes/scoped?${new URLSearchParams(scope)}` : "/v1/quotes", {
     credentials: scope ? "include" : "omit", method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
   }),
-  run: (scope: ProjectScope, quote: Pick<Quote, "id" | "input">, options: { clientRef: string; appRef: string; subscription: string | null; prompt?: string; imagePrompt?: string; videoPrompt?: string; audioPrompt?: string; meshPrompt?: string }, key: string, signal: AbortSignal) =>
-    request<{ id: string }>("/v1/model-requests", {
-      method: "POST", signal,
-      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
-      body: JSON.stringify({
-        ...scope, input: quote.input, quote_id: quote.id, client_ref: options.clientRef || null,
-        app_ref: options.appRef || undefined,
-        delivery: options.subscription ? { webhook_subscription_id: options.subscription } : undefined,
-        messages: options.prompt === undefined ? undefined : [{ role: "user", content: options.prompt }],
-        image_prompt: options.imagePrompt,
-        video_prompt: options.videoPrompt,
-        audio_prompt: options.audioPrompt,
-        mesh_prompt: options.meshPrompt,
-      }),
-    }),
+  async run(submission: ModelSubmission, signal: AbortSignal) {
+    const response = await gatewayResponse("/v1/model-requests", {
+      method: "POST", redirect: "error", signal,
+      headers: { "Content-Type": "application/json", "Idempotency-Key": submission.key },
+      body: submission.body,
+    });
+    const id = await readModelReceipt(response);
+    if (!id) throw new ApiError(0, "receipt_unavailable", "The gateway did not return a complete receipt.");
+    return id;
+  },
   async trace(scope: ProjectScope, id: string, signal: AbortSignal, validator: string | null) {
     const response = await gatewayResponse(
       `/v1/model-requests/${encodeURIComponent(id)}?${new URLSearchParams(scope)}`,

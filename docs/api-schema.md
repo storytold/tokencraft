@@ -61,6 +61,8 @@ Submit the returned `input` and ID through `POST /v1/requests`. The placeholder 
 
 The new request returns `202`, `Location`, and `TokenCraft-Request-Id`. The receipt JSON has `id`, `project_id`, and `status_url`. Store the full receipt and URL. Read the final status using a credential for the same project.
 
+In Playground and Compare, use **Recover receipt** if the original submission may have been accepted. Recovery reuses the original request and key even after you refresh the estimate or edit the draft. If you leave the page, check Request history before submitting again.
+
 ## Maintain the reference
 
 In a source checkout, update the handler contract and [re-export OpenAPI](api-contracts.md#review-and-export-a-contract-change) when changing a public wire shape. For a routed operation outside OpenAPI, update its handler-backed entry in `frontend/src/surfaces/marketing/api-source-reference.ts`. Model-request aliases reuse the native schemas in `api-reference-data.ts` in the same directory. Use `api-schema-notes.ts` for narrative and examples that clarify the generated contract.

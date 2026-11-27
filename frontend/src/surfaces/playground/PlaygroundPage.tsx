@@ -9,6 +9,8 @@ import { useOrg } from "@/lib/org";
 import { parseDollarCap } from "@/lib/routing-policy";
 import { comparisonApi, errorMessage, usd, type ModelCatalog, type ModelQuote, type QuoteInput } from "@/surfaces/comparison/api";
 import { statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
+import { ReceiptRecovery } from "@/surfaces/comparison/ReceiptRecovery";
+import { useModelSubmission } from "@/surfaces/comparison/useModelSubmission";
 import { ProjectPicker, ProjectStatus, useProject } from "@/surfaces/projects/ProjectScope";
 import { modelChoices, modelPresets, modalityNames, presetLabels, type Modality, type ModelChoice } from "@/surfaces/requests/modelOptions";
 import { RequestWaterfall } from "@/surfaces/requests/RequestWaterfall";
@@ -127,9 +129,17 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
   const [modelId, setModelId] = useState("");
   const [clientRef, setClientRef] = useState("");
   const [runError, setRunError] = useState("");
-  const [pending, setPending] = useState<"submit" | "cancel">();
+  const [canceling, setCanceling] = useState(false);
   const mutation = useRef<AbortController | null>(null);
-  const retry = useRef<{ identity: string; key: string } | null>(null);
+  const submission = useModelSubmission(scope, (id) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("account_id", scope.account_id);
+      next.set("project_id", scope.project_id);
+      next.set("request_id", id);
+      return next;
+    });
+  });
 
   useEffect(() => () => mutation.current?.abort(), []);
   useEffect(() => {
@@ -154,50 +164,24 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
   const selected = models.find(([id]) => id === modelId)
     ?? (linkedChoice?.[1].kind === kind ? linkedChoice : undefined) ?? models[0];
   const isActive = requestIsActive(trace?.status);
+  const pending = submission.sending ? "submit" : canceling ? "cancel" : undefined;
   const busy = Boolean(pending || isActive || (requestId && !trace && (!traceError || retrying)));
   const attribution = boundClient ?? clientRef.trim();
 
-  async function run(quote: ModelQuote, prompt: string, appRef: string) {
+  function run(quote: ModelQuote, prompt: string, appRef: string) {
     if (!canSubmit || busy || mutation.current) return;
-    const controller = new AbortController();
-    const options = {
-      clientRef: attribution, appRef, subscription: null,
-      prompt: quote.prompt_mode === "chat" ? prompt : undefined,
-      imagePrompt: quote.prompt_mode === "image" ? prompt : undefined,
-      videoPrompt: quote.prompt_mode === "video" ? prompt : undefined,
-      audioPrompt: quote.prompt_mode === "audio" ? prompt : undefined,
-      meshPrompt: quote.prompt_mode === "mesh" ? prompt : undefined,
-    };
-    const identity = JSON.stringify([quote.id, options]);
-    const key = retry.current?.identity === identity ? retry.current.key : window.crypto.randomUUID();
-    retry.current = { identity, key };
-    mutation.current = controller;
-    setPending("submit");
     setRunError("");
-    try {
-      const accepted = await comparisonApi.run(scope, quote, options, key, controller.signal);
-      if (controller.signal.aborted) return;
-      retry.current = null;
-      setParams((current) => {
-        const next = new URLSearchParams(current);
-        next.set("account_id", scope.account_id);
-        next.set("project_id", scope.project_id);
-        next.set("request_id", accepted.id);
-        return next;
-      });
-    } catch (cause) {
-      if (!controller.signal.aborted) setRunError(errorMessage(cause));
-    } finally {
-      mutation.current = null;
-      if (!controller.signal.aborted) setPending(undefined);
-    }
+    submission.submit(quote, {
+      clientRef: attribution, appRef, subscription: null, prompt,
+      promptMode: quote.prompt_mode === "fixture" ? undefined : quote.prompt_mode ?? undefined,
+    });
   }
 
   async function cancel() {
-    if (!trace || !canSubmit || !isActive || mutation.current) return;
+    if (!trace || !canSubmit || !isActive || mutation.current || submission.sending) return;
     const controller = new AbortController();
     mutation.current = controller;
-    setPending("cancel");
+    setCanceling(true);
     setRunError("");
     try {
       const result = await comparisonApi.cancel(scope, trace.id, controller.signal);
@@ -207,7 +191,7 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
     } finally {
       mutation.current = null;
       if (!controller.signal.aborted) {
-        setPending(undefined);
+        setCanceling(false);
         refreshTrace();
       }
     }
@@ -255,10 +239,12 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
                   onChange={(id) => { setModelId(id); setRunError(""); }} />
                 <PlaygroundForm key={selected[0]} choice={selected[1]} scope={scope} clientRef={attribution}
                   clientDraft={clientRef} setClientDraft={setClientRef} boundClient={boundClient}
-                  busy={busy} pending={pending === "submit"} onRun={run} />
+                  busy={busy} pending={pending === "submit"} recoveryPending={submission.recoverable} onRun={run} />
               </>
             )}
-          {runError && <p role="alert" className="text-sm text-rose-600 dark:text-rose-300">{runError}</p>}
+          {(runError || submission.error) && <p role="alert" className="text-sm text-rose-600 dark:text-rose-300">{runError || submission.error}</p>}
+          {canSubmit && submission.recoverable && <ReceiptRecovery sending={submission.sending || canceling}
+            retry={submission.retry} dismiss={submission.dismiss} />}
         </div>
       </Card>
       <div className={requestId ? "min-w-0 space-y-4" : "flex min-w-0 self-stretch"}>
@@ -307,10 +293,10 @@ function PlaygroundWorkspace({ scope, requestedModel, boundClient, canSubmit }: 
   );
 }
 
-function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft, boundClient, busy, pending, onRun }: {
+function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft, boundClient, busy, pending, recoveryPending, onRun }: {
   choice: ModelChoice; scope: ProjectScope; clientRef: string; clientDraft: string;
   setClientDraft: (value: string) => void; boundClient: string | null;
-  busy: boolean; pending: boolean; onRun: (quote: ModelQuote, prompt: string, appRef: string) => Promise<void>;
+  busy: boolean; pending: boolean; recoveryPending: boolean; onRun: (quote: ModelQuote, prompt: string, appRef: string) => void;
 }) {
   const { kind, model } = choice;
   const [prompt, setPrompt] = useState("");
@@ -363,8 +349,8 @@ function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft,
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!quote || !offer || busy || (needsPrompt && !prompt.trim())) return;
-    void onRun(quote, prompt, appRef.trim());
+    if (!quote || !offer || busy || recoveryPending || (needsPrompt && !prompt.trim())) return;
+    onRun(quote, prompt, appRef.trim());
   }
 
   return (
@@ -423,7 +409,7 @@ function PlaygroundForm({ choice, scope, clientRef, clientDraft, setClientDraft,
             : !current ? "Checking estimate…" : quote ? "No eligible route for these settings." : current.error}</p>}
           {current && <button className="mt-0.5 text-xs text-brand underline" type="button" onClick={() => setRevision((value) => value + 1)}>Refresh estimate</button>}
         </div>
-        <Button type="submit" disabled={busy || !offer || (needsPrompt && !prompt.trim())}>
+        <Button type="submit" disabled={busy || recoveryPending || !offer || (needsPrompt && !prompt.trim())}>
           {pending ? <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
           {pending ? "Submitting…" : "Run model"}
         </Button>

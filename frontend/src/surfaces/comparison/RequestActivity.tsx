@@ -16,7 +16,9 @@ import { diagnosticFromUrl, type InvestigationFilters } from "@/surfaces/request
 import { useRequestHistory } from "@/surfaces/requests/useRequestHistory";
 import { RequestsWorkspace } from "@/surfaces/requests/RequestsWorkspace";
 import { WorkflowRunLink } from "@/surfaces/requests/WorkflowRunLink";
-import { quoteExpired, QuoteExpiry } from "./QuoteExpiry";
+import { QuoteExpiry } from "./QuoteExpiry";
+import { ReceiptRecovery } from "./ReceiptRecovery";
+import { useModelSubmission } from "./useModelSubmission";
 
 const timestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 const promptLabels = { chat: "Chat message", image: "Image prompt", video: "Video prompt", audio: "Audio prompt", mesh: "3D prompt" };
@@ -49,11 +51,16 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
   const { history, error: historyError, refresh: refreshHistory, newest: newestHistory } = requestHistory;
   const { data: trace, error: traceError, retrying, refresh: refreshTrace, replace: setTrace } = useRequestStatus(scope, requestId);
   const [runError, setRunError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const inFlight = useRef<AbortController | null>(null);
   const lastStatus = useRef<{ id: string; status: Trace["status"] } | null>(null);
-  const retry = useRef<{ identity: string; key: string } | null>(null);
+  const submission = useModelSubmission(scope, (id, recovered) => {
+    if (promptMode && !recovered) setPrompt("");
+    openRequest(id);
+    newestHistory();
+    refreshHistory();
+  });
+  const submitting = submission.sending;
 
   useEffect(() => () => inFlight.current?.abort(), []);
 
@@ -79,45 +86,15 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
     setParams(next, { replace: isDashboard && Boolean(requestId) });
   }
 
-  async function run(event: FormEvent) {
+  function run(event: FormEvent) {
     event.preventDefault();
     if (readOnly || !selected || !quote || inFlight.current || (promptMode && !prompt.trim())) return;
-    const options = {
-      clientRef, appRef, subscription,
-      prompt: promptMode === "chat" ? prompt : undefined,
-      imagePrompt: promptMode === "image" ? prompt : undefined,
-      videoPrompt: promptMode === "video" ? prompt : undefined,
-      audioPrompt: promptMode === "audio" ? prompt : undefined,
-      meshPrompt: promptMode === "mesh" ? prompt : undefined,
-    };
-    const identity = JSON.stringify([scope.project_id, quote.id, options]);
-    if (quoteExpired(quote.expires_at) && retry.current?.identity !== identity) {
-      setRunError("Estimate expired. Refresh for a new request.");
-      return;
-    }
-    const controller = new AbortController();
-    inFlight.current = controller;
-    if (retry.current?.identity !== identity) retry.current = { identity, key: window.crypto.randomUUID() };
-    setSubmitting(true);
     setRunError("");
-    try {
-      const accepted = await comparisonApi.run(scope, quote, options, retry.current.key, controller.signal);
-      if (controller.signal.aborted) return;
-      retry.current = null;
-      if (promptMode) setPrompt("");
-      openRequest(accepted.id);
-      newestHistory();
-      refreshHistory();
-    } catch (error) {
-      if (!controller.signal.aborted) setRunError(errorMessage(error));
-    } finally {
-      inFlight.current = null;
-      if (!controller.signal.aborted) setSubmitting(false);
-    }
+    submission.submit(quote, { clientRef, appRef, subscription, promptMode, prompt });
   }
 
   async function cancel() {
-    if (readOnly || !trace || trace.id !== requestId || isFinished(trace) || inFlight.current) return;
+    if (readOnly || !trace || trace.id !== requestId || isFinished(trace) || inFlight.current || submitting) return;
     const id = trace.id;
     const controller = new AbortController();
     inFlight.current = controller;
@@ -213,12 +190,15 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
           <label className="min-w-40 flex-1 text-sm font-medium">App reference
             <Input className="mt-1.5 font-mono" value={appRef} onChange={(event) => setAppRef(event.target.value)} maxLength={64} placeholder="Optional opaque ID" />
           </label>
-          <Button type="submit" disabled={submitting || canceling || !selected || Boolean(promptMode && !prompt.trim())}>
+          <Button type="submit" disabled={submitting || canceling || submission.recoverable || !selected || Boolean(promptMode && !prompt.trim())}>
             {submitting ? "Submitting…" : local ? "Send self-hosted request" : live ? "Send live request" : promptMode ? `Run ${promptMode === "mesh" ? "3D" : promptMode} fixture` : "Run mock request"}
           </Button>
           {quote?.expires_at && <p className="w-full text-xs text-muted" role="status"><QuoteExpiry expiresAt={quote.expires_at} /></p>}
         </form>}
-        {runError && <p role="alert" className="mb-4 text-sm text-rose-500">{runError}</p>}
+        {(runError || submission.error) && <p role="alert" className="mb-4 text-sm text-rose-500">{runError || submission.error}</p>}
+        {!readOnly && submission.recoverable && <div className="mb-4">
+          <ReceiptRecovery sending={submitting || canceling} retry={submission.retry} dismiss={submission.dismiss} />
+        </div>}
         {traceContent}
       </Card>
       <Card className="min-w-0 p-5 sm:p-7">
