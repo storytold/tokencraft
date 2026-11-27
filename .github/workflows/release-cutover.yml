@@ -50,7 +50,7 @@ jobs:
           import shutil
           import sys
 
-          from native_package import build_binaries
+          from native_package import BINARIES, build_binaries
           from postgres_tools import postgres_bin
 
           runner = Path(sys.argv[1])
@@ -59,7 +59,7 @@ jobs:
           saved.mkdir()
           pg = postgres_bin()
           baseline = build_binaries(pg, target, "dev", False, source=Path("cutover-baseline"))
-          for binary in ("admin-cli", "api-gateway"):
+          for binary in BINARIES:
               shutil.copy2(baseline / binary, saved / binary)
           build_binaries(pg, target, "dev", False)
           PY
@@ -71,6 +71,7 @@ jobs:
           python3 -B scripts/smoke_release_cutover.py \
             --baseline-admin "$baseline/admin-cli" \
             --baseline-gateway "$baseline/api-gateway" \
+            --baseline-connector "$baseline/tokencraft" \
             --candidate-admin "$candidate/admin-cli" \
             --candidate-gateway "$candidate/api-gateway" \
-            --connector "$candidate/tokencraft"
+            --candidate-connector "$candidate/tokencraft"

@@ -135,10 +135,14 @@ def rehearse(args, folder, stack):
         with create_connection((smoke.HOST, EXAMPLE_CONNECTOR_PORT), timeout=1):
             return True
 
-    connectors = stack.enter_context(ExitStack())
     connector_env = dict(env, TOKENCRAFT_CONNECTOR_TOKEN_EXAMPLE=connector_key)
-    connectors.enter_context(smoke.service("bundled-connector", [args.connector, "example-connector", folder / "jobs"],
-                                           folder, connector_env, connector_ready))
+
+    def start_connector(binary, state, processes):
+        processes.enter_context(smoke.service(
+            "connector-" + state.name, [binary, "example-connector", state],
+            folder, connector_env, connector_ready,
+        ))
+
     common = dict(COOKIE_DOMAIN="localhost", COOKIE_SECURE="false", SESSION_SECRET=token_hex(32),
                   TOKENCRAFT_CORE_CATALOG=str(root / "examples/connector/catalog.json"),
                   TOKENCRAFT_CONNECTORS=str(root / "examples/connector/bindings.json"),
@@ -158,7 +162,9 @@ def rehearse(args, folder, stack):
         processes.enter_context(smoke.service(f"{role}-{port}", [binary], folder, settings, lambda: smoke.ready(port)))
         return port
 
+    jobs = folder / "jobs"
     with ExitStack() as upstream:
+        start_connector(args.baseline_connector, jobs, upstream)
         api = gateway(args.baseline_gateway, "api", upstream)
         session, account, project = smoke.provision(api)
         base = f"/v1/projects/{project}"
@@ -171,7 +177,7 @@ def rehearse(args, folder, stack):
         )
         auth = {"Authorization": "Bearer " + principal["token"]}
 
-        def submit_old(port, app_ref, *, notify=False):
+        def submit(port, app_ref, *, notify=False):
             quote, _ = smoke.call(
                 port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
                 body={"model": "example_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}},
@@ -188,20 +194,25 @@ def rehearse(args, folder, stack):
 
         with ExitStack() as run_old:
             gateway(args.baseline_gateway, "worker", run_old, delivery=False)
-            completed, completed_headers, completed_body = submit_old(api, "before-upgrade", notify=True)
+            completed, completed_headers, completed_body = submit(api, "before-upgrade", notify=True)
             contents = read_image(api, completed, auth)
-        queued, queued_headers, queued_body = submit_old(api, "pending-upgrade")
+        queued, queued_headers, queued_body = submit(api, "pending-upgrade")
         assert smoke.call(api, queued["status_url"], 200, headers=auth)[0]["status"] == "queued"
         payload = (
             "SELECT encode(convert_to(payload, 'UTF8'), 'hex') "
             "FROM public.gateway_webhook_deliveries WHERE request_id IS NOT NULL"
         )
         legacy_hex = psql(payload)
-        assert legacy_hex and receiver.received.empty()
+        handle_query = (
+            "SELECT p.upstream_handle FROM public.gateway_provider_runs p "
+            "JOIN public.gateway_requests r ON r.id = p.request_id WHERE r.app_ref = "
+        )
+        handle = psql(handle_query + "'before-upgrade'")
+        assert legacy_hex and handle and receiver.received.empty()
 
     dump = folder / "before-upgrade.dump"
     saved_jobs = folder / "before-upgrade-jobs"
-    shutil.copytree(folder / "jobs", saved_jobs)
+    shutil.copytree(jobs, saved_jobs)
     run(pg / "pg_dump", "--format=custom", "--file", dump, "postgres", settings=pg_env)
     run(args.candidate_admin, "migrate", settings=owner)
     grant()
@@ -220,39 +231,78 @@ def rehearse(args, folder, stack):
         returned, _ = smoke.call(port, "/v1/requests", 200, method="POST", headers=headers, body=body)
         assert returned == receipt
 
+    connector_auth = {"Authorization": "Bearer " + connector_key}
+
+    def verify_connector_state():
+        saved, response = smoke.call(
+            EXAMPLE_CONNECTOR_PORT, f"/v1/jobs/{handle}/artifacts/0", 200, headers=connector_auth,
+        )
+        assert response.get_content_type() == "image/png"
+        assert saved == contents
+
+    def verify_legacy_delivery(port):
+        delivery = smoke.verify_signed_delivery(
+            port, base + "/webhook-deliveries", query, session, receiver, subscription, "request.succeeded",
+            {"request_id": completed["id"], "project_id": project, "status": "succeeded",
+             "fetch_url": completed["status_url"]},
+            expected_payload=bytes.fromhex(legacy_hex),
+        )
+        assert delivery["request_id"] == completed["id"]
+
+    def verify_usage(port, *references):
+        for reference in references:
+            usage, _ = smoke.call(port, "/v1/usage?app_ref=" + reference, 200, headers=auth)
+            assert usage["totals"]["requests"] == usage["totals"]["succeeded"] == 1
+
     with ExitStack() as upgraded:
+        start_connector(args.candidate_connector, jobs, upgraded)
+        verify_connector_state()
         api = gateway(args.candidate_gateway, "api", upgraded)
         gateway(args.candidate_gateway, "worker", upgraded)
         replay(api, completed, completed_headers, completed_body)
         replay(api, queued, queued_headers, queued_body)
         assert read_image(api, completed, auth) == contents
-        read_image(api, queued, auth)
-        for reference in ("before-upgrade", "pending-upgrade"):
-            usage, _ = smoke.call(api, "/v1/usage?app_ref=" + reference, 200, headers=auth)
-            assert usage["totals"]["requests"] == usage["totals"]["succeeded"] == 1
-        signed = smoke.verify_signed_delivery(
-            api, base + "/webhook-deliveries", query, session, receiver, subscription, "request.succeeded",
-            {"request_id": completed["id"], "project_id": project, "status": "succeeded",
-             "fetch_url": completed["status_url"]},
-            expected_payload=bytes.fromhex(legacy_hex),
-        )
-        assert signed["request_id"] == completed["id"]
+        queued_contents = read_image(api, queued, auth)
+        upgraded_only, upgrade_headers, upgrade_body = submit(api, "after-upgrade")
+        read_image(api, upgraded_only, auth)
+        upgraded_handle = psql(handle_query + "'after-upgrade'")
+        assert upgraded_handle and upgraded_handle != handle
+        replay(api, upgraded_only, upgrade_headers, upgrade_body)
+        verify_usage(api, "before-upgrade", "pending-upgrade", "after-upgrade")
+        verify_legacy_delivery(api)
         assert psql(payload) == legacy_hex
-    print("PASS the upgraded API replayed old receipts, preserved artifact bytes, resumed pending work, and sent the legacy event", flush=True)
+    print("PASS the upgraded fleet loaded legacy connector state, finished queued and new work, and sent the legacy event", flush=True)
 
     run(pg / "createdb", "rollback_rehearsal", settings=pg_env)
     run(pg / "pg_restore", "--exit-on-error", "--single-transaction", "-d", "rollback_rehearsal", dump, settings=pg_env)
     rollback_runtime = cli("tokencraft_runtime", runtime_password, "rollback_rehearsal")
     check_schema(rollback_runtime, "upgrade_required", database=str(BASELINE_SCHEMA), pending=pending)
-    connectors.close()
+    assert receiver.received.empty()
+    receiver.seen.clear()
+
     with ExitStack() as restored:
-        restored.enter_context(smoke.service("restored-connector", [args.connector, "example-connector", saved_jobs],
-                                             folder, connector_env, connector_ready))
+        start_connector(args.baseline_connector, saved_jobs, restored)
+        verify_connector_state()
+        smoke.call(EXAMPLE_CONNECTOR_PORT, f"/v1/jobs/{upgraded_handle}", 404, headers=connector_auth)
         api = gateway(args.baseline_gateway, "api", restored, database="rollback_rehearsal")
         replay(api, completed, completed_headers, completed_body)
+        replay(api, queued, queued_headers, queued_body)
         assert read_image(api, completed, auth) == contents
         assert smoke.call(api, queued["status_url"], 200, headers=auth)[0]["status"] == "queued"
-    print("PASS separate rollback restored the old gateway, original auth and receipts, and pre-upgrade request state", flush=True)
+        smoke.call(api, upgraded_only["status_url"], 404, headers=auth)
+
+        gateway(args.baseline_gateway, "worker", restored, database="rollback_rehearsal")
+        assert read_image(api, queued, auth) == queued_contents
+        restored_only, restored_headers, restored_body = submit(api, "after-rollback")
+        read_image(api, restored_only, auth)
+        replay(api, restored_only, restored_headers, restored_body)
+        verify_usage(api, "before-upgrade", "pending-upgrade", "after-rollback")
+        verify_legacy_delivery(api)
+    assert psql("SELECT count(*) FROM public.gateway_requests "
+                "WHERE app_ref = 'after-upgrade' AND succeeded_at IS NOT NULL") == "1"
+    assert psql("SELECT count(*) FROM public.gateway_requests WHERE app_ref = 'after-rollback'") == "0"
+    print("PASS the restored prior fleet replayed receipts, completed queued and new work, and delivered the original signed event", flush=True)
+    print("PASS the rollback snapshot excluded the post-cutover request and connector job while the upgraded database retained it", flush=True)
 
 
 def main():
@@ -261,7 +311,8 @@ def main():
     parser.add_argument("--baseline-gateway", type=Path, required=True)
     parser.add_argument("--candidate-admin", type=Path, required=True)
     parser.add_argument("--candidate-gateway", type=Path, required=True)
-    parser.add_argument("--connector", type=Path, required=True)
+    parser.add_argument("--baseline-connector", type=Path, required=True)
+    parser.add_argument("--candidate-connector", "--connector", type=Path, required=True)
     args = argparse.Namespace(**{key: value.resolve(strict=True) for key, value in vars(parser.parse_args()).items()})
     os.umask(0o077)
     with TemporaryDirectory(prefix="tokencraft-release-cutover-") as temp, ExitStack() as stack:

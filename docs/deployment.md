@@ -92,7 +92,7 @@ Migration 85 includes the optional client reference in newly queued native reque
 
 ### Rehearse the cutover before release
 
-The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. It checks preflight, receipt replay, artifact and webhook bytes, completion of queued work, and rollback to the older gateway with independently restored database and connector state.
+The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. It checks preflight, then runs the API, worker, and bundled connector from each release. The rehearsal verifies receipt replay, artifact and webhook bytes, and completion of queued and new work after both cutover and rollback. The rollback runs against an independent database and connector snapshot.
 
 Run the same rehearsal from a source checkout with matching binaries, PostgreSQL 17, OpenSSL, and loopback port 4019 available.
 
@@ -100,9 +100,10 @@ Run the same rehearsal from a source checkout with matching binaries, PostgreSQL
 python3 -B scripts/smoke_release_cutover.py \
   --baseline-admin ./baseline/bin/admin-cli \
   --baseline-gateway ./baseline/bin/api-gateway \
+  --baseline-connector ./baseline/bin/tokencraft \
   --candidate-admin ./target/debug/admin-cli \
   --candidate-gateway ./target/debug/api-gateway \
-  --connector ./target/debug/tokencraft
+  --candidate-connector ./target/debug/tokencraft
 ```
 
 ## Connect existing compute endpoints
