@@ -96,7 +96,11 @@ def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT, sourc
     else:
         env["TOKENCRAFT_SOURCE_REVISION"] = source_revision
     directory = target / ("debug" if cargo_profile == "dev" else cargo_profile)
-    with TemporaryDirectory(prefix="tc-build-", dir="/tmp") as temp:
+    # Keep the PostgreSQL socket path short while letting the build database use TMPDIR.
+    with (
+        TemporaryDirectory(prefix="tc-build-") as temp,
+        TemporaryDirectory(prefix="tc-pg-", dir="/tmp") as socket_dir,
+    ):
         work = Path(temp)
         db = work / "postgres"
         log = work / "postgres.log"
@@ -104,10 +108,10 @@ def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT, sourc
         run([pg_bin / "initdb", "-D", db, "--username=tokencraft", "--locale=C",
              "--encoding=UTF8", "--auth-local=trust", "--auth-host=reject"],
             stdout=subprocess.DEVNULL)
-        options = shlex.join(["-k", str(work), "-c", "listen_addresses="])
+        options = shlex.join(["-k", socket_dir, "-c", "listen_addresses="])
         try:
             run([*settings, "-l", log, "-o", options, "-w", "start"])
-            build_env = {**env, "DATABASE_URL": f"postgresql://tokencraft@localhost/postgres?host={quote(temp, safe='')}"}
+            build_env = {**env, "DATABASE_URL": f"postgresql://tokencraft@localhost/postgres?host={quote(socket_dir, safe='')}"}
             run([*cargo, "-p", "tokencraft", "-p", "admin_cli"], cwd=source, env=build_env)
             run([directory / "admin-cli", "migrate"], cwd=work, env=build_env)
             run([*cargo, "-p", "api_gateway", "--bin", "api-gateway"], cwd=source, env=build_env)
