@@ -68,7 +68,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 83 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 84 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Deploy client-bound quote signing to the API replicas together. Refresh unused quotes issued before the upgrade. Requests already admitted replay with their original quote, payload, and idempotency key.
 
@@ -85,6 +85,8 @@ Migration 81 adds an optional customer reference to new terminal workflow webhoo
 Migration 82 indexes successful requests for scoped latency baselines. Schema-81 API and worker binaries can overlap with the new fleet after the index commits. The index build pauses writes to the request table, so apply it during the planned cutover window.
 
 Migration 83 indexes recent terminal media outcomes by scope and workload. Schema-82 gateway binaries can overlap after the index commits. Apply it during the cutover window because the index build pauses writes to the request table.
+
+Migration 84 aligns the database's WAV limit with the connector's 8 MiB limit. Schema-83 binaries can overlap after it commits. Apply it during the cutover window because validating the replacement constraint locks the artifact table.
 
 ### Rehearse the cutover before release
 
@@ -377,6 +379,8 @@ The Render launcher defaults `TOKENCRAFT_RENDER_MIGRATE_ON_START` to `false`. Ap
 For a new disposable Render demo, set `TOKENCRAFT_RENDER_MIGRATE_ON_START=true`. Startup can initialize an empty `public` schema and can verify an already compatible schema. Upgrading an existing database uses `admin-cli migrate` during the [deployment cutover](#cut-over-without-schema-overlap).
 
 ## Shared artifact storage
+
+Each API replica permits eight concurrent warm downloads of generated media, including generated workflow outputs. It reserves two additional slots for retained media and two for workflow tool outputs. The replica holds each slot until it releases the response buffer. When a limit is reached, retry the same download after the two-second `Retry-After` from the `503 artifact_download_capacity` response.
 
 Use a private S3-compatible bucket to serve generated media from multiple gateway and worker replicas. Apply migrations and upgrade both roles before enabling bucket writes. Configure these values on the API and workers. New artifacts use the bucket when configured. Keep the original `TOKENCRAFT_DEMO_ARTIFACT_DIR` mounted until existing filesystem results expire or archive. PostgreSQL continues to serve existing inline artifacts.
 

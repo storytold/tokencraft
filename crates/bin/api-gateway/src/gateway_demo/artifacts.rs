@@ -11,6 +11,7 @@ use axum::Extension;
 use db_queries::gateway_requests::artifacts::{self as db_artifacts, ArtifactData, NewArtifact};
 use ids::GatewayRequestId;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::access::{self, GatewayCaller, Permission, ScopeQuery};
 use super::archive_blobs::{BAD_OBJECT, IO_ERROR};
@@ -18,6 +19,7 @@ use super::artifact_storage::ArtifactStorage;
 use super::catalog::digest;
 use super::handlers::parse_request_id;
 use super::providers::ProviderRuntime;
+use super::response_bytes;
 use super::sealed::SealedBytes;
 use super::SHA256_HEADER;
 use crate::error::{ApiError, ApiResult};
@@ -29,7 +31,35 @@ pub(super) const WAV: &str = "audio/wav";
 pub(super) const GLB: &str = "model/gltf-binary";
 pub(super) const MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const MAX_VIDEO_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const MAX_AUDIO_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_MESH_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone)]
+pub(crate) struct DownloadCapacity {
+    warm: Arc<Semaphore>,
+    archived: Arc<Semaphore>,
+    tools: Arc<Semaphore>,
+}
+
+impl DownloadCapacity {
+    pub(super) fn new() -> Self {
+        Self {
+            // A request can publish up to eight images.
+            warm: Arc::new(Semaphore::new(8)),
+            archived: Arc::new(Semaphore::new(2)),
+            // Workflow tool outputs can be up to 32 MiB each.
+            tools: Arc::new(Semaphore::new(2)),
+        }
+    }
+
+    fn acquire(slots: &Arc<Semaphore>) -> ApiResult<OwnedSemaphorePermit> {
+        Arc::clone(slots).try_acquire_owned().map_err(|_| ApiError::ArtifactDownloadCapacity)
+    }
+
+    pub(super) fn tool(&self) -> ApiResult<OwnedSemaphorePermit> {
+        Self::acquire(&self.tools)
+    }
+}
 
 pub(super) struct FetchedImage {
     pub slot: i16,
@@ -254,25 +284,32 @@ impl utoipa::ToSchema for ArtifactBytes {}
             )
         ),
         (status = 404, description = "Artifact unavailable, expired, removed, or outside scope.", body = crate::error::GatewayError),
+        (status = 503, description = "Artifact download capacity or storage temporarily unavailable.", body = crate::error::GatewayError,
+         headers(("Retry-After" = u8, description = "Seconds to wait when download slots are busy."))),
         (status = "default", response = super::RequestErrorResponse),
     ),
 )]
 pub(super) async fn download(
     State(state): State<AppState>,
     Extension(runtime): Extension<Option<Arc<ProviderRuntime>>>,
+    Extension(capacity): Extension<DownloadCapacity>,
     caller: GatewayCaller,
     Query(scope): Query<ScopeQuery>,
     Path((raw, slot)): Path<(String, i16)>,
 ) -> ApiResult<Response> {
     let access = access::resolve(&state, caller, scope, Permission::ReadRequests).await?;
     let request = parse_request_id(&raw)?;
-    download_for_scope(ScopedDownload {
-        pool: &state.pool,
-        scope: access.scope(),
-        runtime: runtime.as_deref(),
-        request: &request,
-        slot,
-    }).await
+    download_for_scope(
+        ScopedDownload {
+            pool: &state.pool,
+            scope: access.scope(),
+            runtime: runtime.as_deref(),
+            request: &request,
+            slot,
+        },
+        &capacity,
+    )
+    .await
 }
 
 pub(super) struct ScopedDownload<'a> {
@@ -283,9 +320,13 @@ pub(super) struct ScopedDownload<'a> {
     pub slot: i16,
 }
 
-pub(super) async fn download_for_scope(input: ScopedDownload<'_>) -> ApiResult<Response> {
+pub(super) async fn download_for_scope(
+    input: ScopedDownload<'_>,
+    capacity: &DownloadCapacity,
+) -> ApiResult<Response> {
+    let permit = DownloadCapacity::acquire(&capacity.warm)?;
     let (bytes, content_type, sha256) = read_verified(input).await?;
-    respond(content_type, sha256, bytes)
+    respond(content_type, sha256, response_bytes::from_vec(bytes, permit))
 }
 
 pub(super) async fn read_verified(input: ScopedDownload<'_>) -> ApiResult<(Vec<u8>, String, String)> {
@@ -355,11 +396,14 @@ pub(super) fn verify_payload(
     params(("id" = String, Path, description = "Request ID"), ("slot" = i16, Path, description = "Artifact slot"), ScopeQuery),
     responses((status = 200, description = "Verified archived media", body = ArtifactBytes),
               (status = 409, description = "Object requires storage-side retrieval", body = crate::error::GatewayError),
+              (status = 503, description = "Retained artifact download capacity or storage temporarily unavailable.", body = crate::error::GatewayError,
+               headers(("Retry-After" = u8, description = "Seconds to wait when download slots are busy."))),
               (status = "default", response = super::RequestErrorResponse)),
 )]
 pub(crate) async fn download_archived(
     State(state): State<AppState>,
     Extension(runtime): Extension<Option<Arc<ProviderRuntime>>>,
+    Extension(capacity): Extension<DownloadCapacity>,
     caller: GatewayCaller,
     Query(scope): Query<ScopeQuery>,
     Path((raw, slot)): Path<(String, i16)>,
@@ -375,6 +419,7 @@ pub(crate) async fn download_archived(
     let store = runtime.content_archive.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("retained content storage is unavailable".into())
     })?;
+    let permit = DownloadCapacity::acquire(&capacity.archived)?;
     let plain = store
         .read_artifact(&record.target, &request, slot, record.byte_length as usize + 28)
         .await
@@ -400,10 +445,10 @@ pub(crate) async fn download_archived(
     {
         return Err(missing());
     }
-    respond(record.content_type, record.sha256, plain?)
+    respond(record.content_type, record.sha256, response_bytes::from_vec(plain?, permit))
 }
 
-fn respond(content_type: String, sha256: String, plain: Vec<u8>) -> ApiResult<Response> {
+fn respond(content_type: String, sha256: String, plain: Bytes) -> ApiResult<Response> {
     let invalid = || ApiError::Internal("could not verify stored artifact".into());
     let mut headers = HeaderMap::new();
     let (content_type, disposition) = match content_type.as_str() {
@@ -424,7 +469,7 @@ fn respond(content_type: String, sha256: String, plain: Vec<u8>) -> ApiResult<Re
         SHA256_HEADER,
         HeaderValue::from_str(&sha256).map_err(|_| invalid())?,
     );
-    Ok((headers, Bytes::from(plain)).into_response())
+    Ok((headers, plain).into_response())
 }
 
 impl MediaResult {

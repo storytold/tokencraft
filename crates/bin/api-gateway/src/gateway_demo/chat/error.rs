@@ -153,6 +153,11 @@ impl From<ApiError> for ChatError {
                 "export_capacity",
                 crate::error::EXPORT_CAPACITY_MESSAGE.into(),
             ),
+            ApiError::ArtifactDownloadCapacity => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "artifact_download_capacity",
+                crate::error::ARTIFACT_DOWNLOAD_CAPACITY_MESSAGE.into(),
+            ),
             ApiError::Internal(message) => {
                 tracing::error!(detail = %message, "chat compatibility handler failed");
                 (

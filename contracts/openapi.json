@@ -4441,6 +4441,26 @@
               }
             }
           },
+          "503": {
+            "description": "Artifact download capacity or storage temporarily unavailable.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait when download slots are busy."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
           "default": {
             "$ref": "#/components/responses/RequestErrorResponse"
           }
@@ -4671,6 +4691,26 @@
           },
           "409": {
             "description": "Object requires storage-side retrieval",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Retained artifact download capacity or storage temporarily unavailable.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait when download slots are busy."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

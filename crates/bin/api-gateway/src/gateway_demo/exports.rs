@@ -22,6 +22,7 @@ use super::{
     archive_blobs::ArchiveStorage,
     archive_events,
     catalog::digest,
+    response_bytes,
 };
 use crate::{
     error::{ApiError, ApiResult},
@@ -50,25 +51,6 @@ impl Capacity {
     pub(super) fn acquire(&self) -> ApiResult<OwnedSemaphorePermit> {
         Arc::clone(&self.0).try_acquire_owned().map_err(|_| ApiError::ExportCapacity)
     }
-}
-
-struct ExportBytes {
-    body: Vec<u8>,
-    _permit: OwnedSemaphorePermit,
-}
-
-impl AsRef<[u8]> for ExportBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.body
-    }
-}
-
-pub(super) fn response_bytes(body: Vec<u8>, permit: OwnedSemaphorePermit) -> Bytes {
-    // Retain the slot as long as the transport owns any view of the buffer.
-    Bytes::from_owner(ExportBytes {
-        body,
-        _permit: permit,
-    })
 }
 
 #[derive(Deserialize)]
@@ -355,7 +337,7 @@ async fn encode_page(
     let (body, checksum) = tokio::task::spawn_blocking(move || {
         let body = encode_events(events)?;
         let checksum = digest(&body);
-        Ok::<_, ApiError>((response_bytes(body, permit), checksum))
+        Ok::<_, ApiError>((response_bytes::from_vec(body, permit), checksum))
     })
     .await
     .map_err(|_| ApiError::Internal("could not encode export page".into()))??;
@@ -418,7 +400,7 @@ mod tests {
     #[test]
     fn response_bytes_retain_the_export_slot_until_the_last_view_is_released() {
         let capacity = Capacity::new(1);
-        let bytes = response_bytes(b"event".to_vec(), capacity.acquire().unwrap());
+        let bytes = response_bytes::from_vec(b"event".to_vec(), capacity.acquire().unwrap());
         let slice = bytes.slice(..1);
         drop(bytes);
         assert!(matches!(capacity.acquire(), Err(ApiError::ExportCapacity)));

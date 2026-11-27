@@ -55,6 +55,7 @@ mod capacity;
 mod request_capacity;
 mod submission_limits;
 mod request_location;
+mod response_bytes;
 pub(crate) mod request_content;
 mod requests;
 mod route_performance;
@@ -391,6 +392,7 @@ fn router(config: DemoConfig) -> Router<AppState> {
     router
         .layer(Extension(archive_storage))
         .layer(Extension(exports::Capacity::new(exports::MAX_EXPORTS_IN_FLIGHT)))
+        .layer(Extension(artifacts::DownloadCapacity::new()))
         .layer(DefaultBodyLimit::max(8192))
 }
 

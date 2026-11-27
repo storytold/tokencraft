@@ -824,6 +824,7 @@ pub(super) async fn asset(
     headers: HeaderMap,
     Extension(security): Extension<Arc<Security>>,
     Extension(providers): Extension<Option<Arc<ProviderRuntime>>>,
+    Extension(downloads): Extension<artifacts::DownloadCapacity>,
 ) -> ApiResult<Response> {
     let access = AccessInput {
         pool: &state.pool,
@@ -848,17 +849,21 @@ pub(super) async fn asset(
     {
         Some(Output::Image { request_id } | Output::Video { request_id }) => request_id,
         Some(Output::Tool { node, .. }) => {
-            return super::tool_execution::download(&state.pool, &security, &row, node, &path.name).await;
+            let permit = downloads.tool()?;
+            return super::tool_execution::download(&state.pool, &security, &row, node, &path.name, permit).await;
         }
         _ => return Err(management::missing()),
     };
-    artifacts::download_for_scope(artifacts::ScopedDownload {
-        pool: &state.pool,
-        scope: runner::scope(&row),
-        runtime: providers.as_deref(),
-        request,
-        slot: 0,
-    })
+    artifacts::download_for_scope(
+        artifacts::ScopedDownload {
+            pool: &state.pool,
+            scope: runner::scope(&row),
+            runtime: providers.as_deref(),
+            request,
+            slot: 0,
+        },
+        &downloads,
+    )
     .await
 }
 

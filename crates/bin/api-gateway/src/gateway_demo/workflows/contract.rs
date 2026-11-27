@@ -131,7 +131,8 @@ pub(super) fn document(graph: &Graph, endpoint: &str, version: i32) -> Value {
                 "description":"Fetch the download_url of a permitted output before its content expires.",
                 "responses":{
                     "200":{"description":"Artifact bytes in their original media type","content":{"*/*":{"schema":{"type":"string","format":"binary"}}}},
-                    "404":gateway_error,"default":gateway_error
+                    "404":gateway_error,"503":retry_response("The API replica is busy serving downloads. Retry the same output."),
+                    "default":gateway_error
                 }
             }
         });

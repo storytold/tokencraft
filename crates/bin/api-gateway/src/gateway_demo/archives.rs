@@ -27,6 +27,7 @@ use super::{
     catalog::digest,
     exports,
     readiness::Readiness,
+    response_bytes,
 };
 use crate::{
     error::{ApiError, ApiResult},
@@ -296,7 +297,7 @@ async fn data(
         exports::SHA256_HEADER,
         HeaderValue::from_str(&checksum).expect("verified SHA-256 hex is header-safe"),
     );
-    Ok((headers, exports::response_bytes(body, permit)))
+    Ok((headers, response_bytes::from_vec(body, permit)))
 }
 
 async fn scoped_archive(

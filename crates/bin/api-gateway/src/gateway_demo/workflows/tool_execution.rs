@@ -13,7 +13,10 @@ use super::runner::{self, Runtime, State};
 use super::tool_plugins::{Binding, Tool};
 use super::{uploads, Security};
 use crate::error::{ApiError, ApiResult};
-use crate::gateway_demo::artifacts::{self, ScopedDownload};
+use crate::gateway_demo::{
+    artifacts::{self, ScopedDownload},
+    response_bytes,
+};
 
 pub(super) const MAX_ARTIFACT: usize = 32 * 1024 * 1024;
 const MAX_INPUT_SUM: usize = 64 * 1024 * 1024;
@@ -169,6 +172,7 @@ pub(super) async fn copy_artifact(
 
 pub(super) async fn download(
     pool: &sqlx::PgPool, security: &Security, row: &db::Run, node: &str, name: &str,
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) -> ApiResult<Response> {
     let (bytes, content_type, sha256) = read_artifact(pool, security, row, node).await?;
     let extension = match content_type.as_str() {
@@ -199,7 +203,7 @@ pub(super) async fn download(
         (header::CACHE_CONTROL.as_str(), "private, no-store".into()),
         ("x-content-type-options", "nosniff".into()),
         ("x-tokencraft-content-sha256", sha256),
-    ], bytes).into_response())
+    ], response_bytes::from_vec(bytes, permit)).into_response())
 }
 
 async fn stage(

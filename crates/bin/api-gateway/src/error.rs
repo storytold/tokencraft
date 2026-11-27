@@ -26,6 +26,7 @@ pub(crate) const SUBMISSION_RATE_MESSAGE: &str = "organization submission rate l
 pub(crate) const QUOTE_STALE_MESSAGE: &str = "quote expired or changed; request a fresh comparison";
 
 pub(crate) const EXPORT_CAPACITY_MESSAGE: &str = "event exports are busy; retry shortly";
+pub(crate) const ARTIFACT_DOWNLOAD_CAPACITY_MESSAGE: &str = "artifact downloads are busy; retry shortly";
 
 #[derive(Debug)]
 pub enum ApiError {
@@ -42,6 +43,7 @@ pub enum ApiError {
   SubmissionRateLimit(i64),
   ProviderCredentialUnavailable,
   ExportCapacity,
+  ArtifactDownloadCapacity,
   NotImplemented(String),
   ServiceUnavailable(String),
   Internal(String),
@@ -60,7 +62,7 @@ impl ApiError {
       Self::ActiveRequestLimit | Self::SubmissionRateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
       Self::ProviderCredentialUnavailable => StatusCode::CONFLICT,
       Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
-      Self::ExportCapacity | Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+      Self::ExportCapacity | Self::ArtifactDownloadCapacity | Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
       Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
   }
@@ -79,6 +81,7 @@ impl ApiError {
       Self::SubmissionRateLimit(_) => "submission_rate_limit",
       Self::ProviderCredentialUnavailable => "provider_credential_unavailable",
       Self::ExportCapacity => "export_capacity",
+      Self::ArtifactDownloadCapacity => "artifact_download_capacity",
       Self::NotImplemented(_) => "not_implemented",
       Self::ServiceUnavailable(_) => "service_unavailable",
       Self::Internal(_) => "internal_error",
@@ -93,6 +96,7 @@ impl ApiError {
       Self::SubmissionRateLimit(_) => SUBMISSION_RATE_MESSAGE,
       Self::ProviderCredentialUnavailable => PROVIDER_CREDENTIAL_MESSAGE,
       Self::ExportCapacity => EXPORT_CAPACITY_MESSAGE,
+      Self::ArtifactDownloadCapacity => ARTIFACT_DOWNLOAD_CAPACITY_MESSAGE,
       Self::BadRequest(m)
       | Self::Unauthorized(m)
       | Self::Forbidden(m)
@@ -108,7 +112,7 @@ impl ApiError {
   pub(crate) fn retry_after(&self) -> Option<HeaderValue> {
     match self {
       Self::SubmissionRateLimit(seconds) => HeaderValue::from_str(&seconds.to_string()).ok(),
-      Self::ExportCapacity => Some(HeaderValue::from_static("2")),
+      Self::ExportCapacity | Self::ArtifactDownloadCapacity => Some(HeaderValue::from_static("2")),
       _ => None,
     }
   }

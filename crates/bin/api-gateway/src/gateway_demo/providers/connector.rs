@@ -621,7 +621,7 @@ impl ArtifactSpec {
         match self {
             Self::Png => (artifacts::PNG, artifacts::MAX_BYTES),
             Self::Mp4 => (artifacts::MP4, artifacts::MAX_VIDEO_BYTES),
-            Self::Wav => (artifacts::WAV, artifacts::MAX_VIDEO_BYTES),
+            Self::Wav => (artifacts::WAV, artifacts::MAX_AUDIO_BYTES),
             Self::Glb => (artifacts::GLB, artifacts::MAX_MESH_BYTES),
         }
     }

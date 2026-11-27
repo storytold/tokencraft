@@ -623,7 +623,9 @@ def verify_workflow(port, peer, session, account, project, stop_worker, restart_
     assert uploads["x-workflow-required-scope"] == "runs:submit"
     paths_run = endpoint + "/runs/{run_id}"
     assert paths[paths_run + "/cancel"]["post"]["x-workflow-required-scope"] == "runs:cancel"
-    assert paths[paths_run + "/outputs/{name}"]["get"]["x-workflow-required-scope"] == "outputs:read"
+    output_operation = paths[paths_run + "/outputs/{name}"]["get"]
+    assert output_operation["x-workflow-required-scope"] == "outputs:read"
+    assert "Retry-After" in output_operation["responses"]["503"]["headers"]
 
     uploaded, upload_headers = call(port, endpoint + "/uploads", 201, method="POST", body=png, headers={**auth, **file_headers})
     verify_json_response(spec, uploads, 201, uploaded, upload_headers)
