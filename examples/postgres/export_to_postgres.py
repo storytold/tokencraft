@@ -36,7 +36,7 @@ HTTP_DATE = re.compile(
     r"|[A-Z][a-z]{2} [A-Z][a-z]{2} (?:[0-9]{2}| [0-9]) [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}"
 )
 MAX_RETRY_AFTER = 3600
-PAGE_BYTES = 2 * 1024 * 1024
+PAGE_BYTES = 8 * 1024 * 1024
 SCHEMA_VERSION = 1
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 

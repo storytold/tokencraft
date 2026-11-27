@@ -1,4 +1,6 @@
-use std::sync::Arc;
+mod page;
+
+use std::{io::Write, sync::Arc};
 
 use axum::{
     Extension, Json,
@@ -175,10 +177,27 @@ pub(super) struct DataQuery {
 }
 
 #[derive(Serialize)]
-struct VersionedEvent {
+struct VersionedEvent<'a> {
     schema_version: u8,
     #[serde(flatten)]
-    event: ExportEvent,
+    event: &'a ExportEvent,
+}
+
+impl<'a> VersionedEvent<'a> {
+    fn new(event: &'a ExportEvent) -> ApiResult<Self> {
+        if event.data.is_none() {
+            return Err(ApiError::Internal("export event is missing its payload".into()));
+        }
+        Ok(Self {
+            schema_version: SCHEMA_VERSION,
+            event,
+        })
+    }
+
+    fn write(&self, output: &mut impl Write) -> serde_json::Result<()> {
+        serde_json::to_writer(&mut *output, self)?;
+        output.write_all(b"\n").map_err(serde_json::Error::io)
+    }
 }
 
 pub(super) async fn data(
@@ -324,6 +343,14 @@ async fn encode_page(
 ) -> ApiResult<(HeaderMap, Bytes)> {
     let has_more = archive_events::limit_page(&mut events, limit);
     archive_events::hydrate(pool, storage, scope, &mut events).await?;
+    let (body, checksum, last_id, has_more) = tokio::task::spawn_blocking(move || {
+        let page = page::encode(events, has_more)?;
+        let checksum = digest(&page.body);
+        let body = response_bytes::from_vec(page.body, permit);
+        Ok::<_, ApiError>((body, checksum, page.last_id, page.has_more))
+    })
+    .await
+    .map_err(|_| ApiError::Internal("could not encode export page".into()))??;
     let mut headers = HeaderMap::new();
     headers.insert(
         CONTENT_TYPE,
@@ -331,16 +358,9 @@ async fn encode_page(
     );
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(HAS_MORE_HEADER, bool_header(has_more));
-    if let Some(last) = events.last() {
-        headers.insert(NEXT_AFTER_HEADER, header_value(&last.id));
+    if let Some(last_id) = last_id {
+        headers.insert(NEXT_AFTER_HEADER, header_value(&last_id));
     }
-    let (body, checksum) = tokio::task::spawn_blocking(move || {
-        let body = encode_events(events)?;
-        let checksum = digest(&body);
-        Ok::<_, ApiError>((response_bytes::from_vec(body, permit), checksum))
-    })
-    .await
-    .map_err(|_| ApiError::Internal("could not encode export page".into()))??;
     headers.insert(SHA256_HEADER, header_value(&checksum));
     Ok((headers, body))
 }
@@ -348,22 +368,15 @@ async fn encode_page(
 pub(super) fn encode_events(events: Vec<ExportEvent>) -> ApiResult<Vec<u8>> {
     let mut body = Vec::new();
     for event in events {
-        if event.data.is_none() {
-            return Err(ApiError::Internal(
-                "export event is missing its payload".into(),
-            ));
-        }
-        serde_json::to_writer(
-            &mut body,
-            &VersionedEvent {
-                schema_version: SCHEMA_VERSION,
-                event,
-            },
-        )
-        .map_err(|_| ApiError::Internal("could not encode export event".into()))?;
-        body.push(b'\n');
+        VersionedEvent::new(&event)?
+            .write(&mut body)
+            .map_err(|_| encode_error())?;
     }
     Ok(body)
+}
+
+fn encode_error() -> ApiError {
+    ApiError::Internal("could not encode export event".into())
 }
 
 pub(super) async fn scoped_snapshot(

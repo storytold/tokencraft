@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from hashlib import sha256
 from http.client import HTTPConnection
+import importlib.util
 import json
 from pathlib import Path
 from secrets import token_hex
@@ -100,6 +101,7 @@ def verify_archive_download_capacity(port, path, reader, client, project, expect
 
     wait_for_status(port, receipt, client, "succeeded", 18)
     print("PASS stalled archive downloads applied backpressure and left scoped exports and admission available")
+    return receipt["id"]
 
 
 def verify_export_backpressure(port, directory, psql, pg_env, project, auth):
@@ -153,6 +155,35 @@ def verify_export_backpressure(port, directory, psql, pg_env, project, auth):
     wait_for_status(port, receipt, auth, "succeeded", 18)
     assert call(port, path, 200, headers=auth)[0] == expected
     print("PASS export backpressure capped blocked reads and preserved admission, status and exact snapshot bytes")
+
+
+def verify_byte_paging(port, project, auth, archived):
+    spec = importlib.util.spec_from_file_location("export_to_postgres", ROOT / "examples/postgres/export_to_postgres.py")
+    importer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(importer)
+    base = f"http://{HOST}:{port}"
+    token = auth["Authorization"].removeprefix("Bearer ")
+    binding = {"project": project, "client": ""}
+    snapshot, _ = call(port, "/v1/exports", 201, method="POST", headers=auth, body={"project_id": project})
+    snapshot_path = f"/v1/exports/{snapshot['id']}/data"
+
+    def download(path, **query):
+        cursor, pages = "", []
+        for _ in range(32):
+            params = {**query, **({"after": cursor} if cursor else {})}
+            payload, headers = importer.gateway(base, token, path + "?" + urlencode(params))
+            _, cursor, more = importer.read_page(payload, headers, binding, cursor)
+            pages.append(payload)
+            if more == "false":
+                return pages
+        raise AssertionError("export did not reach the final cursor")
+
+    expected = b"".join(download(snapshot_path, limit=1))
+    assert expected.startswith(archived) and len(expected) > MAX_ARCHIVE_BYTES
+    for pages in (download(snapshot_path), download("/v1/exports/events", project_id=project)):
+        assert sum(len(page) >= 5 * 1024 * 1024 for page in pages) == 2
+        assert b"".join(pages) == expected
+    print("PASS live and snapshot pages split between large archived and hot events with exact importer cursors")
 
 
 def verify(gateway, directory, settings, session, account, project):
@@ -363,8 +394,15 @@ def verify(gateway, directory, settings, session, account, project):
             assert rejected.returncode != 0 and setting.encode() in rejected.stderr
             assert b"fixture-secret-marker" not in rejected.stdout + rejected.stderr
         print("PASS malformed archive keys failed startup without exposing the supplied bytes")
-        verify_archive_download_capacity(port, old_data, project_reader, clients[0], project, archive_data, first_page)
+        new_request = verify_archive_download_capacity(
+            port, old_data, project_reader, clients[0], project, archive_data, first_page,
+        )
         verify_export_backpressure(port, directory, psql, pg_env, project, clients[0])
+        advance_fixture_clock("UPDATE gateway_export_events "
+                              "SET data = data || jsonb_build_object('fixture_padding', repeat('h', 5 * 1024 * 1024)) "
+                              "WHERE request_id = :'request' AND event_type = 'request.succeeded';",
+                              request=new_request)
+        verify_byte_paging(port, project, project_reader, expected_project)
 
 
 def main():

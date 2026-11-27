@@ -40,6 +40,8 @@ The watcher drains available pages, polls when caught up, and retries temporary 
 
 Creating snapshots, polling the live feed, and downloading snapshot pages share four slots per API replica. A busy replica returns `503 export_capacity` with `Retry-After: 2`. Retry the same scoped cursor after the delay. The replica reserves the slot until it releases the response bytes.
 
+Live feed and snapshot pages contain up to 8 MiB of complete NDJSON records, including line endings. Byte limits can shorten a page before the requested event count. Follow `X-TokenCraft-Has-More` and resume at `X-TokenCraft-Next-After`, which identifies the last complete event in the page. The PostgreSQL importer accepts this limit for both live and restored history.
+
 To implement another destination, use the same contract.
 
 | Operation | Endpoint |
