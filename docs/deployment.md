@@ -68,7 +68,7 @@ Run `admin-cli schema-status` from the target build using the gateway runtime ro
 3. Apply the new image's migrations and [runtime grants](#separate-migration-and-runtime-roles). Check the schema with that image's `admin-cli schema-status` using the runtime role, then start the new API and workers and check readiness. Run the [hosted smoke check](#run-behind-an-https-ingress) against the live gateway origin and verify an existing scoped session or key, request receipt, artifact, and usage before reopening submissions.
 4. If recovery is needed, start the old image against the separately restored database and verify the original request and artifact before switching traffic. Preserve the upgraded database and reconcile any writes accepted after the backup before resuming admissions on the restored database.
 
-A schema-70 fleet can move directly to schema 82 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
+A schema-70 fleet can move directly to schema 83 in one coordinated cutover. Apply all pending migrations with the target build, then reapply the runtime grants before restarting the fleet.
 
 Use a drain and restart for the schema 64 to 70 upgrade and upgrades from schema 70, 74, or 75 to schema 76 or 77. Migrations 71 through 74 add the workflow tables, migration 75 adds app-scoped terminal events, and migration 76 adds workflow budget reservations. Reapply the runtime grants after migrating. If you enable [Workflows](workflows.md), set the same persistent workflow key on both roles and verify a draft run and a published run with a scoped app key. Verify a signed terminal event when workflow webhook delivery is enabled.
 
@@ -81,6 +81,8 @@ Use a coordinated drain and restart when moving to schema 80. Published workflow
 Migration 81 adds an optional customer reference to new terminal workflow webhook events. Schema-80 API and worker binaries can overlap with the new fleet. Existing queued deliveries keep their original payload bytes and runtime grants carry forward.
 
 Migration 82 indexes successful requests for scoped latency baselines. Schema-81 API and worker binaries can overlap with the new fleet after the index commits. The index build pauses writes to the request table, so apply it during the planned cutover window.
+
+Migration 83 indexes recent terminal media outcomes by scope and workload. Schema-82 gateway binaries can overlap after the index commits. Apply it during the cutover window because the index build pauses writes to the request table.
 
 ### Rehearse the cutover before release
 
@@ -442,6 +444,8 @@ The migration history keeps the original SQL files and checksums. The core worke
 ## Routing policy precedence
 
 Provider preferences take the first configured value from the request, project, or organization. They apply to named models and to `model: "auto"`. Eligible offers are ranked by provider preference first and then by the configured ranking within that group. Send `preferred_providers: []` to rank by the lowest estimate. Automatic model selection also resolves minimum community quality and recent usage from the request, project, or organization. Hard budgets, provider allowlists, and data-handling requirements still apply.
+
+Reliability and settled-cost ranking use up to 100 matching outcomes per offer from the previous seven days in the same project and client scope. They match the workload, accepted binding, upstream model, served offer, and saved output shape. Both strategies require 20 samples per eligible offer in the group. Settled-cost ranking uses completed UTC days and compares outcomes served on the originally quoted offer at the current estimate. It requires a settlement for each sample, comparable output shapes, and at least one completion in the group.
 
 ## Balance API replicas within a cell
 

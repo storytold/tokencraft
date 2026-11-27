@@ -26,26 +26,6 @@ pub async fn recent_outcomes<'e>(
         r#"WITH bounds AS (
              SELECT CASE WHEN $8::boolean THEN date_trunc('day', statement_timestamp(), 'UTC')
                          ELSE statement_timestamp() END AS until
-           ), recent AS MATERIALIZED (
-             SELECT r.id, r.sid, r.quote, r.offer_id, r.succeeded_at, r.uncertain_at,
-                    r.failed_at, r.adapter, r.estimated_usd_nanos
-             FROM gateway_requests r CROSS JOIN bounds w
-             WHERE r.account_id = $1 AND r.project_id = $2
-               AND (r.client_ref = $3::text OR ($3 IS NULL AND r.client_ref IS NULL))
-               AND r.created_at >= w.until - $6::integer * interval '24 hours'
-               AND (NOT $8::boolean OR r.created_at < w.until)
-             ORDER BY r.sid DESC LIMIT 2000
-           ), observed AS MATERIALIZED (
-             SELECT r.id, r.sid, r.quote, r.offer_id AS original_offer_id, r.estimated_usd_nanos,
-                    coalesce(p.route_retries->-1->'decision'->>'next_offer_id', r.offer_id) AS offer_id,
-                    p.binding_digest, p.upstream_model, p.accepted_at, r.succeeded_at, r.uncertain_at
-             FROM recent r JOIN gateway_provider_runs p ON p.request_id = r.id CROSS JOIN bounds w
-             WHERE (NOT $8::boolean OR coalesce(r.succeeded_at, r.uncertain_at, r.failed_at) < w.until)
-               AND r.adapter IN ('fal_queue', 'kinovi_queue', 'connector_queue')
-               AND r.quote #> '{input,workload}' = $4::jsonb
-               AND p.accepted_at IS NOT NULL
-               AND (r.succeeded_at IS NOT NULL OR r.uncertain_at IS NOT NULL
-                    OR (r.failed_at IS NOT NULL AND p.error_code = 'provider_generation_failed'))
            )
            SELECT offer.id AS "offer_id!", stats.samples AS "samples!",
                   stats.succeeded AS "succeeded!", stats.unconfirmed AS "unconfirmed!", stats.median_ms,
@@ -53,7 +33,7 @@ pub async fn recent_outcomes<'e>(
            FROM jsonb_to_recordset($5::jsonb) AS offer (
                id text, binding_digest text, upstream_model text,
                applied_aspect_ratio text, output_size jsonb, estimated_usd_nanos bigint
-           )
+           ) CROSS JOIN bounds w
            CROSS JOIN LATERAL (
              SELECT count(*) AS samples, count(sample.succeeded_at) AS succeeded,
                     count(sample.uncertain_at) AS unconfirmed,
@@ -63,15 +43,36 @@ pub async fn recent_outcomes<'e>(
                     count(settled.amount_usd_nanos) AS settled_samples,
                     sum(settled.amount_usd_nanos)::text AS settled_usd_nanos
              FROM (
-               SELECT o.id, o.succeeded_at, o.uncertain_at, o.accepted_at FROM observed o
-               WHERE o.offer_id = offer.id AND o.binding_digest = offer.binding_digest
-                 AND o.upstream_model = offer.upstream_model
-                 AND (NOT $8::boolean OR (o.original_offer_id = o.offer_id
-                         AND o.estimated_usd_nanos = offer.estimated_usd_nanos))
-                 AND (o.quote #>> '{candidates,0,applied_aspect_ratio}') IS NOT DISTINCT FROM offer.applied_aspect_ratio
-                 AND nullif(o.quote #> '{candidates,0,output_size}', 'null'::jsonb)
+               SELECT r.id, r.succeeded_at, r.uncertain_at, p.accepted_at
+               FROM gateway_requests r JOIN gateway_provider_runs p ON p.request_id = r.id
+               JOIN LATERAL (
+                   SELECT candidate
+                   FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(r.quote->'candidates') = 'array'
+                            THEN r.quote->'candidates' ELSE '[]'::jsonb END
+                   ) AS candidate
+                   WHERE candidate->>'offer_id' = offer.id
+                   LIMIT 1
+               ) saved ON true
+               WHERE r.account_id = $1 AND r.project_id = $2
+                 AND coalesce(r.client_ref, '') = coalesce($3::text, '')
+                 AND r.created_at >= w.until - $6::integer * interval '24 hours'
+                 AND r.created_at < w.until
+                 AND r.adapter IN ('fal_queue', 'kinovi_queue', 'connector_queue')
+                 AND (r.succeeded_at IS NOT NULL OR r.uncertain_at IS NOT NULL OR r.failed_at IS NOT NULL)
+                 AND coalesce(r.succeeded_at, r.uncertain_at, r.failed_at) < w.until
+                 AND (r.failed_at IS NULL OR p.error_code = 'provider_generation_failed')
+                 AND jsonb_hash_extended(r.quote #> '{input,workload}', 0) = jsonb_hash_extended($4::jsonb, 0)
+                 AND r.quote #> '{input,workload}' = $4::jsonb
+                 AND p.accepted_at IS NOT NULL
+                 AND coalesce(p.route_retries->-1->'decision'->>'next_offer_id', r.offer_id) = offer.id
+                 AND p.binding_digest = offer.binding_digest AND p.upstream_model = offer.upstream_model
+                 AND (NOT $8::boolean OR (r.offer_id = offer.id
+                         AND r.estimated_usd_nanos = offer.estimated_usd_nanos))
+                 AND saved.candidate->>'applied_aspect_ratio' IS NOT DISTINCT FROM offer.applied_aspect_ratio
+                 AND nullif(saved.candidate->'output_size', 'null'::jsonb)
                      IS NOT DISTINCT FROM offer.output_size
-               ORDER BY o.sid DESC LIMIT $7
+               ORDER BY r.created_at DESC, r.sid DESC LIMIT $7
              ) sample
              LEFT JOIN LATERAL (
                SELECT s.amount_usd_nanos FROM gateway_supplier_settlements s
