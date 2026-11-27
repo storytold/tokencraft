@@ -6,6 +6,7 @@ api=${1:-http://localhost:4000}
 worker=${2:-http://localhost:4001}
 api_peer=${3:-http://localhost:4002}
 : "${TOKENCRAFT_RUNTIME_APP_PASSWORD:?Set the fixture runtime password}"
+: "${TOKENCRAFT_CAPACITY_TOKEN:?Set the fixture capacity token}"
 scratch=$(mktemp -d)
 cookie=$scratch/cookie
 trap 'rm -rf -- "$scratch"' EXIT
@@ -29,6 +30,21 @@ ready() {
 ready "$api"
 ready "$worker"
 ready "$api_peer"
+process_id() {
+    local origin=$1 role=$2 worker_status=$3
+    http --fail -H "Authorization: Bearer $TOKENCRAFT_CAPACITY_TOKEN" "$origin/internal/capacity" |
+        jq -er --arg role "$role" --arg worker_status "$worker_status" '
+            select(.role == $role and .ready and .checks.migrations == "ready" and .checks.worker == $worker_status)
+            | .instance_id | select(type == "string" and test("^[0-9a-f]{32}$"))'
+}
+api_id=$(process_id "$api" api external)
+peer_id=$(process_id "$api_peer" api external)
+worker_id=$(process_id "$worker" worker ready)
+test "$api_id" != "$peer_id"
+test "$api_id" != "$worker_id"
+test "$peer_id" != "$worker_id"
+echo "Two API replicas and a separate worker reported distinct ready process identities."
+
 http --fail "$api/v1/catalog/models" |
     jq -e '[.models[].id] == ["runtime_image"]' >/dev/null
 test "$(http --output /dev/null --write-out '%{http_code}' "$worker/v1/catalog/models")" = 404
@@ -39,8 +55,6 @@ signup=$(jq -nc --arg email "runtime-$(openssl rand -hex 8)@example.test" \
 http --fail --cookie-jar "$cookie" -H 'Content-Type: application/json' \
     -d "$signup" "$api/v1/auth/signup" >/dev/null
 account=$(http --fail --cookie "$cookie" "$api/v1/accounts" | jq -er '.accounts[0].account_id')
-http --fail --cookie "$cookie" "$api/v1/setup/status?account_id=$account" |
-    jq -e '.ready and .migrations == "ready" and .worker == "external"' >/dev/null
 
 project=$(http --fail --cookie "$cookie" -H 'Content-Type: application/json' \
     -d '{"name":"Gateway image"}' "$api/v1/projects?account_id=$account" | jq -er '.id')

@@ -11,6 +11,7 @@ x-gateway: &gateway
     COOKIE_SECURE: "false"
     COOKIE_DOMAIN: localhost
     SESSION_SECRET: "${TOKENCRAFT_RUNTIME_SESSION_SECRET:?Set the fixture session secret}"
+    TOKENCRAFT_CAPACITY_TOKEN: "${TOKENCRAFT_CAPACITY_TOKEN:?Set the fixture capacity token}"
     TOKENCRAFT_CORE_CATALOG: /fixtures/catalog.json
   volumes:
     - ./runtime-catalog.json:/fixtures/catalog.json:ro
@@ -91,6 +92,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       TOKENCRAFT_RUNTIME_APP_PASSWORD: "${TOKENCRAFT_RUNTIME_APP_PASSWORD:?Set the fixture runtime password}"
+      TOKENCRAFT_CAPACITY_TOKEN: "${TOKENCRAFT_CAPACITY_TOKEN:?Set the fixture capacity token}"
     tmpfs:
       - /tmp:mode=1777,size=16m
     volumes:

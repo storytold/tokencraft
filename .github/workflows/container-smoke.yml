@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Verify the container context and native package inputs
+        run: python3 -B -m unittest discover -s scripts -p test_native_package.py
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -90,6 +92,7 @@ jobs:
           export TOKENCRAFT_RUNTIME_DB_PASSWORD="$(openssl rand -hex 24)"
           export TOKENCRAFT_RUNTIME_APP_PASSWORD="$(openssl rand -hex 24)"
           export TOKENCRAFT_RUNTIME_SESSION_SECRET="$(openssl rand -hex 32)"
+          export TOKENCRAFT_CAPACITY_TOKEN="$(openssl rand -hex 32)"
           runtime=(docker compose -p tokencraft-runtime-ci -f .github/fixtures/container/runtime.compose.yaml)
           cleanup() {
             local status=$?

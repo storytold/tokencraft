@@ -18,6 +18,22 @@ from native_package import (
 
 
 class NativePackageInputsTest(unittest.TestCase):
+    def test_container_context_keeps_package_inputs_and_limits_directory_includes(self):
+        root = native_package.ROOT
+        rules = [line for line in (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+                 if line and not line.startswith("#")]
+        self.assertEqual(rules[0], "**")
+        includes = {rule[1:] for rule in rules if rule.startswith("!")}
+        source_trees = {rule for rule in ("crates/**", "sdk/rust/**") if rule in includes}
+        paths = includes - source_trees
+        unexpected = sorted(path for path in paths if not (root / path).is_file())
+        self.assertEqual(unexpected, [], "Use named files outside the Rust source trees.")
+
+        inputs = {path.relative_to(root).as_posix() for path in native_package.package_assets().values()}
+        missing = sorted(path for path in inputs - paths
+                         if not any(path.startswith(tree.removesuffix("**")) for tree in source_trees))
+        self.assertEqual(missing, [], "Include all native package inputs in the Docker context.")
+
     def test_reports_all_missing_release_inputs_before_looking_up_build_tools(self):
         missing = {"SECURITY.md", "frontend/public/design/index.html"}
         with TemporaryDirectory() as directory, patch.object(native_package, "ROOT", Path(directory)):
