@@ -14,6 +14,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Verify interactive design source references
+        run: python3 -B -m unittest discover -s scripts -p test_design_contract.py
       - name: Verify the native package manifest and guides
         run: python3 -B -m unittest discover -s scripts -p test_native_package.py
       - name: Verify the authenticated smoke check readiness guard
