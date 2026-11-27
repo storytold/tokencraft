@@ -38,6 +38,16 @@ To store objects in a private path-style S3-compatible bucket, configure these s
 
 Grant bucket credentials `s3:GetObject` and `s3:PutObject` for the configured object prefix. Grant `s3:DeleteObject` for cleanup of failed staged writes and `s3:RestoreObject` when enabling retrieval requests. [S3 permissions by operation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-policy-actions.html)
 
+## Rotate the event archive key
+
+A gateway deployment uses `TOKENCRAFT_DEMO_ARCHIVE_KEY` for new seals. Set `TOKENCRAFT_DEMO_ARCHIVE_READ_KEYS` to a comma-separated list of up to eight distinct additional 32-byte hex keys. The API and workers can read, restore, and retire archives sealed with any configured key. Leave the read setting unset for a deployment with one key.
+
+1. Back up the existing keys and introduce the new key in the read list across every API and worker. Deploy a build with read-key support to all replicas before promoting the new key.
+2. Roll the API and workers again with the new key as `TOKENCRAFT_DEMO_ARCHIVE_KEY`. Replace its read-list entry with the former write key and keep any other historical keys. Both configurations can read objects created during the rollout.
+3. Verify a download from before the rotation and a newly sealed archive. Retain the historical keys with the archive recovery material for as long as their objects are needed. Use a build with read-key support when rolling back after the first seal with the new key.
+
+Rotation applies to new event archive objects. Existing objects keep their encryption, including cold objects. Store the keys in the deployment's secret store and include them in recovery exercises.
+
 ## Schedule sealing and move payloads to cold storage
 
 1. Set `TOKENCRAFT_DEMO_ARCHIVE_AUTO_AFTER_DAYS` to an age from 1 to 3650 days. Each scheduled seal takes the next contiguous range of up to 1,000 published events older than midnight UTC at the selected age.

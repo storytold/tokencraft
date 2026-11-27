@@ -198,7 +198,8 @@ def verify(gateway, directory, settings, session, account, project):
         }.items()})
         stack.enter_context(service("archive-api", [gateway], directory, settings, lambda: ready(port)))
         worker = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
-        stack.enter_context(service("archive-worker", [gateway], directory, worker, lambda: ready(worker_port)))
+        workers = stack.enter_context(ExitStack())
+        workers.enter_context(service("archive-worker", [gateway], directory, worker, lambda: ready(worker_port)))
         stack.callback(bucket.release_verification.set)
 
         def key(name, scopes, client=None):
@@ -315,8 +316,47 @@ def verify(gateway, directory, settings, session, account, project):
         assert len(bucket.restore_requests) == 1
         assert connector.jobs == {identifier: 1 for identifier in receipts}
         print("PASS the administrator's retrieval superseded in-flight verification and the original cursor resumed")
-        verify_archive_download_capacity(port, archive + "/data", project_reader, clients[0],
-                                         project, archive_data, first_page)
+        next_key = token_hex(32)
+        read_keys = "TOKENCRAFT_DEMO_ARCHIVE_READ_KEYS"
+        write_key = "TOKENCRAFT_DEMO_ARCHIVE_KEY"
+        old_data = archive + "/data"
+        rotated = {write_key: next_key, read_keys: settings[write_key]}
+
+        def additional_reader(name, keys):
+            api_port = loopback_port()
+            stack.enter_context(service(name, [gateway], directory,
+                                        {**settings, **keys, "API_GATEWAY_PORT": str(api_port)},
+                                        lambda: ready(api_port)))
+            return api_port
+
+        preloaded = additional_reader("archive-api-preloaded", {read_keys: next_key})
+        promoted = additional_reader("archive-api-promoted", rotated)
+        historical, _ = call(promoted, old_data, 200, headers=project_reader, max_bytes=MAX_ARCHIVE_BYTES)
+        assert historical == expected_project
+
+        workers.close()
+        workers.enter_context(service("archive-worker-promoted", [gateway], directory, {**worker, **rotated},
+                                      lambda: ready(worker_port)))
+        archive_scope = {"account_id": account, "project_id": project}
+        snapshot, _ = call(port, "/v1/exports", 201, method="POST", headers=session,
+                           body={**archive_scope, "client_ref": "studio-first"})
+        queued, _ = call(port, "/v1/archives", 202, method="POST", headers=session,
+                         body={**archive_scope, "export_id": snapshot["id"]})
+        new_archive = f"/v1/archives/{queued['id']}"
+        eventually(lambda: call(port, new_archive, 200, headers=clients[0])[0]["stored_at"],
+                   "seal scoped history with the promoted key")
+        call(port, new_archive + "/restore", 202, method="POST", headers=clients[0])
+        eventually(lambda: call(port, new_archive, 200, headers=clients[0])[0]["state"] == "available",
+                   "verify the new archive under the promoted worker")
+        new_data = new_archive + "/data"
+        for reader_port in (preloaded, promoted):
+            body, headers = call(reader_port, new_data, 200, headers=clients[0])
+            assert body == expected
+            assert headers["X-TokenCraft-Content-Sha256"] == sha256(expected).hexdigest()
+            call(reader_port, new_data, 404, headers=clients[1])
+        call(port, new_data, 500, headers=clients[0])
+        print("PASS staged archive rotation preserved retired history and scoped reads across both key assignments")
+        verify_archive_download_capacity(port, old_data, project_reader, clients[0], project, archive_data, first_page)
         verify_export_backpressure(port, directory, psql, pg_env, project, clients[0])
 
 

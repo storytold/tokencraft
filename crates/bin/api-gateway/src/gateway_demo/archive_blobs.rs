@@ -1,3 +1,5 @@
+mod keys;
+
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -13,7 +15,8 @@ use ids::{AccountId, GatewayArchiveId};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
-use super::{archive_bucket::{ArchiveBucket, RestoreDispatch}, catalog::digest, local_files, sealed::SealedBytes};
+use self::keys::{ArchiveKeys, READ_KEYS};
+use super::{archive_bucket::{ArchiveBucket, RestoreDispatch}, catalog::digest, local_files};
 
 const MAGIC: &[u8] = b"TCA1";
 const MAX_PLAINTEXT: usize = 8 * 1024 * 1024;
@@ -23,7 +26,7 @@ const FILES: &str = "files";
 pub(super) struct ArchiveStorage {
     root: Option<PathBuf>,
     bucket: Option<ArchiveBucket>,
-    cipher: SealedBytes,
+    keys: ArchiveKeys,
     io_slots: Arc<Semaphore>,
     pub(super) automatic_after_days: Option<i32>,
     pub(super) retire_after_days: Option<i32>,
@@ -114,21 +117,17 @@ impl ArchiveStorage {
         )?;
         if root.is_none() && bucket.is_none() {
             ensure!(
-                automatic_after_days.is_none() && retire_after_days.is_none(),
-                "archive scheduling and retirement require archive storage"
+                automatic_after_days.is_none()
+                    && retire_after_days.is_none()
+                    && std::env::var_os(READ_KEYS).is_none(),
+                "archive scheduling, retirement, and read keys require archive storage"
             );
             return Ok(None);
         }
-        let secret = std::env::var("TOKENCRAFT_DEMO_ARCHIVE_KEY")
-            .context("set TOKENCRAFT_DEMO_ARCHIVE_KEY to a persistent 32-byte hex key")?;
-        let mut key = [0u8; 32];
-        hex::decode_to_slice(secret, &mut key).map_err(|_| {
-            anyhow::anyhow!("TOKENCRAFT_DEMO_ARCHIVE_KEY must be a 32-byte hex key")
-        })?;
         Ok(Some(Self {
             root,
             bucket,
-            cipher: SealedBytes::new(&key, b"tokencraft/archive-body/aes256/v1"),
+            keys: ArchiveKeys::load()?,
             io_slots: Arc::new(Semaphore::new(4)),
             automatic_after_days,
             retire_after_days,
@@ -278,7 +277,7 @@ impl ArchiveStorage {
         gzip.write_all(plain).map_err(|_| IO_ERROR)?;
         let compressed = gzip.finish().map_err(|_| IO_ERROR)?;
         let sealed = self
-            .cipher
+            .keys
             .seal(&key.binding(), compressed)
             .ok_or(IO_ERROR)?;
         let mut object = MAGIC.to_vec();
@@ -295,7 +294,7 @@ impl ArchiveStorage {
         }
         let sealed = object.strip_prefix(MAGIC).ok_or(BAD_OBJECT)?;
         let compressed = self
-            .cipher
+            .keys
             .open(&expected.key.binding(), sealed)
             .ok_or(BAD_OBJECT)?;
         let mut plain = Vec::new();
