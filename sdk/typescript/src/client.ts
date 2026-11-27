@@ -193,15 +193,19 @@ export class TokenCraft {
     return this.#call("POST", `${requestPath(requestId)}/cancel`, { ...options, auth: true, requestId, body: {} });
   }
 
-  list(options: ListOptions = {}): Promise<RequestPage> {
-    return this.#call("GET", pathWith("v1/requests", {
+  async list(options: ListOptions = {}): Promise<RequestPage> {
+    const page = await this.#call<RequestPage>("GET", pathWith("v1/requests", {
       client_ref: options.clientRef, after: options.after, app_ref: options.appRef, trace_id: options.traceId,
       model: options.model, provider: options.provider, status: options.status, cost_state: options.costState,
-      from: options.from, to: options.to,
+      from: options.from, to: options.to, diagnostic: options.diagnostic,
       app_unattributed: options.appUnattributed ? "true" : undefined,
       client_unattributed: options.clientUnattributed ? "true" : undefined,
       exact_model: options.exactModel ? "true" : undefined,
     }), { auth: true, signal: options.signal });
+    if (options.diagnostic && page.diagnostic !== options.diagnostic) {
+      throw new Error("The gateway did not confirm the requested diagnostic filter.");
+    }
+    return page;
   }
 
   usage(options: UsageOptions = {}): Promise<UsageReport> {

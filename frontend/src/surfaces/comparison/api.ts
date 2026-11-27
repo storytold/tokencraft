@@ -190,6 +190,7 @@ export type Trace = {
 };
 
 export type CostState = "estimated" | "mock_reported" | "provider_reported" | "supplier_settled";
+export type RequestDiagnostic = "warnings" | "failed_or_warning";
 export type HistoryFilters = {
   trace_id?: string;
   client_ref?: string;
@@ -198,6 +199,7 @@ export type HistoryFilters = {
   provider?: Provider;
   status?: Trace["status"];
   cost_state?: CostState;
+  diagnostic?: RequestDiagnostic;
   from?: string;
   to?: string;
   client_unattributed?: "true";
@@ -205,7 +207,7 @@ export type HistoryFilters = {
   exact_model?: "true";
 };
 
-export type TracePage = { requests: Trace[]; next_after: string | null };
+export type TracePage = { requests: Trace[]; next_after: string | null; diagnostic?: RequestDiagnostic };
 type ProviderImage = {
   url: string;
   width: number;

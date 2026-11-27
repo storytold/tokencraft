@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use ids::GatewayRequestId;
 use sqlx::{PgExecutor, Postgres, QueryBuilder};
 
-use super::{CostState, RequestRow, RequestScope, RequestStatus};
+use super::{CostState, RequestDiagnostic, RequestRow, RequestScope, RequestStatus};
 
 #[derive(Default, PartialEq)]
 pub struct RequestFilter<'a> {
@@ -16,6 +16,7 @@ pub struct RequestFilter<'a> {
     pub provider: Option<&'a str>,
     pub status: Option<RequestStatus>,
     pub cost_state: Option<CostState>,
+    pub diagnostic: Option<RequestDiagnostic>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
 }
@@ -121,6 +122,36 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) charge ON true
 LEFT JOIN gateway_provider_callback_receipts callback ON callback.request_id = r.id
+"#;
+
+// Match durable warning evidence before attaching the full trace to a request.
+const WARNINGS: &str = r#"
+  r.uncertain_at IS NOT NULL
+  OR EXISTS (
+    SELECT 1 FROM gateway_provider_runs p WHERE p.request_id = r.id
+    AND (
+      jsonb_array_length(p.route_retries) > 0
+      OR (r.adapter = 'openai_compatible_chat' AND r.dispatched_at IS NOT NULL AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(p.compute_attempts) WITH ORDINALITY AS attempt(record, ordinal)
+        WHERE record #>> '{result,status}' IN (
+          'connection_failed', 'capacity_rejected', 'upstream_error',
+          'transport_unconfirmed', 'deadline_before_send'
+        ) OR (
+          record ->> 'result' IS NULL
+          AND (ordinal < jsonb_array_length(p.compute_attempts)
+            OR num_nonnulls(r.succeeded_at, r.failed_at, r.canceled_at) > 0)
+        )
+      ))
+    )
+  )
+  OR (r.webhook_subscription_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM gateway_webhook_deliveries delivery
+    CROSS JOIN LATERAL (
+      SELECT outcome FROM gateway_webhook_attempts
+      WHERE delivery_id = delivery.id ORDER BY number DESC LIMIT 50
+    ) attempt
+    WHERE delivery.request_id = r.id AND attempt.outcome = 'lease_expired'
+  ))
 "#;
 
 pub async fn get_request<'e, E: PgExecutor<'e>>(
@@ -256,6 +287,13 @@ fn push_filters<'a>(query: &mut QueryBuilder<'a, Postgres>, filter: RequestFilte
     }
     if filter.app_unattributed {
         query.push(" AND r.app_ref IS NULL");
+    }
+    if let Some(diagnostic) = filter.diagnostic {
+        query.push(" AND (");
+        if diagnostic == RequestDiagnostic::FailedOrWarning {
+            query.push("r.failed_at IS NOT NULL OR ");
+        }
+        query.push(WARNINGS).push(")");
     }
 }
 

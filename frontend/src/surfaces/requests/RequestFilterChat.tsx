@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Sparkles } from "lucide-react";
 import { Button, Input } from "@/components/ui";
+import type { HistoryFilters } from "@/surfaces/comparison/api";
 import { suggestHistoryFilters, type FilterReply } from "./historyAssistant";
-import type { InvestigationFilters } from "./historyDiagnostics";
 
 const examples = ["Failed or warnings in the last 7 days", "Unconfirmed requests today"];
 
 export function RequestFilterChat({ filters, providers, describe, onApply }: {
-  filters: InvestigationFilters;
+  filters: HistoryFilters;
   providers: readonly string[];
-  describe: (value: InvestigationFilters) => string;
-  onApply: (value: InvestigationFilters) => void;
+  describe: (value: HistoryFilters) => string;
+  onApply: (value: HistoryFilters) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<{ question: string; reply?: FilterReply }[]>([]);

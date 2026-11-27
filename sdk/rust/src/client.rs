@@ -9,9 +9,9 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::content::verify_download;
 use crate::trace::{submit_traceparent, OtlpTrace, RequestTraceSnapshot, TraceBaseline};
 use crate::{
-    valid_id, ArtifactRef, AudioProviderResult, Catalog, ChatOptions, Error, ImageProviderResult,
+    valid_id, ArtifactRef, AudioProviderResult, Catalog, ChatOptions, DiagnosticRequestPage, Error, ImageProviderResult,
     ListOptions, MeshProviderResult, Message, ModelCatalog, PolicySetting, Provider, ProviderPath,
-    ProviderResult, Quote, QuoteInput, QuoteOptions, Receipt, RequestEvents, RequestFilters,
+    ProviderResult, Quote, QuoteInput, QuoteOptions, Receipt, RequestDiagnostic, RequestEvents, RequestFilters,
     RequestPage, RequestStatus, RequestTrace, RoutePreview, RoutePreviewOptions, SubmitOptions,
     UsageOptions, UsageReport, VerifiedArtifact, VideoProviderResult, WaitOptions,
 };
@@ -512,6 +512,18 @@ impl TokenCraftClient {
         let request = self
             .request(Method::GET, "v1/requests", true)?
             .query(&filters);
+        self.send(request, None).await
+    }
+
+    pub async fn list_diagnostic(
+        &self,
+        filters: RequestFilters<'_>,
+        diagnostic: RequestDiagnostic,
+    ) -> Result<DiagnosticRequestPage, Error> {
+        let request = self
+            .request(Method::GET, "v1/requests", true)?
+            .query(&filters)
+            .query(&[("diagnostic", diagnostic)]);
         self.send(request, None).await
     }
 

@@ -1,18 +1,18 @@
 import { useLayoutEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Link2, ChevronDown, ChevronLeft, ChevronRight, Clock, List, Radio, RefreshCw, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { Badge, Button, Card } from "@/components/ui";
-import { providerLabel, usd, type Trace } from "@/surfaces/comparison/api";
+import { providerLabel, usd, type HistoryFilters, type Trace } from "@/surfaces/comparison/api";
 import { costStateNames, RequestHistoryFilters, statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
 import { CopyRequestId } from "./CopyRequestId";
-import { diagnosticNames, shiftDate, validDate, type InvestigationFilters } from "./historyDiagnostics";
+import { diagnosticNames, shiftDate, validDate } from "./historyDiagnostics";
 import type { useRequestHistory } from "./useRequestHistory";
 import { RequestFilterChat } from "./RequestFilterChat";
 import "./requests-workspace.css";
 
 const shortTime = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-function filterChips(filters: InvestigationFilters) {
-  const chips: { label: string; keys: (keyof InvestigationFilters)[] }[] = [];
+function filterChips(filters: HistoryFilters) {
+  const chips: { label: string; keys: (keyof HistoryFilters)[] }[] = [];
   const { status, diagnostic, provider, model, from, to, client_ref, app_ref, trace_id, cost_state } = filters;
   if (status) chips.push({ label: statusNames[status] ?? status, keys: ["status"] });
   if (diagnostic) chips.push({ label: diagnosticNames[diagnostic], keys: ["diagnostic"] });
@@ -49,12 +49,11 @@ export function RequestsWorkspace({
   lookup, trace, requestId, filters, boundClient, requestHistory, onApply, onOpen, onClose,
 }: {
   lookup: ReactNode; trace: ReactNode; requestId: string | null;
-  filters: InvestigationFilters; boundClient?: string | null; requestHistory: ReturnType<typeof useRequestHistory>;
-  onApply: (filters: InvestigationFilters) => void;
+  filters: HistoryFilters; boundClient?: string | null; requestHistory: ReturnType<typeof useRequestHistory>;
+  onApply: (filters: HistoryFilters) => void;
   onOpen: (id: string) => void; onClose: () => void;
 }) {
-  const { history, rows, progress, warningIds, loading, error, page, hasOlder, hasNewer } = requestHistory;
-  const scanning = Boolean(filters.diagnostic);
+  const { history, rows, loading, error, page, hasOlder, hasNewer } = requestHistory;
   const historyId = useId();
   const filtersId = useId();
   const chatId = useId();
@@ -180,11 +179,8 @@ export function RequestsWorkspace({
           </div>
           <div className="tc-requests-results" aria-busy={loading && !rows.length}>
             {error && <p className="px-4 py-4 text-sm text-rose-600 dark:text-rose-300" role="alert">
-              {scanning && "Search incomplete. "}{error}
+              {error}
             </p>}
-            {progress?.unavailable ? <p className="border-b border-border px-4 py-2 text-xs text-muted">
-              Warning evidence unavailable for {progress.unavailable} {progress.unavailable === 1 ? "request" : "requests"}.
-            </p> : null}
             {rows.length ? (
               <table className="tc-requests-table">
                 <thead><tr>
@@ -199,6 +195,8 @@ export function RequestsWorkspace({
                   {rows.map((item) => {
                     const time = item.created_at ? <time dateTime={item.created_at}>{shortTime.format(new Date(item.created_at))}</time> : null;
                     const provider = providerLabel(item.provider);
+                    const warning = history?.diagnostic === "warnings"
+                      || (history?.diagnostic === "failed_or_warning" && item.status !== "failed");
                     return <tr key={item.id} data-selected={item.id === requestId}>
                       <td>
                         <button type="button" data-request-id={item.id} aria-current={item.id === requestId || undefined}
@@ -215,7 +213,7 @@ export function RequestsWorkspace({
                       </td>
                       <td>
                         <Badge className="text-xs" tone={statusTone[item.status]}>{statusNames[item.status]}</Badge>
-                        {warningIds.has(item.id) && <Badge className="ml-1 text-xs" tone="amber">Warning</Badge>}
+                        {warning && <Badge className="ml-1 text-xs" tone="amber">Warning</Badge>}
                       </td>
                       <td className="tc-requests-wide truncate text-muted">{provider}</td>
                       <td className="tc-requests-wide text-xs text-muted">{time}</td>
@@ -226,9 +224,7 @@ export function RequestsWorkspace({
                 </tbody>
               </table>
             ) : !error && <div className="px-4 py-8 text-center text-sm">
-              <p role="status">{loading ? scanning ? "Searching request history…" : "Loading history…"
-                : progress?.unavailable ? "No confirmed matches"
-                : scanning && filters.from ? "No matches in this date range"
+              <p role="status">{loading ? "Loading history…"
                 : chips.length ? "No matching requests" : "No requests yet"}</p>
               {!loading && chips.length > 0 && <p className="mt-1 text-xs text-muted">
                 Adjust or clear the filters to widen your search.
@@ -237,16 +233,12 @@ export function RequestsWorkspace({
           </div>
           <footer className="tc-requests-footer">
             <p className="mr-auto text-xs text-muted" aria-live="polite">
-              {scanning ? <>
-                {rows.length > 0 && `Page ${page} · `}
-                {progress && `${progress.matching} ${progress.matching === 1 ? "match" : "matches"} · ${progress.checked} checked`}
-                {loading && (progress ? " · Searching…" : "Checking history…")}
-              </> : history ? `Page ${page} · ${rows.length} shown` : null}
+              {history ? `Page ${page} · ${rows.length} shown` : null}
             </p>
             <Button size="sm" type="button" variant="ghost" disabled={!hasNewer} onClick={requestHistory.newer}
               aria-label="Newer requests" title="Newer requests" className="px-2"><ChevronLeft className="h-4 w-4" aria-hidden /></Button>
             <Button size="sm" type="button" variant="ghost" disabled={!hasOlder} onClick={requestHistory.older}
-              aria-label={scanning ? "Older matches" : "Older requests"} title={scanning ? "Older matches" : "Older requests"}>Older <ChevronRight className="h-4 w-4" aria-hidden /></Button>
+              aria-label="Older requests" title="Older requests">Older <ChevronRight className="h-4 w-4" aria-hidden /></Button>
           </footer>
         </Card>
       </section>

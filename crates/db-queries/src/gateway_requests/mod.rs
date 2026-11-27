@@ -92,6 +92,13 @@ pub enum CostState {
     SupplierSettled,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestDiagnostic {
+    Warnings,
+    FailedOrWarning,
+}
+
 #[derive(sqlx::FromRow)]
 pub struct RequestRow {
     pub id: GatewayRequestId,

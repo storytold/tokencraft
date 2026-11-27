@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Clock, Radio, RefreshCw } from "lucide-react";
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui";
 import { demoEnabled, type ProjectScope } from "@/lib/gateway";
-import { comparisonApi, errorMessage, formatNanoUsd, providerLabel, usd, type ModelQuote, type PromptMode, type Trace } from "./api";
+import { comparisonApi, errorMessage, formatNanoUsd, providerLabel, usd, type HistoryFilters, type ModelQuote, type PromptMode, type Trace } from "./api";
 import { costStateNames, RequestHistoryFilters, statusNames } from "./RequestHistoryFilters";
 import { ProviderTrace } from "./ProviderTrace";
 import { PolicySummary } from "./PolicySummary";
@@ -12,7 +12,7 @@ import { RequestWaterfall } from "@/surfaces/requests/RequestWaterfall";
 import { CopyRequestId } from "@/surfaces/requests/CopyRequestId";
 import { requestIsActive, useRequestStatus } from "@/surfaces/requests/useRequestListener";
 import { historySearch, setHistoryFilters } from "@/surfaces/requests/historyQuery";
-import { diagnosticFromUrl, type InvestigationFilters } from "@/surfaces/requests/historyDiagnostics";
+import { diagnosticFromUrl } from "@/surfaces/requests/historyDiagnostics";
 import { useRequestHistory } from "@/surfaces/requests/useRequestHistory";
 import { RequestsWorkspace } from "@/surfaces/requests/RequestsWorkspace";
 import { WorkflowRunLink } from "@/surfaces/requests/WorkflowRunLink";
@@ -47,10 +47,10 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
   const isDashboard = historyLookup !== undefined;
   const search = isDashboard ? historySearch(params) : "";
   const diagnostic = isDashboard ? diagnosticFromUrl(params.get("diagnostic")) : undefined;
-  const linkedFilters = useMemo<InvestigationFilters>(() => ({
+  const linkedFilters = useMemo<HistoryFilters>(() => ({
     ...Object.fromEntries(new URLSearchParams(search)), diagnostic,
   }), [search, diagnostic]);
-  const [localFilters, setLocalFilters] = useState<InvestigationFilters>({});
+  const [localFilters, setLocalFilters] = useState<HistoryFilters>({});
   const filters = isDashboard ? linkedFilters : localFilters;
   const requestHistory = useRequestHistory(scope, filters);
   const { history, error: historyError, refresh: refreshHistory, newest: newestHistory } = requestHistory;
@@ -119,16 +119,20 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
     }
   }
 
-  function filterHistory(next: InvestigationFilters) {
-    newestHistory();
+  function filterHistory(next: HistoryFilters) {
     if (isDashboard) {
       const query = setHistoryFilters(new URLSearchParams(params), next);
       if (next.diagnostic) query.set("diagnostic", next.diagnostic);
       else query.delete("diagnostic");
-      if (query.toString() !== params.toString()) setParams(query);
+      if (query.toString() !== params.toString()) {
+        setParams(query);
+        return;
+      }
     } else {
       setLocalFilters(next);
+      return;
     }
+    newestHistory();
     refreshHistory();
   }
 

@@ -27,6 +27,12 @@ TokenCraft assigns its own execution trace ID and records the caller's trace and
 
 Use `GET /v1/requests?trace_id=<trace-id>` to find requests by either execution or caller trace ID. The regular project and client permissions apply.
 
+## Find requests with warnings
+
+Add `diagnostic=warnings` to `GET /v1/requests` for requests with an unconfirmed outcome, a provider availability retry, a compute dispatch warning, or an expired lease among the latest 50 webhook delivery attempts. Use `diagnostic=failed_or_warning` to also include failed requests. Other filters still apply, including client, date, and status. The response echoes the applied diagnostic. Keep the same filters when following `next_after`.
+
+The Requests console uses the same server-side filter. Use `client.list({ diagnostic: "warnings" })` in TypeScript or `client.list_diagnostic(filters, RequestDiagnostic::Warnings)` in Rust.
+
 ## Follow a request into a connector
 
 The gateway sends its execution trace ID and the span ID of the root in its OTLP export to the configured provider endpoint in a W3C `traceparent` header. Submit, recovery lookup, status polling, artifact downloads, and compatible chat calls use the same parent across worker restarts and compute failover. The gateway keeps caller trace headers and baggage out of provider requests.

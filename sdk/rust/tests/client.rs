@@ -548,6 +548,37 @@ async fn history_sends_trace_and_group_filters_with_client_scope() {
 }
 
 #[tokio::test]
+async fn diagnostic_history_uses_scoped_filters_and_requires_the_gateway_echo() {
+    use tokencraft_sdk::{RequestDiagnostic, RequestFilters};
+
+    let (origin, captured) = reply(
+        "200 OK",
+        "",
+        r#"{"requests":[],"next_after":null,"diagnostic":"warnings"}"#,
+    ).await;
+    let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+    let result = client.list_diagnostic(RequestFilters {
+        client_ref: Some("studio_a"),
+        after: Some(REQUEST),
+        ..Default::default()
+    }, RequestDiagnostic::Warnings).await.unwrap();
+    assert_eq!(result.diagnostic, RequestDiagnostic::Warnings);
+    let (head, _) = captured.await.unwrap();
+    let target = head.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+    let url = reqwest::Url::parse(&format!("{origin}{target}")).unwrap();
+    assert_eq!(url.path(), "/v1/requests");
+    let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(query.get("client_ref").map(String::as_str), Some("studio_a"));
+    assert_eq!(query.get("after").map(String::as_str), Some(REQUEST));
+    assert_eq!(query.get("diagnostic").map(String::as_str), Some("warnings"));
+
+    let (old_origin, _) = reply("200 OK", "", r#"{"requests":[],"next_after":null}"#).await;
+    let old = TokenCraftClient::new(&old_origin, Some("fixture")).unwrap();
+    assert!(matches!(old.list_diagnostic(RequestFilters::default(), RequestDiagnostic::Warnings).await,
+        Err(tokencraft_sdk::Error::Response { .. })));
+}
+
+#[tokio::test]
 async fn redirects_are_returned_without_forwarding_bearer() {
     let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let location = format!(

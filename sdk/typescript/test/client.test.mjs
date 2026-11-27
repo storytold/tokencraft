@@ -183,6 +183,23 @@ test("reuses the supplied intent on explicit replay and preserves scoped filter 
   });
 });
 
+test("diagnostic history requires confirmation that the scoped filter was applied", async () => {
+  let confirm = true;
+  const client = new TokenCraft({
+    ...options,
+    fetch: async (url) => {
+      assert.deepEqual(Object.fromEntries(url.searchParams), {
+        client_ref: "studio_a", after: requestId, diagnostic: "warnings",
+      });
+      return Response.json({ requests: [], next_after: null, diagnostic: confirm ? "warnings" : undefined });
+    },
+  });
+  const filters = { clientRef: "studio_a", after: requestId, diagnostic: "warnings" };
+  assert.equal((await client.list(filters)).diagnostic, "warnings");
+  confirm = false;
+  await assert.rejects(client.list(filters), /did not confirm the requested diagnostic/);
+});
+
 test("reads the scoped provider path and tolerates older trace responses", async () => {
   const path = {
     admitted_offer_id: "openrouter_fixture",

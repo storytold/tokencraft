@@ -1202,6 +1202,7 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
         "name": "Operations compute smoke", "scopes": ["requests:submit", "requests:read"],
     })
     bearer = {"Authorization": "Bearer " + principal["token"]}
+    chat_ids = {}
     for model, expected in (("fixture-chat", "standby"), ("fixture-partner", "partner")):
         result, headers = call(api_port, "/v1/chat/completions", 200, method="POST",
                                headers={**bearer, **CALLER_CONTEXT}, body={
@@ -1209,11 +1210,17 @@ def verify_operations(directory, env, psql, pg_env, api_port, worker_port, accou
             "max_tokens": 8,
         })
         assert result["choices"][0]["message"]["content"] == expected
-        parent = provider_traceparent(api_port, headers["TokenCraft-Request-Id"], bearer)
+        request_id = headers["TokenCraft-Request-Id"]
+        chat_ids[expected] = request_id
+        parent = provider_traceparent(api_port, request_id, bearer)
         observed = ("primary", "standby") if expected == "standby" else ("partner",)
         for label in observed:
             assert servers[label].trace_headers == [(parent, None, None)]
     assert {name: server.requests for name, server in servers.items()} == {"primary": 1, "standby": 1, "partner": 1}
+    warnings, _ = call(api_port, f"/v1/requests?diagnostic=warnings&status=succeeded&trace_id={CALLER_TRACE_ID}",
+                       200, headers=bearer)
+    warned_ids = {request["id"] for request in warnings["requests"]}
+    assert chat_ids["standby"] in warned_ids and chat_ids["partner"] not in warned_ids
     print("PASS configured chat targets retain the scoped OTLP parent across compute failover")
 
     password = token_hex(32)

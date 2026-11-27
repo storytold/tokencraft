@@ -1,8 +1,8 @@
-import { providerChoices } from "@/surfaces/comparison/api";
+import { providerChoices, type HistoryFilters } from "@/surfaces/comparison/api";
 import { statusNames } from "@/surfaces/comparison/RequestHistoryFilters";
-import { dateRangeError, diagnosticNames, shiftDate, validDate, type InvestigationFilters } from "./historyDiagnostics";
+import { dateRangeError, diagnosticNames, shiftDate, validDate } from "./historyDiagnostics";
 
-export type FilterReply = { filters: InvestigationFilters; engine: "ai" | "local" } | { error: string };
+export type FilterReply = { filters: HistoryFilters; engine: "ai" | "local" } | { error: string };
 
 const statuses = Object.keys(statusNames);
 const diagnostics = Object.keys(diagnosticNames);
@@ -10,7 +10,7 @@ const months = "jan feb mar apr may jun jul aug sep oct nov dec".split(" ");
 const monthName = "Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?";
 const absoluteDate = new RegExp(`\\b(?:\\d{4}-\\d{2}-\\d{2}|(${monthName})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?)\\b`, "gi");
 
-function interpretLocally(prompt: string, current: InvestigationFilters, today: string, providers: readonly string[]): FilterReply {
+function interpretLocally(prompt: string, current: HistoryFilters, today: string, providers: readonly string[]): FilterReply {
   let text = prompt.toLowerCase();
   const filters = { ...current };
   let recognized = false;
@@ -110,7 +110,7 @@ const schema = {
   required: ["understood"],
 };
 
-function modelFilters(result: unknown, current: InvestigationFilters, providers: readonly string[]): InvestigationFilters | undefined {
+function modelFilters(result: unknown, current: HistoryFilters, providers: readonly string[]): HistoryFilters | undefined {
   if (!result || typeof result !== "object") return;
   const value = result as Record<string, unknown>;
   if (value.understood !== true) return;
@@ -119,12 +119,12 @@ function modelFilters(result: unknown, current: InvestigationFilters, providers:
   if (value.status !== undefined || value.diagnostic !== undefined) {
     if (value.status != null && (typeof value.status !== "string" || !statuses.includes(value.status))) return;
     if (value.diagnostic != null && (typeof value.diagnostic !== "string" || !diagnostics.includes(value.diagnostic))) return;
-    filters.status = value.status as InvestigationFilters["status"] ?? undefined;
-    filters.diagnostic = value.diagnostic as InvestigationFilters["diagnostic"] ?? undefined;
+    filters.status = value.status as HistoryFilters["status"] ?? undefined;
+    filters.diagnostic = value.diagnostic as HistoryFilters["diagnostic"] ?? undefined;
   }
   if (value.provider !== undefined) {
     if (value.provider !== null && (typeof value.provider !== "string" || !providers.includes(value.provider))) return;
-    filters.provider = value.provider as InvestigationFilters["provider"] ?? undefined;
+    filters.provider = value.provider as HistoryFilters["provider"] ?? undefined;
   }
   if (value.from !== undefined || value.through !== undefined) {
     if (value.from === null && value.through === null) {
@@ -144,7 +144,7 @@ function modelFilters(result: unknown, current: InvestigationFilters, providers:
 }
 
 export async function suggestHistoryFilters(
-  prompt: string, current: InvestigationFilters, observedProviders: readonly string[], signal: AbortSignal,
+  prompt: string, current: HistoryFilters, observedProviders: readonly string[], signal: AbortSignal,
 ): Promise<FilterReply> {
   const providers = providerChoices([...observedProviders, current.provider]);
   const today = new Date().toISOString().slice(0, 10);

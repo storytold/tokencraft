@@ -802,6 +802,20 @@ pub struct RequestPage {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RequestDiagnostic {
+    Warnings,
+    FailedOrWarning,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DiagnosticRequestPage {
+    pub requests: Vec<RequestTrace>,
+    pub next_after: Option<String>,
+    pub diagnostic: RequestDiagnostic,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UsageGroup {
     Provider,
     Model,

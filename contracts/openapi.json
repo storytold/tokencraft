@@ -4106,6 +4106,18 @@
             }
           },
           {
+            "name": "diagnostic",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "warnings",
+                "failed_or_warning"
+              ]
+            }
+          },
+          {
             "name": "from",
             "in": "query",
             "description": "Inclusive UTC date. Supply both dates for a window of up to 92 days.",
@@ -9944,6 +9956,13 @@
           "requests"
         ],
         "properties": {
+          "diagnostic": {
+            "type": "string",
+            "enum": [
+              "warnings",
+              "failed_or_warning"
+            ]
+          },
           "next_after": {
             "type": [
               "string",

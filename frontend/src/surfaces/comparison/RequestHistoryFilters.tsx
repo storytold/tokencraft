@@ -2,8 +2,8 @@ import { useId, useState } from "react";
 import { ChevronDown, Filter } from "lucide-react";
 import { Button, Input, Select } from "@/components/ui";
 import { isProviderId } from "@/lib/gateway";
-import { dateRangeError, diagnosticNames, shiftDate, type InvestigationFilters } from "@/surfaces/requests/historyDiagnostics";
-import { providerChoices, providerLabel, type CostState, type Provider, type Trace } from "./api";
+import { dateRangeError, diagnosticNames, shiftDate } from "@/surfaces/requests/historyDiagnostics";
+import { providerChoices, providerLabel, type CostState, type HistoryFilters, type Provider, type Trace } from "./api";
 
 export const statusNames: Record<Trace["status"], string> = {
   queued: "Queued",
@@ -22,19 +22,19 @@ export const costStateNames: Record<CostState, string> = {
 };
 
 export function RequestHistoryFilters({ applied, boundClient, providers = [], onApply, embedded = false }: {
-  applied: InvestigationFilters;
+  applied: HistoryFilters;
   boundClient?: string | null;
   providers?: readonly Provider[];
-  onApply: (filters: InvestigationFilters) => void;
+  onApply: (filters: HistoryFilters) => void;
   embedded?: boolean;
 }) {
   const id = useId();
-  const [draft, setDraft] = useState<InvestigationFilters>(applied);
+  const [draft, setDraft] = useState<HistoryFilters>(applied);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(() => Object.values(applied).some(Boolean));
   const active = Object.values(applied).filter(Boolean).length;
 
-  function update<K extends keyof InvestigationFilters>(name: K, value: InvestigationFilters[K]) {
+  function update<K extends keyof HistoryFilters>(name: K, value: HistoryFilters[K]) {
     setDraft((current) => ({ ...current, [name]: value || undefined }));
   }
 
@@ -51,7 +51,7 @@ export function RequestHistoryFilters({ applied, boundClient, providers = [], on
       }}>
       {embedded && (
         <label className="space-y-1 text-xs font-medium">Diagnostic
-          <Select value={draft.diagnostic ?? ""} onChange={(event) => update("diagnostic", event.target.value as InvestigationFilters["diagnostic"])}>
+          <Select value={draft.diagnostic ?? ""} onChange={(event) => update("diagnostic", event.target.value as HistoryFilters["diagnostic"])}>
             <option value="">Any diagnostic</option>
             {Object.entries(diagnosticNames).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
           </Select>

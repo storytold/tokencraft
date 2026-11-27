@@ -36,7 +36,7 @@ pub(super) fn request_cost_state_schema() -> utoipa::openapi::Object {
     enum_schema([Estimated, MockReported, ProviderReported, SupplierSettled])
 }
 
-fn enum_schema<T: Serialize, const N: usize>(values: [T; N]) -> utoipa::openapi::Object {
+pub(super) fn enum_schema<T: Serialize, const N: usize>(values: [T; N]) -> utoipa::openapi::Object {
     use utoipa::openapi::schema::{ObjectBuilder, Type};
     let values = values.map(|value| serde_json::to_value(value).expect("request enum serializes"));
     ObjectBuilder::new()

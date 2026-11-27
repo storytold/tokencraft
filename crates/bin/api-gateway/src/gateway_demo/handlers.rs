@@ -5,7 +5,7 @@ use axum::http::{header::LOCATION, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
-use db_queries::gateway_requests::{list_requests, RequestFilter};
+use db_queries::gateway_requests::{list_requests, RequestDiagnostic, RequestFilter};
 use ids::GatewayRequestId;
 use serde::{Deserialize, Serialize};
 
@@ -413,6 +413,9 @@ pub struct HistoryQuery {
     status: Option<RequestStatus>,
     #[param(schema_with = requests::request_cost_state_schema)]
     cost_state: Option<CostState>,
+    /// Filter for recorded warnings, or include failed requests as well.
+    #[param(schema_with = request_diagnostic_schema)]
+    diagnostic: Option<RequestDiagnostic>,
     /// Inclusive UTC date. Supply both dates for a window of up to 92 days.
     from: Option<NaiveDate>,
     /// Exclusive UTC date. Omit both dates to read the complete history.
@@ -424,12 +427,22 @@ pub struct RequestPage {
     pub(super) requests: Vec<RequestView>,
     #[schema(value_type = Option<String>)]
     pub(super) next_after: Option<GatewayRequestId>,
+    /// The applied diagnostic filter, if requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(schema_with = request_diagnostic_schema)]
+    diagnostic: Option<RequestDiagnostic>,
 }
 
 #[derive(Serialize)]
 pub(super) struct ModelRequestPage {
     requests: Vec<ModelRequestView>,
     next_after: Option<GatewayRequestId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostic: Option<RequestDiagnostic>,
+}
+
+fn request_diagnostic_schema() -> utoipa::openapi::Object {
+    requests::enum_schema([RequestDiagnostic::Warnings, RequestDiagnostic::FailedOrWarning])
 }
 
 pub(super) async fn model_list(
@@ -441,6 +454,7 @@ pub(super) async fn model_list(
     Ok(Json(ModelRequestPage {
         requests: page.requests.into_iter().map(Into::into).collect(),
         next_after: page.next_after,
+        diagnostic: page.diagnostic,
     }))
 }
 
@@ -529,6 +543,7 @@ pub(super) async fn history(
             provider: query.provider.as_ref().map(Provider::as_str),
             status: query.status,
             cost_state: query.cost_state,
+            diagnostic: query.diagnostic,
             from,
             to,
         },
@@ -544,6 +559,7 @@ pub(super) async fn history(
     Ok(RequestPage {
         requests,
         next_after,
+        diagnostic: query.diagnostic,
     })
 }
 

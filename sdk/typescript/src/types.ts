@@ -388,6 +388,8 @@ interface ScopedListOptions extends CallOptions {
 
 export type CostState = "estimated" | "mock_reported" | "provider_reported" | "supplier_settled";
 
+export type RequestDiagnostic = "warnings" | "failed_or_warning";
+
 export interface ListOptions extends ScopedListOptions {
   /** Exact gateway or caller trace ID. */
   traceId?: string;
@@ -402,6 +404,7 @@ export interface ListOptions extends ScopedListOptions {
   provider?: Provider;
   status?: RequestStatus;
   costState?: CostState;
+  diagnostic?: RequestDiagnostic;
   /** Inclusive UTC date in YYYY-MM-DD format. */
   from?: string;
   /** Exclusive UTC date in YYYY-MM-DD format. */
@@ -411,6 +414,7 @@ export interface ListOptions extends ScopedListOptions {
 export interface RequestPage {
   requests: RequestTrace[];
   next_after: string | null;
+  diagnostic?: RequestDiagnostic;
 }
 
 export type UsageGroup = "provider" | "model" | "client" | "app" | "day";
