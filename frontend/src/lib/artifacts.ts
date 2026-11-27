@@ -1,6 +1,15 @@
-import { API_BASE_URL } from "./api";
-
 export type ArtifactReference = { byte_length: number; sha256: string };
+export type ArtifactRetryReason = "busy" | "interrupted";
+
+const maxAttempts = 3;
+const transferTimeoutMs = 60_000;
+const maxRetryDelayMs = 5_000;
+
+class InterruptedTransfer extends Error {
+  constructor(cause: unknown) {
+    super("The connection was interrupted. Try downloading this output again.", { cause });
+  }
+}
 
 const extensions: Record<string, string> = {
   "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
@@ -19,10 +28,10 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
     const cancel = () => {
-      window.clearTimeout(timer);
+      clearTimeout(timer);
       reject(signal.reason);
     };
-    const timer = window.setTimeout(() => {
+    const timer = setTimeout(() => {
       signal.removeEventListener("abort", cancel);
       resolve();
     }, ms);
@@ -30,28 +39,65 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function retryDelay(response: Response): number | undefined {
+  if (response.status !== 429 && response.status !== 503) return;
+  const hint = response.headers.get("Retry-After")?.trim() ?? "";
+  if (/^\d+$/.test(hint)) {
+    const delay = Number(hint) * 1_000;
+    return delay <= maxRetryDelayMs ? delay : undefined;
+  }
+  const date = new Date(hint);
+  if (!Number.isFinite(date.getTime()) || date.toUTCString() !== hint) return;
+  const delay = Math.max(0, date.getTime() - Date.now());
+  return delay <= maxRetryDelayMs ? delay : undefined;
+}
+
 export async function readArtifact(
-  path: string,
-  signal: AbortSignal,
-  onRetry: (waiting: boolean) => void,
+  url: string,
+  caller: AbortSignal,
+  onRetry: (reason?: ArtifactRetryReason) => void,
   reference?: ArtifactReference,
   expectedType?: string,
 ): Promise<Blob> {
-  const fetchArtifact = () => fetch(API_BASE_URL + path, {
-    credentials: "include", redirect: "error", cache: "no-store", signal,
-    headers: { Accept: "application/octet-stream" },
-  });
-  let response = await fetchArtifact();
-  signal.throwIfAborted();
-  const retryAfter = response.headers.get("Retry-After")?.trim() ?? "";
-  const delay = /^\d+$/.test(retryAfter) ? Number(retryAfter) : Infinity;
-  if ((response.status === 429 || response.status === 503) && delay <= 5) {
-    void response.body?.cancel().catch(() => {});
-    onRetry(true);
-    await pause(delay * 1_000, signal);
-    onRetry(false);
-    response = await fetchArtifact();
+  const signal = AbortSignal.any([caller, AbortSignal.timeout(transferTimeoutMs)]);
+  for (let attempt = 1; ; attempt++) {
+    signal.throwIfAborted();
+    let delay: number;
+    let reason: ArtifactRetryReason;
+    try {
+      const response = await fetch(url, {
+        credentials: "include", redirect: "error", cache: "no-store", signal,
+        headers: { Accept: "application/octet-stream" },
+      }).catch((cause: unknown) => {
+        if (cause instanceof TypeError) throw new InterruptedTransfer(cause);
+        throw cause;
+      });
+      signal.throwIfAborted();
+      const hint = retryDelay(response);
+      if (attempt === maxAttempts || hint === undefined) {
+        return await verifyArtifact(response, signal, reference, expectedType);
+      }
+      void response.body?.cancel().catch(() => {});
+      delay = hint;
+      reason = "busy";
+    } catch (cause) {
+      signal.throwIfAborted();
+      if (attempt === maxAttempts || !(cause instanceof InterruptedTransfer)) throw cause;
+      delay = 250 * 2 ** (attempt - 1);
+      reason = "interrupted";
+    }
+    onRetry(reason);
+    await pause(delay, signal);
+    onRetry();
   }
+}
+
+async function verifyArtifact(
+  response: Response,
+  signal: AbortSignal,
+  reference?: ArtifactReference,
+  expectedType?: string,
+): Promise<Blob> {
   if (response.status !== 200) {
     void response.body?.cancel().catch(() => {});
     switch (response.status) {
@@ -86,7 +132,9 @@ export async function readArtifact(
   let used = 0;
   try {
     for (;;) {
-      const chunk = await reader.read();
+      const chunk = await reader.read().catch((cause: unknown) => {
+        throw new InterruptedTransfer(cause);
+      });
       if (chunk.done) break;
       const required = used + chunk.value.byteLength;
       if (required > maximum) {
@@ -108,6 +156,7 @@ export async function readArtifact(
   signal.throwIfAborted();
   const decoded = bytes.subarray(0, used);
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", decoded));
+  signal.throwIfAborted();
   if (Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("") !== sha256) throw invalid();
   return new Blob([decoded], { type: Object.hasOwn(extensions, mime) ? mime : "application/octet-stream" });
 }

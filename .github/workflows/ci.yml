@@ -138,6 +138,8 @@ jobs:
         run: node --experimental-strip-types --test ../scripts/console_model_submission.test.mjs
       - name: Verify console aspect ratio defaults and input
         run: node --experimental-strip-types --test ../scripts/console_aspect_ratio.test.mjs
+      - name: Verify scoped console artifact downloads
+        run: node --experimental-strip-types --test ../scripts/console_artifact_transfer.test.mjs
       - run: npm run build
         env:
           VITE_API_BASE_URL: /

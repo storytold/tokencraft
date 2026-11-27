@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { artifactFilename, readArtifact, type ArtifactReference } from "@/lib/artifacts";
+import { API_BASE_URL } from "@/lib/api";
+import { artifactFilename, readArtifact, type ArtifactReference, type ArtifactRetryReason } from "@/lib/artifacts";
 import { downloadBlob } from "@/lib/download";
 
-export function ArtifactButton({
-  path, label, filename, reference, contentType, onPreview, className,
-}: {
+type ArtifactButtonProps = {
   path: string;
   label: string;
   filename?: string;
@@ -12,8 +11,16 @@ export function ArtifactButton({
   contentType?: string;
   onPreview?: (file: Blob) => void;
   className?: string;
-}) {
-  const [progress, setProgress] = useState<"loading" | "waiting">();
+};
+
+export function ArtifactButton(props: ArtifactButtonProps) {
+  return <ArtifactTransferButton key={props.path} {...props} />;
+}
+
+function ArtifactTransferButton({
+  path, label, filename, reference, contentType, onPreview, className,
+}: ArtifactButtonProps) {
+  const [progress, setProgress] = useState<"loading" | ArtifactRetryReason>();
   const [error, setError] = useState("");
   const request = useRef<AbortController | null>(null);
 
@@ -21,7 +28,7 @@ export function ArtifactButton({
     const pending = request.current;
     request.current = null;
     pending?.abort();
-  }, [path]);
+  }, []);
 
   async function open() {
     if (request.current) return;
@@ -30,16 +37,20 @@ export function ArtifactButton({
     setError("");
     setProgress("loading");
     try {
-      const file = await readArtifact(path, transfer.signal, (waiting) => {
-        setProgress(waiting ? "waiting" : "loading");
+      const file = await readArtifact(API_BASE_URL + path, transfer.signal, (reason) => {
+        if (request.current === transfer) setProgress(reason ?? "loading");
       }, reference, contentType);
       if (transfer.signal.aborted) return;
       if (onPreview) onPreview(file);
       else downloadBlob(file, artifactFilename(filename ?? "tokencraft-output", file.type));
     } catch (cause) {
       if (!transfer.signal.aborted) {
-        setError(cause instanceof Error && !(cause instanceof TypeError)
-          ? cause.message : "Could not load this output. Try again.");
+        if (cause instanceof DOMException && cause.name === "TimeoutError") {
+          setError("The download timed out. Try downloading this output again.");
+        } else {
+          setError(cause instanceof Error && !(cause instanceof TypeError)
+            ? cause.message : "Could not load this output. Try again.");
+        }
       }
     } finally {
       if (request.current === transfer) {
@@ -64,7 +75,8 @@ export function ArtifactButton({
         aria-label={`Cancel ${label.toLowerCase()}`} onClick={cancel}>Cancel</button>}
     </div>
     {progress && <p className="text-xs text-muted" role="status">
-      {progress === "waiting" ? "Downloads are busy. Retrying…" : "Loading output…"}
+      {progress === "busy" ? "Downloads are busy. Retrying…"
+        : progress === "interrupted" ? "Connection interrupted. Retrying…" : "Loading output…"}
     </p>}
     {error && <p className="text-xs text-rose-600 dark:text-rose-300" role="alert">{error}</p>}
   </div>;
