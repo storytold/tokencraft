@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -96,6 +97,28 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual((action["role"], action["replicas"]), ("api", 2))
         self.sample["api"].update(desired=2, ready=2)
         self.assertEqual(self.tick(state, 300)[0]["decision"], "hold")
+
+    def test_scale_in_requires_a_live_guard_and_a_still_fresh_observation(self):
+        decision = {"role": "api", "deployment": "api", "replicas": 2, "expected": 3,
+                    "deployment_version": "11", "observed_at": 1000}
+        with patch("controller.subprocess.run") as run:
+            self.assertIn("api.admission_service", apply_scale("kubectl", self.config, decision))
+            run.assert_not_called()
+        self.config["api"]["admission_service"] = "fixture"
+        with patch("controller.admission_guard", return_value=nullcontext()) as guard, \
+                patch("controller.time.time", return_value=1046), patch("controller.subprocess.run") as run:
+            self.assertIn("expired", apply_scale("kubectl", self.config, decision))
+            guard.assert_called_once_with("psql", "fixture")
+            run.assert_not_called()
+        with patch("controller.admission_guard", return_value=nullcontext("paused")), \
+                patch("controller.subprocess.run") as run:
+            self.assertEqual(apply_scale("kubectl", self.config, decision), "paused")
+            run.assert_not_called()
+
+    def test_admission_service_must_be_a_service_name(self):
+        self.config["api"]["admission_service"] = "fixture dbname=other"
+        with self.assertRaisesRegex(ValueError, "libpq service name"):
+            self.tick({}, 0)
 
     def test_admission_pause_or_unknown_restarts_the_api_scale_in_window(self):
         self.sample["api"]["cpu_fraction"] = 0.10

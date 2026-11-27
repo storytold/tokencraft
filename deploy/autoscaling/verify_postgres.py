@@ -3,8 +3,10 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import time
 
@@ -149,6 +151,7 @@ def check_queries(pg_bin, directory):
     assert sample("capacity_collector")["admissions_paused"] is False
     assert query("-c", "SELECT has_table_privilege('capacity_collector', 'public.gateway_admission_control', 'UPDATE')") == "f"
     print("PASS full migration chain; the standalone sampler sees pause with read access and preserves queue signals")
+    verify_scale_in(pg_bin, directory, query)
     query("-c", "INSERT INTO gateway_queue_cooldowns VALUES ('burst','project',repeat('a',64),'fixture',now() + interval '60 seconds')")
     assert sample()["eligible_sample"] == 0
     query("-c", "DELETE FROM gateway_queue_cooldowns; INSERT INTO gateway_dispatch_controls VALUES ('burst',1,true,'{}')")
@@ -236,6 +239,97 @@ def check_queries(pg_bin, directory):
     query("-c", "UPDATE gateway_provider_runs SET request_payload = NULL WHERE request_id = 'old-eligible'")
     assert query("-c", "SELECT count(*) FROM gateway_provider_workflow_frames") == "0"
     print("PASS a large workflow frame survives a payload update and is cleared with the submit payload")
+
+
+def verify_scale_in(pg_bin, directory, query):
+    service = directory / "pg-services"
+    service.write_text(f"[writer]\nhost={directory}\nuser=capacity_collector\ndbname=postgres\n")
+    log = directory / "scale-requests"
+    release = directory / "finish-scale"
+    actuator = directory / "kubectl-fixture"
+    actuator.write_text(
+        f"#!{sys.executable}\n"
+        "import json, pathlib, sys, time\n"
+        f"with open({str(log)!r}, 'a') as output:\n"
+        "    print(json.dumps(sys.argv[1:]), file=output)\n"
+        "deadline = time.monotonic() + 8\n"
+        f"while not pathlib.Path({str(release)!r}).exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        raise SystemExit('scale fixture was not released')\n"
+        "    time.sleep(.025)\n"
+    )
+    actuator.chmod(0o700)
+    config = {
+        "cell": "fixture", "context": "local", "namespace": "disposable",
+        "connections_per_replica": 10, "connection_budget": 100,
+        "api": {"deployment": "api", "min": 2, "max": 6, "allow_scale_in": True, "admission_service": "writer"},
+        "worker": {"deployment": "worker", "min": 2, "max": 6},
+    }
+    snapshot = {
+        "cell": "fixture", "database": {"healthy": True, "additional_connections": 30, "admissions_paused": False},
+        "api": {"desired": 3, "ready": 3, "stable": True, "deployment_version": "11", "cpu_fraction": 0.1,
+                "sse_readers": 0, "sse_capacity": 96},
+        "worker": {"desired": 2, "ready": 2, "stable": True, "deployment_version": "21", "active_tasks": 0,
+                   "task_capacity": 8, "oldest_ready_age_seconds": 0, "provider_headroom": True},
+    }
+    policy_file, sample_file, state_file = (directory / name for name in ("policy.json", "sample.json", "state.json"))
+    policy_file.write_text(json.dumps(config))
+
+    def invoke():
+        now = time.time()
+        sample_file.write_text(json.dumps(dict(snapshot, observed_at=now)))
+        state_file.write_text(json.dumps({
+            "cell": "fixture", "last_observed_at": now - 15, "admissions_paused": False,
+            "roles": {"api": {"desired": 3, "low_since": now - 301}},
+        }))
+        result = subprocess.run([
+            sys.executable, "-B", HERE / "controller.py", "--config", policy_file, "--snapshot", sample_file,
+            "--state", state_file, "--apply", "--kubectl", actuator, "--psql", pg_bin / "psql",
+        ], env=dict(os.environ, PGSERVICEFILE=str(service)), check=True, capture_output=True, text=True, timeout=14)
+        return json.loads(result.stdout)
+
+    def pause():
+        query("-c", "BEGIN; SET LOCAL statement_timeout = '5s'; "
+              "LOCK TABLE public.gateway_admission_control IN ACCESS EXCLUSIVE MODE; "
+              "UPDATE public.gateway_admission_control SET paused = true; COMMIT;")
+
+    with ThreadPoolExecutor(max_workers=2) as tasks:
+        applying = tasks.submit(invoke)
+        try:
+            for _ in range(100):
+                if log.is_file() and log.stat().st_size:
+                    break
+                if applying.done():
+                    raise AssertionError(f"Scale request failed before reaching the fixture: {applying.result()}")
+                time.sleep(.05)
+            else:
+                raise AssertionError("Scale request did not reach the fixture")
+            pausing = tasks.submit(pause)
+            for _ in range(40):
+                if query("-c", "SELECT EXISTS (SELECT 1 FROM pg_locks "
+                         "WHERE relation = 'public.gateway_admission_control'::regclass "
+                         "AND mode = 'AccessExclusiveLock' AND NOT granted)") == "t":
+                    break
+                time.sleep(.05)
+            else:
+                raise AssertionError("The pause did not wait for the actuator transaction")
+            assert not applying.done() and not pausing.done()
+        finally:
+            release.write_text("done")
+        assert applying.result(timeout=5)["applied"] is True
+        pausing.result(timeout=5)
+
+    held = invoke()
+    assert held["decision"] == "hold" and held["applied"] is False and "paused" in held["reason"], held
+    assert json.loads(state_file.read_bytes())["roles"]["api"]["low_since"] is None
+    query("-c", "REVOKE SELECT ON public.gateway_admission_control FROM capacity_collector")
+    unknown = invoke()
+    assert unknown["decision"] == "hold" and unknown["applied"] is False and "could not verify" in unknown["reason"]
+    query("-c", "GRANT SELECT ON public.gateway_admission_control TO capacity_collector")
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 1 and "--resource-version=11" in calls[0] and "--current-replicas=3" in calls[0]
+    query("-c", "UPDATE public.gateway_admission_control SET paused = false")
+    print("PASS an in-flight scale-in holds the pause, and a paused or unreadable writer vetoes a stale open plan")
 
 
 def main():

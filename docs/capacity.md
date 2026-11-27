@@ -34,7 +34,8 @@ Example controller policy for a cell with at least 100 connections dedicated to 
   "namespace": "tokencraft-cell-a",
   "connections_per_replica": 10,
   "connection_budget": 100,
-  "api": {"deployment": "tokencraft-api", "min": 2, "max": 8, "allow_scale_in": false},
+  "api": {"deployment": "tokencraft-api", "min": 2, "max": 8, "allow_scale_in": false,
+          "admission_service": "tokencraft_cell_a_writer"},
   "worker": {"deployment": "tokencraft-worker", "min": 2, "max": 6}
 }
 ```
@@ -75,6 +76,8 @@ python3 deploy/autoscaling/controller.py --config policy.json \
 ```
 
 Use plan mode during a pilot. When enabling changes, add `--apply` and choose a separate state file such as `live-state.json` so live scaling starts with a fresh observation window. Use the deployment context and namespace explicitly. An external process supervisor can schedule the commands, and a different orchestrator can consume the same decision through its guarded replica API.
+
+To apply API scale-in, set `api.admission_service` to a libpq service for the same cell's PostgreSQL writer. Configure this service in `PGSERVICEFILE` with a read-only login that can select from `public.gateway_admission_control`. Use hostname-verified TLS for a remote connection. The controller rechecks the admission state and observation age before invoking Kubernetes. It holds the shared database lock while sending the scale request, so a concurrent `admin-cli admissions pause` waits for the request to return. An unavailable guard holds scale-in and restarts its observation window. Kubernetes completes replica termination asynchronously after accepting the scale request.
 
 ## Enforce limits where identity and state are available
 

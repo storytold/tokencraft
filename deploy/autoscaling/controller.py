@@ -2,11 +2,14 @@
 
 import argparse
 from collections.abc import Mapping
+from contextlib import contextmanager, nullcontext
 import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import re
+import select
 import subprocess
 from tempfile import NamedTemporaryFile
 import time
@@ -18,6 +21,17 @@ DOWN_WINDOW = 300
 UP_COOLDOWN = 60
 DOWN_COOLDOWN = 600
 ROLES = ("api", "worker")
+ADMISSION_SERVICE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}")
+ADMISSION_GUARD_SQL = b"""
+BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY;
+SET LOCAL lock_timeout = '1500ms';
+SET LOCAL statement_timeout = '3s';
+SET LOCAL idle_in_transaction_session_timeout = '20s';
+LOCK TABLE public.gateway_admission_control IN ACCESS SHARE MODE;
+SELECT CASE WHEN pg_is_in_recovery() THEN 'unknown'
+       ELSE coalesce((SELECT CASE WHEN paused THEN 'paused' ELSE 'open' END
+                     FROM public.gateway_admission_control WHERE singleton), 'unknown') END;
+"""
 
 
 def integer(value, name, *, minimum=0):
@@ -50,6 +64,9 @@ def validate_config(config):
         raise ValueError("API and worker deployments must be separate")
     if type(config["api"].get("allow_scale_in", False)) is not bool:
         raise ValueError("api.allow_scale_in must be a boolean")
+    service = config["api"].get("admission_service")
+    if service is not None and (not isinstance(service, str) or not ADMISSION_SERVICE.fullmatch(service)):
+        raise ValueError("api.admission_service must be a libpq service name")
     minimum_connections = sum(config[role]["min"] for role in ROLES) * per_replica
     integer(config["connection_budget"], "connection_budget", minimum=minimum_connections)
 
@@ -94,6 +111,11 @@ def signals(snapshot, admissions_open):
     }
 
 
+def fresh(sampled_at, now):
+    return (type(sampled_at) in (int, float) and math.isfinite(sampled_at)
+            and 0 <= now - sampled_at <= MAX_SAMPLE_AGE)
+
+
 def decide(config, snapshot, previous, now):
     """Return an optional action and the next observation state."""
     validate_config(config)
@@ -110,7 +132,7 @@ def decide(config, snapshot, previous, now):
     sampled_at = snapshot["observed_at"]
     if snapshot["cell"] != config["cell"]:
         raise ValueError("snapshot belongs to another cell")
-    if type(sampled_at) not in (int, float) or not math.isfinite(sampled_at) or not 0 <= now - sampled_at <= MAX_SAMPLE_AGE:
+    if not fresh(sampled_at, now):
         return hold("snapshot is stale or has an invalid timestamp")
     database = snapshot["database"]
     paused = database.get("admissions_paused")
@@ -168,18 +190,70 @@ def decide(config, snapshot, previous, now):
     _, _, _, role, replicas, reason = min(actions)
     return {
         "decision": "scale", "role": role, "deployment": config[role]["deployment"],
+        "observed_at": sampled_at,
         "expected": snapshot[role]["desired"], "deployment_version": snapshot[role]["deployment_version"],
         "replicas": replicas, "reason": reason,
     }, state
 
 
-def apply_scale(kubectl, config, decision):
-    subprocess.run([
-        kubectl, f"--context={config['context']}", f"--namespace={config['namespace']}",
-        "--request-timeout=10s", "scale", f"deployment/{decision['deployment']}",
-        f"--current-replicas={decision['expected']}", f"--resource-version={decision['deployment_version']}",
-        f"--replicas={decision['replicas']}",
-    ], check=True, timeout=15, stdout=subprocess.DEVNULL)
+@contextmanager
+def admission_guard(psql, service):
+    """Keep the same shared lock as an admission while the actuator sends its scale request."""
+    if not service:
+        yield "API scale-in requires api.admission_service"
+        return
+    unknown = "API scale-in could not verify open admissions on the cell writer"
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("PG") or key in {"PGSERVICEFILE", "PGPASSFILE"}}
+    env["PGCONNECT_TIMEOUT"] = "3"
+    try:
+        child = subprocess.Popen(
+            [psql, "-XqAtw", "-v", "ON_ERROR_STOP=1", "-d", f"service={service}"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+        )
+    except OSError:
+        yield unknown
+        return
+    with child:
+        try:
+            try:
+                child.stdin.write(ADMISSION_GUARD_SQL)
+                child.stdin.flush()
+                ready, _, _ = select.select([child.stdout], [], [], 6)
+                reply = os.read(child.stdout.fileno(), 64) if ready else b""
+            except (OSError, ValueError):
+                reply = b""
+            if reply == b"open\n" and child.poll() is None:
+                yield None
+            else:
+                yield "API scale-in held while admissions are paused" if reply == b"paused\n" else unknown
+        finally:
+            try:
+                child.stdin.close()
+            except BrokenPipeError:
+                pass
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+
+
+def apply_scale(kubectl, config, decision, *, psql="psql"):
+    """Return a reason when the live guard holds the decision."""
+    scale_in = decision["role"] == "api" and decision["replicas"] < decision["expected"]
+    gate = admission_guard(psql, config["api"].get("admission_service")) if scale_in else nullcontext()
+    with gate as hold_reason:
+        if hold_reason:
+            return hold_reason
+        if scale_in and not fresh(decision.get("observed_at"), time.time()):
+            return "API scale-in observation expired before actuation"
+        subprocess.run([
+            kubectl, f"--context={config['context']}", f"--namespace={config['namespace']}",
+            "--request-timeout=10s", "scale", f"deployment/{decision['deployment']}",
+            f"--current-replicas={decision['expected']}", f"--resource-version={decision['deployment_version']}",
+            f"--replicas={decision['replicas']}",
+        ], check=True, timeout=15, stdout=subprocess.DEVNULL)
 
 
 def read_object(path):
@@ -208,6 +282,7 @@ def main():
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--kubectl", default="kubectl")
+    parser.add_argument("--psql", default="psql", help="PostgreSQL client for the API scale-in guard")
     parser.add_argument("--apply", action="store_true", help="Permit changes to the configured Kubernetes deployments")
     args = parser.parse_args()
     config = read_object(args.config)
@@ -217,11 +292,16 @@ def main():
         decision, state = decide(config, read_object(args.snapshot), previous, time.time())
         applied = False
         if args.apply and decision["decision"] == "scale":
-            apply_scale(args.kubectl, config, decision)
-            state["last_action_at"] = time.time()
-            state["last_scaled_role"] = decision["role"]
-            state["roles"].pop(decision["role"], None)
-            applied = True
+            hold_reason = apply_scale(args.kubectl, config, decision, psql=args.psql)
+            if hold_reason:
+                state["admissions_paused"] = None
+                state["roles"]["api"]["low_since"] = None
+                decision = {"decision": "hold", "reason": hold_reason}
+            else:
+                state["last_action_at"] = time.time()
+                state["last_scaled_role"] = decision["role"]
+                state["roles"].pop(decision["role"], None)
+                applied = True
         save_state(args.state, state)
     print(json.dumps({**decision, "cell": config["cell"], "applied": applied}, sort_keys=True))
 

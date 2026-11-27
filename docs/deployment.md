@@ -112,6 +112,8 @@ Matching receipt retries, scoped reads, quotes, provider polling, signed webhook
 
 The [Operations console](../deploy/monitoring/README.md#read-the-operational-views) shows the observed pause state and whole-cell request, workflow, and webhook backlog counts.
 
+If API autoscaling is enabled, the pause also waits for any scale-in request already holding the database lock. Verify replica readiness and drain before starting the backup. [Scale-in guard](capacity.md#wire-the-controller-into-a-hosted-cell)
+
 ### Rehearse the cutover before release
 
 The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.
