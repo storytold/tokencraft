@@ -288,9 +288,15 @@ def run(gateway, directory, settings, session, account, project):
             "ENDPOINT": f"http://{HOST}:{bucket.server_port}", "BUCKET": "fixture-bucket", "REGION": "us-east-1",
             "ACCESS_KEY": "fixture-access", "SECRET_KEY": bucket.secret,
         }.items()})
-        for label, port, role in (("cell-a", api, "api"), ("cell-b", peer_port, "api"), ("cell-worker", worker_port, "worker")):
-            stack.enter_context(service(label, [gateway], directory,
-                dict(settings, TOKENCRAFT_PROCESS_ROLE=role, API_GATEWAY_PORT=str(port)), lambda: ready(port)))
+        def gateway_service(label, port, role):
+            return service(label, [gateway], directory,
+                dict(settings, TOKENCRAFT_PROCESS_ROLE=role, API_GATEWAY_PORT=str(port)), lambda: ready(port))
+
+        primary = stack.enter_context(ExitStack())
+        peer = stack.enter_context(ExitStack())
+        primary.enter_context(gateway_service("cell-a", api, "api"))
+        peer.enter_context(gateway_service("cell-b", peer_port, "api"))
+        stack.enter_context(gateway_service("cell-worker", worker_port, "worker"))
         trust = directory / "trust.txt"
         trust.write_text("127.0.0.1/32\n")
         proxy = directory / "haproxy.cfg"
@@ -302,6 +308,16 @@ def run(gateway, directory, settings, session, account, project):
                          TOKENCRAFT_LB_CONNECTIONS_PER_API="64", TOKENCRAFT_LB_ENABLE_IP_RATE_LIMIT="false")
         stack.enter_context(service("cell-ingress", ["haproxy", "-db", "-f", proxy], directory, proxy_env,
                                    lambda: call(forward_port, "/_tokencraft/ingress-ready", 200)[0] == b""))
+        proxy_log = directory / "cell-ingress.log"
+
+        def wait_for_api_state(replica, state, *, after=0):
+            message = f"Server cell_api/api{replica} is {state}".encode()
+            eventually(lambda: message in proxy_log.read_bytes()[after:],
+                       f"HAProxy to report API replica {replica} {state}")
+
+        wait_for_api_state(0, "UP")
+        wait_for_api_state(1, "UP")
+
         def req(path, status=200, *, auth=None, **kwargs):
             return call(forward_port, path, status, headers={**FORWARDED, **(auth or {})}, **kwargs)
 
@@ -315,6 +331,8 @@ def run(gateway, directory, settings, session, account, project):
         media_key = project_key(session, account, project)
         chat_keys = [project_key(*provision(api)) for _ in range(2)]
         health = {"Authorization": "Bearer " + settings["TOKENCRAFT_CAPACITY_TOKEN"]}
+        call(api, "/internal/capacity", 200, headers=health)
+        req("/internal/capacity", 403, auth=health)
         lock_log = stack.enter_context(sample_database_locks(directory, settings))
         logs = [directory / f"{replica}.log" for replica in ("cell-a", "cell-b", "cell-worker")]
         offsets = {path: path.stat().st_size for path in logs}
@@ -387,6 +405,31 @@ def run(gateway, directory, settings, session, account, project):
             "lock_samples": len(lock_counts), "peak_sampled_db_lock_waiters": max(lock_counts),
         }), flush=True)
         print("PASS mixed tenants survived provider and storage stalls with exact artifacts and no resubmissions", flush=True)
+
+        primary.close()
+        wait_for_api_state(0, "DOWN")
+        assert read_image(forward_port, slow, media_key) == PIXELS
+        pending = image(13, "media-a")
+
+        peer.close()
+        wait_for_api_state(1, "DOWN")
+        call(forward_port, "/_tokencraft/ingress-ready", 503)
+        _, unavailable = req(pending["status_url"], 503, auth=media_key)
+        assert unavailable.get_all("Retry-After") == ["5"]
+        assert unavailable.get_all("Cache-Control") == ["no-store"]
+
+        proxy_offset = proxy_log.stat().st_size
+        stack.enter_context(gateway_service("cell-b-restored", peer_port, "api"))
+        wait_for_api_state(1, "UP", after=proxy_offset)
+        call(forward_port, "/_tokencraft/ingress-ready", 200)
+        assert image(13, "media-a")["id"] == pending["id"]
+        wait_for_status(forward_port, pending, media_key, "succeeded", 20)
+        assert read_image(forward_port, pending, media_key) == PIXELS
+        req(pending["status_url"], 404, auth=chat_keys[0])
+        submitted = sum((adapter.jobs for adapter in adapters.values()), Counter())
+        assert submitted == Counter(item["id"] for item in (slow, *media, pending))
+        print("PASS ingress served a surviving API, returned a non-storable retry response when empty, "
+              "and recovered the original request after restart", flush=True)
 
 
 if __name__ == "__main__":

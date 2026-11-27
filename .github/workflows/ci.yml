@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install PostgreSQL 17 and jq
         run: bash .github/scripts/install-postgresql17-ubuntu.sh
       - name: Install Rust and verify PostgreSQL tools
@@ -74,6 +76,22 @@ jobs:
         run: python3 -B scripts/smoke_connector_recovery.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify connector artifact validation and retrieval recovery
         run: python3 -B scripts/smoke_connector_artifact_validation.py target/debug/api-gateway target/debug/admin-cli
+      - name: Verify cell isolation under provider, storage, and replica failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          proxy_dir="$RUNNER_TEMP/tokencraft-haproxy"
+          mkdir -p "$proxy_dir"
+          proxy_version=3.2.28
+          archive="$proxy_dir/haproxy-$proxy_version.tar.gz"
+          curl --fail --silent --show-error --retry 3 --max-time 60 \
+            "https://www.haproxy.org/download/3.2/src/haproxy-$proxy_version.tar.gz" --output "$archive"
+          printf '%s  %s\n' 56d08f65cfa756e95e8b64b76e28bdd5163c52d8a633dfa6a553f641e575698e "$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$archive" -C "$proxy_dir"
+          make -s -j 2 -C "$proxy_dir/haproxy-$proxy_version" TARGET=linux-glibc
+          PATH="$proxy_dir/haproxy-$proxy_version:$PATH" \
+            python3 -B scripts/smoke_cell_faults.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify queued provider credential rotation and revocation
         run: python3 -B scripts/smoke_provider_credentials.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify rate expiry during budget contention
