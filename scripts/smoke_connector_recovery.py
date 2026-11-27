@@ -99,6 +99,8 @@ class Connector(BaseHTTPRequestHandler):
             if self.path == path:
                 with self.server.lock:
                     self.trace("status", handle)
+                if handle == "second" and self.server.hold_second.is_set():
+                    return self.reply(200, {"version": 1, "handle": handle, "status": "running"})
                 self.reply(200, {"version": 1, "handle": handle, "status": "succeeded",
                                  "provider_charge": {"unit": "credit", "quantity": self.server.charges[handle]}})
                 return
@@ -118,7 +120,7 @@ def connector_server(token, *, stall_lookups=False):
         server.lock = Lock()
         server.jobs, server.submissions, server.fetches = {}, Counter(), Counter()
         server.traces = []
-        server.lookup_started, server.corrected = Event(), Event()
+        server.lookup_started, server.corrected, server.hold_second = Event(), Event(), Event()
         server.release_lookups = Event() if stall_lookups else None
         server.stalled_lookups = []
         server.images = {"first": square_png((220, 50, 20)), "second": square_png((20, 50, 220))}
@@ -152,6 +154,23 @@ def read_image(port, receipt, auth):
     body, _ = call(port, image["url"], 200, headers=auth)
     assert sha256(body).hexdigest() == image["artifact"]["sha256"]
     return body
+
+
+def recovery_events(port, project, receipt, auth):
+    query = urlencode({"project_id": project, "client_ref": "second"})
+    deadline = monotonic() + 8
+    while monotonic() < deadline:
+        body, _ = call(port, "/v1/exports/events?" + query, 200, headers=auth)
+        events = [json.loads(line) for line in body.splitlines()]
+        assert all(event["client_ref"] == "second" and event["request_id"] == receipt["id"] for event in events)
+        types = [event["type"] for event in events]
+        if "request.recovered" in types:
+            assert types == [
+                "request.accepted", "request.dispatched", "request.outcome_unconfirmed", "request.recovered",
+            ], types
+            return
+        sleep(0.1)
+    raise AssertionError("The export feed did not publish the recovered receipt")
 
 
 def verify_read_views(port, peer, session, account, project, first, second, first_client, second_client):
@@ -237,7 +256,7 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
             key, _ = call(port, f"/v1/projects/{project}/service-principals?account_id={account}",
                           201, method="POST", headers=session,
                           body={"name": name, "client_ref": name, "scopes": [
-                              "requests:submit", "requests:read", "usage:read",
+                              "requests:submit", "requests:read", "usage:read", "exports:read",
                           ]})
             return {"Authorization": "Bearer " + key["token"]}
 
@@ -296,10 +315,15 @@ def verify_recovery(gateway, directory, settings, session, account, project, *, 
             else:
                 assert all("completion" not in job for job in connector.jobs.values())
 
+        connector.hold_second.set()
         connector.corrected.set()
         with worker("replacement-worker"):
+            wait_for_status(peer, second, second_client, "running", 22)
+            recovery_events(peer, project, second, second_client)
+            connector.hold_second.clear()
             wait_for_status(peer, second, second_client, "succeeded", 22)
             assert read_image(port, second, second_client) == connector.images["second"]
+        print("PASS scoped exports recorded a recovered receipt before terminal completion")
         for label, auth in (("first", first_client), ("second", second_client)):
             usage, _ = call(peer, "/v1/usage", 200, headers=auth)
             totals = usage["totals"]

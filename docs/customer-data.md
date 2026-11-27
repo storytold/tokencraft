@@ -60,7 +60,7 @@ The reporting SQL installs indexes for scoped request lifecycle and cost lookups
 
 `tokencraft_export.provider_charge_observations` exposes connector charges in their original billing units. They arrive as `usage.observed` events with `data.source` set to `connector_charge` and a decimal string at `data.provider_charge.quantity`. For example, Kinovi reports credits. Group amounts by provider and unit, and use the separate USD fields for dollar totals. The request and usage APIs expose the same observations while delivery is pending and after a failed request.
 
-`tokencraft_export.request_lifecycle` shows each imported request's status and the time that state was recorded. A terminal event supersedes an unconfirmed outcome even if the unconfirmed event arrives later. The view uses the events committed to the destination, so the status reflects the importer's current checkpoint.
+`tokencraft_export.request_lifecycle` shows each imported request's status and the time that state was recorded. A `request.recovered` event returns an unconfirmed request to running after TokenCraft verifies the provider receipt. A later unconfirmed outcome returns it to reconciliation. A terminal event supersedes both transitions even if they arrive later. Reapply the reporting SQL to see the recovery transition in an existing destination. The view uses the events committed to the destination, so the status reflects the importer's current checkpoint.
 
 Join the lifecycle and charge views to report charged requests that failed to deliver an output.
 

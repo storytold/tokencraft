@@ -114,6 +114,8 @@ The [Operations console](../deploy/monitoring/README.md#read-the-operational-vie
 
 If API autoscaling is enabled, the pause also waits for any scale-in request already holding the database lock. Verify replica readiness and drain before starting the backup. [Scale-in guard](capacity.md#wire-the-controller-into-a-hosted-cell)
 
+Migration 89 adds receipt recovery to the version 1 export feed and backfills transitions for active requests with a saved recovery receipt. Schema-88 gateways can overlap after the migration commits. Apply it during the cutover window because request writes pause while the migration changes the export trigger and backfills those events. Use the updated [PostgreSQL reporting views](customer-data.md#reconcile-costs) to project the recovered state.
+
 ### Rehearse the cutover before release
 
 The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The rehearsal verifies admission control on the primary and checks that a standby cannot confirm the pause. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.

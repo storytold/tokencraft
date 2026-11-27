@@ -198,6 +198,10 @@ def verify_lifecycle():
         (origin, "running", ["request.dispatched"], "running", 1),
         (origin, "uncertain", ["request.outcome_unconfirmed", "request.dispatched"],
          "awaiting_reconciliation", 1),
+        (origin, "recovered", ["request.dispatched", "request.outcome_unconfirmed", "request.recovered"],
+         "running", 3),
+        (origin, "uncertain-again", ["request.outcome_unconfirmed", "request.recovered", "request.outcome_unconfirmed"],
+         "awaiting_reconciliation", 3),
         (origin, "success", ["request.dispatched", "request.succeeded", "request.content_removed"],
          "succeeded", 2),
         (origin, "failure", ["request.failed", "request.outcome_unconfirmed"], "failed", 1),
@@ -223,7 +227,8 @@ def verify_lifecycle():
     """, {"events": json.dumps(list(reversed(events))), "request": request_id}))
     assert sorted(map(tuple, rows)) == sorted((source, project, status, offset)
                                               for source, project, _, status, offset in cases)
-    print("PASS Request lifecycle projected all six states across isolated sources and projects.", flush=True)
+    print("PASS Request lifecycle projected all six states and recovery transitions across isolated sources and projects.",
+          flush=True)
 
 
 def verify_import(source, armed, retry_started, release_retry, attempts):

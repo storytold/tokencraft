@@ -5,10 +5,12 @@ CREATE INDEX IF NOT EXISTS export_events_usage_scope_idx
     ON tokencraft_export.events (source_url, project_id, (payload->>'type'), (payload->>'request_id'))
     WHERE payload->>'type' IN ('request.accepted', 'usage.observed', 'usage.supplier_settled');
 
-CREATE INDEX IF NOT EXISTS export_events_lifecycle_scope_idx
+CREATE INDEX IF NOT EXISTS export_events_lifecycle_transitions_idx
     ON tokencraft_export.events (source_url, project_id, (payload->>'request_id'))
     WHERE payload->>'type' IN ('request.dispatched', 'request.outcome_unconfirmed',
-                             'request.succeeded', 'request.failed', 'request.canceled');
+                             'request.recovered', 'request.succeeded', 'request.failed', 'request.canceled');
+
+DROP INDEX IF EXISTS tokencraft_export.export_events_lifecycle_scope_idx;
 
 CREATE OR REPLACE VIEW tokencraft_export.request_lifecycle AS
 SELECT admission.source_url,
@@ -24,6 +26,7 @@ LEFT JOIN LATERAL (
     SELECT CASE event.payload->>'type'
                WHEN 'request.dispatched' THEN 'running'
                WHEN 'request.outcome_unconfirmed' THEN 'awaiting_reconciliation'
+               WHEN 'request.recovered' THEN 'running'
                WHEN 'request.succeeded' THEN 'succeeded'
                WHEN 'request.failed' THEN 'failed'
                WHEN 'request.canceled' THEN 'canceled'
@@ -34,11 +37,12 @@ LEFT JOIN LATERAL (
       AND event.project_id = admission.project_id
       AND event.payload->>'request_id' = admission.payload->>'request_id'
       AND event.payload->>'type' IN ('request.dispatched', 'request.outcome_unconfirmed',
-                                   'request.succeeded', 'request.failed', 'request.canceled')
+                                   'request.recovered', 'request.succeeded', 'request.failed', 'request.canceled')
     -- A terminal event supersedes an unconfirmed outcome, even if imported out of order.
     ORDER BY CASE event.payload->>'type'
                  WHEN 'request.dispatched' THEN 0
                  WHEN 'request.outcome_unconfirmed' THEN 1
+                 WHEN 'request.recovered' THEN 1
                  ELSE 2
              END DESC, status_at DESC, event.event_id DESC
     LIMIT 1
