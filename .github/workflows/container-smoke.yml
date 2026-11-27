@@ -61,6 +61,16 @@ jobs:
           gateway_id=$(docker image inspect --format '{{.Id}}' tokencraft-gateway:ci)
           [[ "$gateway_id" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf 'version=%s\ngateway_id=%s\n' "$package_version" "$gateway_id" >> "$GITHUB_OUTPUT"
+      - name: Verify the Render image reports the release revision
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.image_metadata.outputs.version }}
+        run: |
+          docker build --file Dockerfile --build-arg "RENDER_GIT_COMMIT=$GITHUB_SHA" --tag tokencraft-render:ci .
+          for binary in tokencraft api-gateway admin-cli; do
+            docker run --rm --network none --entrypoint "$binary" tokencraft-render:ci --version \
+              | diff -u <(printf '%s %s (%s)\n' "$binary" "$PACKAGE_VERSION" "$GITHUB_SHA") -
+          done
       - name: Migrate and run the standalone gateway
         shell: bash
         run: |

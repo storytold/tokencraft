@@ -415,6 +415,8 @@ The [grant script](../deploy/postgres/grant-runtime.sql) grants access to the ow
 
 The Render launcher defaults `TOKENCRAFT_RENDER_MIGRATE_ON_START` to `false`. Apply the image's migrations and runtime grants in a separate step, then start the service with the runtime login. The gateway opens its listener after confirming schema compatibility. Use `/ready` as the Render health check.
 
+The root Dockerfile stamps all three binaries with Render's `RENDER_GIT_COMMIT` build argument. Pass `--build-arg RENDER_GIT_COMMIT="$(git rev-parse HEAD)"` when building that image locally for revision verification. [Render default environment variables](https://render.com/docs/environment-variables)
+
 For a new disposable Render demo, set `TOKENCRAFT_RENDER_MIGRATE_ON_START=true`. Startup can initialize an empty `public` schema and can verify an already compatible schema. Upgrading an existing database uses `admin-cli migrate` during the [deployment cutover](#cut-over-without-schema-overlap).
 
 ## Shared artifact storage

@@ -7,7 +7,17 @@ COPY crates crates
 COPY sdk/rust sdk/rust
 COPY examples examples
 ENV CARGO_PROFILE_RELEASE_STRIP=symbols
+ARG RENDER_GIT_COMMIT
 RUN set -eu; \
+    if [ -n "${RENDER_GIT_COMMIT:-}" ]; then \
+        case "$RENDER_GIT_COMMIT" in \
+            *[!0123456789abcdef]*) echo "RENDER_GIT_COMMIT must be a full lowercase Git SHA" >&2; exit 2 ;; \
+        esac; \
+        if [ "${#RENDER_GIT_COMMIT}" -ne 40 ]; then \
+            echo "RENDER_GIT_COMMIT must be a full lowercase Git SHA" >&2; exit 2; \
+        fi; \
+        export TOKENCRAFT_SOURCE_REVISION="$RENDER_GIT_COMMIT"; \
+    fi; \
     export PATH="/usr/lib/postgresql/17/bin:$PATH"; \
     pgdata="$(mktemp -d)"; \
     chown postgres:postgres "$pgdata"; \
