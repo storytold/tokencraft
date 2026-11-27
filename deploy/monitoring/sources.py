@@ -19,6 +19,7 @@ from plugin_traffic import parse_sample as plugin_sample
 ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}")
 SECRET = re.compile(r"[A-Za-z0-9_-]{32,128}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+INSTANCE_ID = re.compile(r"[0-9a-f]{32}")
 KINDS = {"gateway", "worker", "combined", "plugin", "compute", "upstream", "gpu"}
 REPLICA_ROLES = {"gateway": "api", "worker": "worker", "combined": "combined"}
 CHECKS = {"database", "migrations", "worker", "provider_worker", "artifact_storage"}
@@ -323,6 +324,11 @@ def replica_sample(payload, kind):
     result = {}
     for key in ("sse_readers", "sse_capacity", "provider_tasks", "provider_capacity"):
         result[key] = None if value.get(key) is None else require_int(value[key], key, 0, 65536)
+    instance_id = value.get("instance_id")
+    if instance_id is not None:
+        if not isinstance(instance_id, str) or not INSTANCE_ID.fullmatch(instance_id):
+            raise ValueError("invalid replica instance ID")
+        result["instance_id"] = instance_id
     checks = value.get("checks", {})
     if not isinstance(checks, dict):
         raise ValueError("invalid replica checks")

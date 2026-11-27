@@ -116,12 +116,14 @@ class Sources(unittest.TestCase):
         self.assertEqual(probe_url("http://[::1]:4000/ready").hostname, "::1")
 
     def test_replica_exposes_only_expected_checks_and_binding_shape(self):
-        payload = json.dumps({"ready": True, "role": "worker", "provider_tasks": 4, "provider_capacity": 16,
+        payload = json.dumps({"ready": True, "role": "worker", "instance_id": "d" * 32,
+                              "provider_tasks": 4, "provider_capacity": 16,
                               "checks": {"migrations": "ready", "large_private_field": "not fetched",
                                          "database": {"untrusted": True}}, "local_bindings": ["f" * 64]})
         ready, signals, bindings = replica_sample(payload, "worker")
         self.assertTrue(ready)
         self.assertEqual(signals["checks"], {"migrations": "ready"})
+        self.assertEqual(signals["instance_id"], "d" * 32)
         self.assertEqual(bindings["local"], ["f" * 64])
         with self.assertRaises(ValueError):
             replica_sample(payload, "gateway")
@@ -250,9 +252,9 @@ class IntegrationLogic(unittest.TestCase):
         obs = {"observed_at": 110, "cells": {"lab": {"sample": sample(), "queue_coverage": "fresh",
                "worker_bindings_uniform": True, "reserved_connections": 20}}, "targets": {
                "api": {"id": "api", "cell": "lab", "kind": "gateway", "status": "up",
-                       "signals": {"sse_readers": 8, "sse_capacity": 32}},
+                       "signals": {"instance_id": "a" * 32, "sse_readers": 8, "sse_capacity": 32}},
                "work": {"id": "work", "cell": "lab", "kind": "worker", "status": "up",
-                        "signals": {"provider_tasks": 15, "provider_capacity": 16}},
+                        "signals": {"instance_id": "b" * 32, "provider_tasks": 15, "provider_capacity": 16}},
         }}
         source = {"cell": "lab", "observed_at": 108, "database_healthy": True, "reserve_connections": 20,
                   "api": {"replicas": ["api"], "desired": 1, "stable": True, "deployment_version": "x", "cpu_fraction": .6},
@@ -261,6 +263,17 @@ class IntegrationLogic(unittest.TestCase):
         self.assertEqual(computed["observed_at"], 108)
         self.assertEqual(computed["worker"]["oldest_ready_age_seconds"], 75)
         self.assertFalse(computed["worker"]["provider_headroom"])
+        self.assertRegex(computed["api"]["replica_set"], r"^[0-9a-f]{64}$")
+        obs["targets"]["alias"] = dict(obs["targets"]["api"], id="alias")
+        source["api"].update(desired=2, replicas=["api", "alias"])
+        with self.assertRaisesRegex(ValueError, "same replica process"):
+            scaling_snapshot(obs, source, 115)
+        del obs["targets"]["alias"]
+        source["api"].update(desired=1, replicas=["api"])
+        instance = obs["targets"]["api"]["signals"].pop("instance_id")
+        with self.assertRaisesRegex(ValueError, "valid instance ID"):
+            scaling_snapshot(obs, source, 115)
+        obs["targets"]["api"]["signals"]["instance_id"] = instance
         with self.assertRaises(ValueError):
             scaling_snapshot(obs, source, 200)
         obs["cells"]["lab"]["queue_coverage"] = "cached"

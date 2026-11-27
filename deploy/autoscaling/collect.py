@@ -2,9 +2,11 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import time
@@ -63,9 +65,16 @@ def collect(source, token, psql):
     finally:
         pool.shutdown(cancel_futures=True)
     by_role = {role: [] for role in ROLES}
+    seen_instances = set()
     for (role, _), probe in zip(jobs, probes):
         if probe["role"] != role:
             raise ValueError(f"expected a split {role} process")
+        instance_id = probe.get("instance_id")
+        if not isinstance(instance_id, str) or not re.fullmatch(r"[0-9a-f]{32}", instance_id):
+            raise ValueError("capacity probes must report a valid instance ID")
+        if instance_id in seen_instances:
+            raise ValueError("multiple probe URLs reached the same replica process")
+        seen_instances.add(instance_id)
         by_role[role].append(probe)
 
     worker_bindings = {
@@ -87,7 +96,9 @@ def collect(source, token, psql):
         role_source = source[role]
         ready = sum(probe["ready"] is True for probe in by_role[role])
         desired = integer(role_source["desired"], f"{role}.desired", minimum=1)
+        instances = sorted(probe["instance_id"] for probe in by_role[role])
         snapshot[role] = {
+            "replica_set": sha256("".join(instances).encode("ascii")).hexdigest(),
             "ready": ready, "desired": desired,
             "stable": role_source["stable"] is True and len(by_role[role]) == desired,
             "deployment_version": role_source["deployment_version"],

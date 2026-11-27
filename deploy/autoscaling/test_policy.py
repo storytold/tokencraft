@@ -70,6 +70,16 @@ class PolicyTest(unittest.TestCase):
         stale = deepcopy(self.sample)
         self.assertEqual(decide(self.config, stale, state, 2000)[0]["decision"], "hold")
 
+    def test_replica_replacement_restarts_pressure_at_the_same_desired_count(self):
+        self.sample["api"].update(cpu_fraction=0.9, replica_set="a" * 64)
+        _, state = self.tick({}, 0)
+        self.sample["api"].update(replica_set="b" * 64, deployment_version="12")
+        action, state = self.tick(state, 30)
+        self.assertEqual(action["decision"], "hold")
+        self.assertEqual(state["roles"]["api"]["high_since"], 1030)
+        action, _ = self.tick(state, 60)
+        self.assertEqual((action["decision"], action["role"]), ("scale", "api"))
+
     def test_api_can_scale_over_requested_cpu_without_provider_slots(self):
         self.sample["api"]["cpu_fraction"] = 1.3
         self.sample["worker"]["task_capacity"] = 0
@@ -94,8 +104,8 @@ class PolicyTest(unittest.TestCase):
             "worker": {"desired": 1, "stable": True, "deployment_version": "21", "probe_urls": ["worker"]},
         }
         probes = {
-            "api": {"role": "api", "ready": True, "sse_readers": 24, "sse_capacity": 32},
-            "worker": {"role": "worker", "ready": True, "provider_tasks": 4, "provider_capacity": 4,
+            "api": {"role": "api", "instance_id": "a" * 32, "ready": True, "sse_readers": 24, "sse_capacity": 32},
+            "worker": {"role": "worker", "instance_id": "b" * 32, "ready": True, "provider_tasks": 4, "provider_capacity": 4,
                        "local_bindings": [], "connector_bindings": ["binding"]},
         }
         database = {"additional_connections": 90, "eligible_sample": 3, "oldest_ready_age_seconds": 41}
@@ -107,6 +117,19 @@ class PolicyTest(unittest.TestCase):
         self.assertFalse(snapshot["worker"]["provider_headroom"])
         self.assertEqual(snapshot["api"]["sse_readers"], 24)
         self.assertEqual(snapshot["worker"]["oldest_ready_age_seconds"], 41)
+        self.assertRegex(snapshot["api"]["replica_set"], r"^[0-9a-f]{64}$")
+
+        source["api"].update(desired=2, probe_urls=["api", "alias"])
+        probes["alias"] = probes["api"].copy()
+        with patch("collect.time.time", return_value=1001), \
+                patch("collect.scrape", side_effect=lambda url, _: probes[url]), \
+                patch("collect.query_database") as query:
+            with self.assertRaisesRegex(ValueError, "same replica process"):
+                collect(source, "synthetic", "psql")
+            probes["alias"].pop("instance_id")
+            with self.assertRaisesRegex(ValueError, "valid instance ID"):
+                collect(source, "synthetic", "psql")
+        query.assert_not_called()
 
 
 if __name__ == "__main__":

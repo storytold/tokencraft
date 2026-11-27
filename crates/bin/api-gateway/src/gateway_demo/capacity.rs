@@ -16,7 +16,10 @@ use super::{
 
 type ProbeMac = Hmac<Sha256>;
 
-pub(super) struct Access([u8; 32]);
+pub(super) struct Access {
+    expected: [u8; 32],
+    instance_id: String,
+}
 
 impl Access {
     pub(super) fn load() -> anyhow::Result<Option<Arc<Self>>> {
@@ -33,7 +36,10 @@ impl Access {
         );
         let mut expected = [0; 32];
         expected.copy_from_slice(&Self::mac(&value).finalize().into_bytes());
-        Ok(Some(Arc::new(Self(expected))))
+        Ok(Some(Arc::new(Self {
+            expected,
+            instance_id: hex::encode(rand::random::<[u8; 16]>()),
+        })))
     }
 
     fn mac(token: &str) -> ProbeMac {
@@ -50,7 +56,7 @@ impl Access {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "))
                 .is_some_and(|value| {
-                    value.len() == 64 && Self::mac(value).verify_slice(&self.0).is_ok()
+                    value.len() == 64 && Self::mac(value).verify_slice(&self.expected).is_ok()
                 })
     }
 }
@@ -58,6 +64,7 @@ impl Access {
 #[derive(Serialize)]
 pub(super) struct Signals {
     role: &'static str,
+    instance_id: String,
     ready: bool,
     checks: SetupChecks,
     sse_readers: Option<usize>,
@@ -87,6 +94,7 @@ pub(super) async fn inspect(
             ProcessRole::Api => "api",
             ProcessRole::Worker => "worker",
         },
+        instance_id: access.instance_id.clone(),
         ready: readiness.traffic_ready(),
         checks: readiness.snapshot(true),
         sse_readers: streams

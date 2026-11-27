@@ -15,7 +15,7 @@ Run a small self-hosted install with one combined gateway. Hosted cells can spli
 | Inference and storage | Provider quotas, model queue latency, artifact delay, or network saturation | Use those tiers' own capacity or delivery controls. A blocked or cooling-down route cannot increase the eligible-worker backlog signal. |
 | Ingress, zones, cells, and regions | Sustained proxy saturation, insufficient capacity after zone loss, writer saturation across tenants, or residency requirements | Expand placement or the data plane through deployment operations. A replica controller changes neither tenant ownership nor provider placement. |
 
-The controller makes one replica change per observation. Scale-outs have a 60-second cooldown. Scale-ins have a 10-minute cooldown. Missing or stale data, replica count changes, and rollouts interrupt the pressure window. It holds while either deployment is changing. The initial worker policy scales out only, since provider, webhook, and archive loops need a coordinated drain before unattended scale-in. Keep the role minima high enough for the intended zone-loss scenario.
+The controller makes one replica change per observation. Scale-outs have a 60-second cooldown. Scale-ins have a 10-minute cooldown. Missing or stale data, replica count changes, and rollouts interrupt the pressure window. Changes to the probed process roster restart the affected role’s window, even when its desired count is the same. It holds while either deployment is changing. The initial worker policy scales out only, since provider, webhook, and archive loops need a coordinated drain before unattended scale-in. Keep the role minima high enough for the intended zone-loss scenario.
 
 ### Wire the controller into a hosted cell
 
@@ -37,7 +37,7 @@ Example controller policy for a cell with at least 100 connections dedicated to 
 }
 ```
 
-The monitor writes a fresh `source.json` with these fields. The example timestamp is a placeholder. Each URL points at one replica, and the collector rejects duplicate URLs and mixed binding revisions in the worker fleet.
+The monitor writes a fresh `source.json` with these fields. The example timestamp is a placeholder. Point each URL at a separate replica. Authenticated capacity probes supply a new instance ID at process startup. The collector rejects duplicate URLs, repeated instance IDs, and mixed worker binding revisions. Upgrade all probed replicas to a build that emits instance IDs before enabling this collector.
 
 ```json
 {
@@ -62,7 +62,7 @@ The monitor writes a fresh `source.json` with these fields. The example timestam
 }
 ```
 
-Use `/internal/capacity` as the probe path on API and worker replicas. Run the collector and controller in order on each tick. For custom schedulers, the collector writes a portable JSON snapshot and the controller prints the requested scaling decision. Use a single controller and persistent state file per cell. The Kubernetes actuator checks both the observed version and expected replica count. Give it access only to the named deployments and their scale subresources. Keep HPA or any other replica writer disabled for those same deployments. [Kubernetes scale preconditions](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_scale/)
+Use `/internal/capacity` as the probe path on API and worker replicas. Run the collector and controller in order on each tick. For custom schedulers, the collector writes a portable JSON snapshot and the controller prints the requested scaling decision. Custom snapshot producers can supply `replica_set` for each role using the SHA-256 digest of the sorted, concatenated process instance IDs. Use a single controller and persistent state file per cell. The Kubernetes actuator checks both the observed version and expected replica count. Give it access only to the named deployments and their scale subresources. Keep HPA or any other replica writer disabled for those same deployments. [Kubernetes scale preconditions](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_scale/)
 
 ```sh
 python3 deploy/autoscaling/collect.py --source source.json --output snapshot.json && \

@@ -6,6 +6,7 @@ import fcntl
 import json
 import math
 from pathlib import Path
+import re
 import subprocess
 from tempfile import NamedTemporaryFile
 import time
@@ -61,6 +62,10 @@ def signals(snapshot):
         version = current["deployment_version"]
         if not isinstance(version, str) or not version.strip():
             raise ValueError(f"{role}.deployment_version is missing")
+        if "replica_set" in current:
+            fleet = current["replica_set"]
+            if not isinstance(fleet, str) or not re.fullmatch(r"[0-9a-f]{64}", fleet):
+                raise ValueError(f"{role}.replica_set must be a SHA-256 digest")
         if ready != desired or not desired or current["stable"] is not True:
             raise ValueError(f"{role} deployment is starting, draining, or rolling out")
 
@@ -128,8 +133,9 @@ def decide(config, snapshot, previous, now):
     for role, (high, low, reason) in pressure.items():
         settings = config[role]
         count = snapshot[role]["desired"]
+        replica_set = snapshot[role].get("replica_set")
         history = previous.get("roles", {}).get(role, {}) if continuity else {}
-        if history.get("desired") != count:
+        if history.get("desired") != count or history.get("replica_set") != replica_set:
             history = {}
         high_since = history.get("high_since", sampled_at) if high else None
         low_since = history.get("low_since", sampled_at) if low else None
@@ -137,7 +143,9 @@ def decide(config, snapshot, previous, now):
             high_since = sampled_at
         if low and low_since is None:
             low_since = sampled_at
-        state["roles"][role] = {"desired": count, "high_since": high_since, "low_since": low_since}
+        state["roles"][role] = {
+            "desired": count, "replica_set": replica_set, "high_since": high_since, "low_since": low_since,
+        }
         if high and sampled_at - high_since >= UP_WINDOW and elapsed >= UP_COOLDOWN and count < settings["max"]:
             if remaining >= config["connections_per_replica"]:
                 actions.append((0, high_since, role == state["last_scaled_role"], role, count + 1, reason))

@@ -1198,6 +1198,19 @@ def compute_profile(directory):
 
 def verify_operations(directory, env, psql, pg_env, api_port, worker_port, account, project, capacity_token,
                       session, profile, servers):
+    probe = {"Authorization": "Bearer " + capacity_token}
+    instances = set()
+    for port, role in ((api_port, "api"), (worker_port, "worker")):
+        _, denied = call(port, "/internal/capacity", 401)
+        assert_private_response(denied)
+        signals, headers = call(port, "/internal/capacity", 200, headers=probe)
+        assert_private_response(headers)
+        instance = signals["instance_id"]
+        assert signals["role"] == role and len(bytes.fromhex(instance)) == 16
+        assert call(port, "/internal/capacity", 200, headers=probe)[0]["instance_id"] == instance
+        instances.add(instance)
+    assert len(instances) == 2
+
     project_path = f"/v1/projects/{project}/service-principals?account_id={account}"
     principal, _ = call(api_port, project_path, 201, method="POST", headers=session, body={
         "name": "Operations compute smoke", "scopes": ["requests:submit", "requests:read"],

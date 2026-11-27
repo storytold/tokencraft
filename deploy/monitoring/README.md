@@ -112,7 +112,7 @@ python3 -B deploy/monitoring/autoscaling_snapshot.py --state-dir ./ops-state --s
 python3 -B deploy/autoscaling/controller.py --config policy.json --snapshot snapshot.json --state plan-state.json
 ~~~
 
-The adapter checks current split replica inventory, matching worker binding revisions and fresh observations. Deployment health, CPU and supplier headroom still come from authoritative platform observations. A reachable provider or passing model probe cannot establish spare provider capacity. The adapter only emits observations. The existing controller owns scale decisions and actuation.
+The adapter checks current split replica inventory, distinct authenticated process instance IDs, matching worker binding revisions, and fresh observations. The controller uses a digest of each role’s process roster to restart its pressure window after replacement. Deployment health, CPU and supplier headroom still come from authoritative platform observations. A reachable provider or passing model probe cannot establish spare provider capacity. The adapter only emits observations. The existing controller owns scale decisions and actuation.
 
 ## Migrate the earlier operations view
 

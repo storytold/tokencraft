@@ -1,12 +1,14 @@
 """Feed a verified operations sample to the existing autoscaling controller."""
 
 import argparse
+from hashlib import sha256
 import json
 import math
 from pathlib import Path
 import time
 
 from history import History
+from sources import INSTANCE_ID
 
 
 def snapshot(observation, source, now, max_age=45):
@@ -28,6 +30,7 @@ def snapshot(observation, source, now, max_age=45):
         "database": {"healthy": source["database_healthy"] is True,
                      "additional_connections": sample["database_connections_available"]},
     }
+    seen_instances = set()
     for role, kind, columns in (
         ("api", "gateway", ("sse_readers", "sse_capacity")),
         ("worker", "worker", ("provider_tasks", "provider_capacity")),
@@ -42,7 +45,14 @@ def snapshot(observation, source, now, max_age=45):
         if any(probe["status"] != "up" or any(probe["signals"].get(col) is None for col in columns)
                for probe in probes):
             raise ValueError("a replica is unhealthy or has incomplete capacity telemetry")
+        instances = [probe["signals"].get("instance_id") for probe in probes]
+        if any(not isinstance(instance, str) or not INSTANCE_ID.fullmatch(instance) for instance in instances):
+            raise ValueError("capacity probes must report a valid instance ID")
+        if len(set(instances)) != len(instances) or seen_instances.intersection(instances):
+            raise ValueError("multiple monitor targets reached the same replica process")
+        seen_instances.update(instances)
         result[role] = {
+            "replica_set": sha256("".join(sorted(instances)).encode("ascii")).hexdigest(),
             "ready": len(probes), "desired": external["desired"], "stable": external["stable"] is True,
             "deployment_version": external["deployment_version"],
         }
