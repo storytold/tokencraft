@@ -358,6 +358,8 @@ The Vercel configs restrict browser scripts to the console, Google Identity Serv
 
 Pass the expected Git commit to verify source revisions as well as the contract. Release archives built with `native_package.py --source-revision` and container builds with `SOURCE_REVISION` stamp the gateway binary. Other gateway builds can set `TOKENCRAFT_SOURCE_REVISION` when compiling. The gateway exposes the stamp in the `TokenCraft-Source-Revision` header on `/ready`. Set the same build variable when building the console, or enable Vercel's Git system environment variables, to emit `/release.json`. [Vercel system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables#system-environment-variables)
 
+Both checked-in Vercel build commands require a revision. When both revision variables are set, use the same SHA in each. The console serves `/release.json` as a static asset outside its page fallback.
+
 ```sh
 source_revision="$(git rev-parse HEAD)"
 bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com "$source_revision"

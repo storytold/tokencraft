@@ -15,13 +15,23 @@ export default defineConfig({
       name: "release-assets",
       apply: "build",
       buildStart() {
+        const configuredRevision = process.env.TOKENCRAFT_SOURCE_REVISION;
+        const deploymentRevision = process.env.VERCEL_GIT_COMMIT_SHA;
+        const revision = configuredRevision || deploymentRevision;
+        if (configuredRevision && deploymentRevision && configuredRevision !== deploymentRevision) {
+          this.error("TOKENCRAFT_SOURCE_REVISION and VERCEL_GIT_COMMIT_SHA must match.");
+        }
+        if (!revision && process.env.TOKENCRAFT_REQUIRE_SOURCE_REVISION === "1") {
+          this.error("A hosted console build needs a source revision. Expose Vercel system variables or set TOKENCRAFT_SOURCE_REVISION.");
+        }
+        if (revision && (revision.length !== 40 || !/^[a-f0-9]{40}$/.test(revision))) {
+          this.error("Use a full lowercase Git SHA for the source revision.");
+        }
         for (const { fileName, source } of releaseAssets) {
           this.addWatchFile(source);
           this.emitFile({ type: "asset", fileName, source: readFileSync(source) });
         }
-        const revision = process.env.TOKENCRAFT_SOURCE_REVISION || process.env.VERCEL_GIT_COMMIT_SHA;
         if (revision) {
-          if (!/^[a-f0-9]{40}$/.test(revision)) this.error("Use a full lowercase Git SHA for the source revision.");
           this.emitFile({
             type: "asset",
             fileName: "release.json",

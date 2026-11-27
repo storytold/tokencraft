@@ -167,11 +167,23 @@ jobs:
         run: node --experimental-strip-types --test ../scripts/console_artifact_transfer.test.mjs
       - name: Verify console webhook rotation recovery state
         run: node --experimental-strip-types --test ../scripts/console_webhook_rotation.test.mjs
+      - name: Reject a hosted console build without a revision
+        env:
+          TOKENCRAFT_REQUIRE_SOURCE_REVISION: "1"
+        run: |
+          log="$RUNNER_TEMP/console-missing-revision.log"
+          if env -u TOKENCRAFT_SOURCE_REVISION -u VERCEL_GIT_COMMIT_SHA \
+            ./node_modules/.bin/vite build >"$log" 2>&1; then
+            echo 'Hosted console build succeeded without a source revision' >&2
+            exit 1
+          fi
+          grep -F 'A hosted console build needs a source revision.' "$log"
       - run: npm run build
         env:
           VITE_API_BASE_URL: /
           VITE_TOKENCRAFT_DEMO: "true"
-          TOKENCRAFT_SOURCE_REVISION: ${{ github.sha }}
+          TOKENCRAFT_REQUIRE_SOURCE_REVISION: "1"
+          VERCEL_GIT_COMMIT_SHA: ${{ github.sha }}
       - name: Check the published catalog and API contract bytes
         run: |
           cmp ../catalog/artcraft-v1.json dist/catalog/artcraft-v1.json
