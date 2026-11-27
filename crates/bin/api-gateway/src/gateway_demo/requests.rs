@@ -542,7 +542,11 @@ async fn submit_inner(
     if legacy_quote && (offer.adapter != Adapter::Mock || quote.routing.is_some()) {
         return Err(ApiError::QuoteStale);
     }
-    let quote_expiry = quote.expires_at;
+    let admission_deadline = quote
+        .expires_at
+        .into_iter()
+        .chain(selected.rate_evidence.as_ref().map(|rate| rate.valid_until))
+        .min();
     if first_frame.is_some() && !providers.is_some_and(|runtime| runtime.accepts_workflow_frame(offer)) {
         return Err(ApiError::Conflict("the selected connector cannot use a workflow frame".into()));
     }
@@ -736,16 +740,18 @@ async fn submit_inner(
     }
     if inserted {
         let retry_after = gateway_requests::submission_limits::consume(&mut tx, key.scope.account).await?;
-        if quote_expiry.is_some_and(|expires| Utc::now() >= expires) {
-            return Err(ApiError::QuoteStale);
-        }
-        if retry_after > 0 {
-            return Err(ApiError::SubmissionRateLimit(retry_after));
-        }
         // Quote, capacity, and budget checks can take a lease past its deadline.
         if let Some((run, lease)) = workflow_lease {
             db_queries::workflows::lock_active_run(&mut *tx, run, lease).await?
                 .ok_or_else(lease_ended)?;
+        }
+        // Automatic admissions also use a time-limited price. Recheck after the
+        // budget and quota waits before making either reservation durable.
+        if admission_deadline.is_some_and(|deadline| Utc::now() >= deadline) {
+            return Err(ApiError::QuoteStale);
+        }
+        if retry_after > 0 {
+            return Err(ApiError::SubmissionRateLimit(retry_after));
         }
     }
     tx.commit().await?;

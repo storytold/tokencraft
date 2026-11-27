@@ -458,8 +458,10 @@ impl Catalog {
                 if input.is_auto() {
                     candidate.model = Some(public_model_id(&offer.model).to_owned());
                 }
-                if self.expired_offer(&offer.id, now) && candidate.reason == Reason::Eligible {
-                    candidate.reason = Reason::PriceStale;
+                if self.expired_offer(&offer.id, now) {
+                    if matches!(candidate.reason, Reason::Eligible | Reason::AboveCostCap) {
+                        candidate.reason = Reason::PriceStale;
+                    }
                     candidate.estimated_usd_nanos = None;
                 }
                 candidate.rate_evidence = self.rates.get(&offer.id).cloned();
