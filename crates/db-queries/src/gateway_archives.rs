@@ -185,16 +185,38 @@ pub async fn store(
     task: &ArchiveTask,
     manifest: Manifest<'_>,
 ) -> sqlx::Result<bool> {
-    let done = sqlx::query!(
+    let mut tx = pool.begin().await?;
+    let stored = sqlx::query!(
         "UPDATE gateway_archives SET state = 'stored', storage_generation = generation, lease_until = NULL, tries = 0,
-           event_count = $3, first_event_id = $4, last_event_id = $5, has_more = $6,
+           event_count = $3, first_event_id = $4, last_event_id = $5,
+           through_seq = CASE WHEN automatic THEN after_seq + $3::integer ELSE through_seq END,
+           has_more = CASE WHEN automatic THEN false ELSE $6 END,
            content_sha256 = $7, object_sha256 = $8, storage_target = $9,
            stored_at = clock_timestamp(), error_code = NULL
-         WHERE id = $1 AND generation = $2 AND state = 'sealing' AND lease_until > clock_timestamp()",
+         WHERE id = $1 AND generation = $2 AND state = 'sealing' AND lease_until > clock_timestamp()
+           AND (NOT automatic OR $3 BETWEEN 1 AND through_seq - after_seq)
+         RETURNING export_id, through_seq, automatic",
         task.id, task.generation, manifest.event_count, manifest.first_event_id, manifest.last_event_id,
         manifest.has_more, manifest.content_sha256, manifest.object_sha256, manifest.storage_target,
-    ).execute(pool).await?;
-    Ok(done.rows_affected() == 1)
+    ).fetch_optional(&mut *tx).await?;
+    let Some(stored) = stored else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
+    if stored.automatic && stored.through_seq != task.through_seq {
+        // The scheduler resumes at the prefix's end after this verified range commits.
+        let snapshot = sqlx::query!(
+            "UPDATE gateway_export_snapshots SET through_seq = $1
+             WHERE id = $2 AND automatic_archive AND after_seq = $3 AND through_seq = $4",
+            stored.through_seq, stored.export_id, task.after_seq, task.through_seq,
+        ).execute(&mut *tx).await?;
+        if snapshot.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn restored(pool: &PgPool, task: &ArchiveTask) -> sqlx::Result<()> {

@@ -256,8 +256,8 @@ def verify(gateway, directory, settings, session, account, project):
         script = directory / "fixture-clock.sql"
         script.write_text(statement)
         args = [piece for key, value in bindings.items() for piece in ("-v", f"{key}={value}")]
-        command(psql, "-XqwAt", "-v", "ON_ERROR_STOP=1", *args, "-f", script,
-                cwd=directory, env=pg_env)
+        return command(psql, "-XqwAt", "-v", "ON_ERROR_STOP=1", *args, "-f", script,
+                       cwd=directory, env=pg_env)
 
     with ExitStack() as stack:
         bucket = HeldBucket()
@@ -484,6 +484,79 @@ def verify(gateway, directory, settings, session, account, project):
         second = retire_next_archive(new_request)
         third = retire_next_archive()
         verify_later_cold_archive(promoted, project, project_reader, bucket, expected_project, second, third)
+
+        last_archived, _ = call(promoted, f"/v1/archives/{third}", 200, headers=project_reader)
+        boundary = last_archived["last_event_id"]
+        seen = {row["id"] for row in archives()}
+        for client in clients:
+            receipt, _ = call(port, "/v1/image", 202, method="POST",
+                              headers={**client, "Idempotency-Key": token_hex(16)},
+                              body={"model": "example_image", "task": "text_to_image",
+                                    "prompt": "Seal byte boundary fixture", "count": 1, "aspect_ratio": "1:1"})
+            wait_for_status(port, receipt, client, "succeeded", 18)
+        snapshot, _ = call(promoted, "/v1/exports", 201, method="POST", headers=project_reader,
+                           body={"project_id": project, "after": boundary})
+        advance_fixture_clock("""
+            UPDATE gateway_export_events
+            SET occurred_at = now() - interval '3 days',
+                data = CASE WHEN event_type = 'request.succeeded'
+                        THEN data || jsonb_build_object('fixture_padding', repeat('b', 5 * 1024 * 1024))
+                        ELSE data END
+            WHERE project_id = :'project' AND archive_id IS NULL;
+        """, project=project)
+        snapshot_path = f"/v1/exports/{snapshot['id']}/data"
+        head, first_headers = call(promoted, snapshot_path, 200, headers=project_reader, max_bytes=MAX_ARCHIVE_BYTES)
+        follow = first_headers["X-TokenCraft-Next-After"]
+        tail, last_headers = call(promoted, snapshot_path + "?" + urlencode({"after": follow}),
+                                  200, headers=project_reader, max_bytes=MAX_ARCHIVE_BYTES)
+        assert first_headers["X-TokenCraft-Has-More"] == "true" and last_headers["X-TokenCraft-Has-More"] == "false"
+        assert all(5 * 1024 * 1024 < len(page) <= MAX_ARCHIVE_BYTES for page in (head, tail))
+
+        def newly_stored():
+            added = [row for row in archives() if row.get("automatic") and row["id"] not in seen]
+            assert all(row["state"] != "archive_failed" for row in added), added
+            return [row for row in added if row["stored_at"]]
+
+        eventually(lambda: len(newly_stored()) == 2, "both byte-bounded automatic archives")
+        auto = sorted(newly_stored(), key=lambda row: row["created_at"])
+        for row, payload in zip(auto, (head, tail), strict=True):
+            assert row["last_event_id"] == json.loads(payload.splitlines()[-1])["id"]
+            assert row["content_sha256"] == sha256(payload).hexdigest()
+            assert row["event_count"] == len(payload.splitlines()) and row["has_more"] is False
+        ranges = advance_fixture_clock("""
+            SELECT a.after_seq, a.through_seq, s.through_seq
+            FROM gateway_archives a JOIN gateway_export_snapshots s
+              ON (s.account_id, s.project_id, s.id) = (a.account_id, a.project_id, a.export_id)
+            WHERE a.id IN (:'first', :'second') ORDER BY a.after_seq;
+        """, first=auto[0]["id"], second=auto[1]["id"])
+        (start, edge, first_snapshot), (next_start, end, last_snapshot) = (
+            tuple(map(int, row.split("|"))) for row in ranges.splitlines()
+        )
+        assert edge == next_start == first_snapshot and end == last_snapshot
+        assert [edge - start, end - next_start] == [row["event_count"] for row in auto]
+        advance_fixture_clock("UPDATE gateway_archives SET stored_at = now() - interval '2 days' "
+                              "WHERE id IN (:'first', :'second');", first=auto[0]["id"], second=auto[1]["id"])
+        ids = {row["id"] for row in auto}
+        eventually(lambda: {row["id"] for row in archives() if row.get("retired_at")} >= ids,
+                   "both byte-bounded automatic archives retired")
+
+        after = None
+        for index, expected_page in enumerate((head, tail)):
+            manual, _ = call(port, "/v1/archives", 202, method="POST", headers=session,
+                             body={**archive_scope, "export_id": snapshot["id"], "after": after})
+            path = f"/v1/archives/{manual['id']}"
+            eventually(lambda: call(promoted, path, 200, headers=project_reader)[0]["stored_at"],
+                       "byte-bounded manual archive")
+            seal, _ = call(promoted, path, 200, headers=project_reader)
+            assert seal["has_more"] is (index == 0)
+            after = seal["last_event_id"]
+            call(promoted, path + "/restore", 202, method="POST", headers=project_reader)
+            eventually(lambda: call(promoted, path, 200, headers=project_reader)[0]["state"] == "available",
+                       "verified manual archive restore")
+            data, _ = call(promoted, path + "/data", 200, headers=project_reader, max_bytes=MAX_ARCHIVE_BYTES)
+            assert data == expected_page
+        assert after == last_headers["X-TokenCraft-Next-After"]
+        print("PASS automatic archives retired contiguous byte-bounded ranges and manual seals resumed by event ID")
 
 
 def main():

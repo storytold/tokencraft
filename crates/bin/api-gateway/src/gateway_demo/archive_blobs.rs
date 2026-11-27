@@ -16,10 +16,14 @@ use serde::Deserialize;
 use tokio::sync::Semaphore;
 
 use self::keys::{ArchiveKeys, READ_KEYS};
-use super::{archive_bucket::{ArchiveBucket, RestoreDispatch}, catalog::digest, local_files};
+use super::{
+    archive_bucket::{ArchiveBucket, RestoreDispatch},
+    catalog::digest,
+    exports::ndjson::MAX_BYTES as MAX_PLAINTEXT,
+    local_files,
+};
 
 const MAGIC: &[u8] = b"TCA1";
-const MAX_PLAINTEXT: usize = 8 * 1024 * 1024;
 const MAX_OBJECT: usize = 9 * 1024 * 1024;
 const FILES: &str = "files";
 

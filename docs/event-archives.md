@@ -16,7 +16,7 @@ Run `bash examples/connector/smoke.sh` against a disposable dev state. It genera
 | `POST /v1/archives/{id}/restore` | Verify the object and open a one-hour download window. |
 | `GET /v1/archives/{id}/data` | Read verified NDJSON during the window. Compare the bytes with `X-TokenCraft-Content-Sha256`. |
 
-For scoped reads and restore, sessions supply `account_id` and `project_id` in the query. A project key needs `exports:read`. A client-bound key can access archives sealed for that client. Automatic project-wide partitions require project-wide access to the archive itself. If a seal receipt has `has_more: true`, queue the next seal from the same export with `after` set to that receipt’s `last_event_id`. Restoring a partition makes its events available for export without dispatching historical requests.
+For scoped reads and restore, sessions supply `account_id` and `project_id` in the query. A project key needs `exports:read`. A client-bound key can access archives sealed for that client. Automatic project-wide partitions require project-wide access to the archive itself. Each seal holds up to 8 MiB of uncompressed NDJSON and ends at a complete event. If a manual seal receipt has `has_more: true`, queue the next seal from the same export with `after` set to that receipt’s `last_event_id`. Restoring a partition makes its events available for export without dispatching historical requests.
 
 Each API replica reserves two slots for restored archive downloads and holds a slot while it is serving the response bytes. If both slots are busy, the download returns `503 export_capacity` with `Retry-After: 2`. Retry the same archive during its restore window. The live feed and snapshot pages use their own export slots.
 
@@ -50,7 +50,7 @@ Rotation applies to new event archive objects. Existing objects keep their encry
 
 ## Schedule sealing and move payloads to cold storage
 
-1. Set `TOKENCRAFT_DEMO_ARCHIVE_AUTO_AFTER_DAYS` to an age from 1 to 3650 days. Each scheduled seal takes the next contiguous range of up to 1,000 published events older than midnight UTC at the selected age.
+1. Set `TOKENCRAFT_DEMO_ARCHIVE_AUTO_AFTER_DAYS` to an age from 1 to 3650 days. Each scheduled seal takes the next contiguous range of up to 1,000 published events older than midnight UTC at the selected age. When a range exceeds 8 MiB, the worker seals a complete prefix and starts the next range after its last event once the verified archive commits.
 2. Set `TOKENCRAFT_DEMO_ARCHIVE_RETIRE_AFTER_DAYS` to an age from 1 to 3650 days after a scheduled seal. The worker rereads the encrypted object, verifies it against the source, and then removes payloads from PostgreSQL. Event IDs, scope, and cursor order stay available. Keep the object readable through verification and retry.
 3. Apply a bucket lifecycle transition with a read window long enough for sealing and retirement. Keep archived objects and their keys for the required history. Amazon S3 defaults can skip objects smaller than 128 KB. Check the size filter, per-object charges, and retrieval delay for your archive sizes. [S3 lifecycle transitions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html)
 

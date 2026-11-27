@@ -1,6 +1,7 @@
+pub(super) mod ndjson;
 mod page;
 
-use std::{io::Write, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Extension, Json,
@@ -174,30 +175,6 @@ pub(super) struct DataQuery {
     limit: Option<u16>,
 }
 
-#[derive(Serialize)]
-struct VersionedEvent<'a> {
-    schema_version: u8,
-    #[serde(flatten)]
-    event: &'a ExportEvent,
-}
-
-impl<'a> VersionedEvent<'a> {
-    fn new(event: &'a ExportEvent) -> ApiResult<Self> {
-        if event.data.is_none() {
-            return Err(ApiError::Internal("export event is missing its payload".into()));
-        }
-        Ok(Self {
-            schema_version: SCHEMA_VERSION,
-            event,
-        })
-    }
-
-    fn write(&self, output: &mut impl Write) -> serde_json::Result<()> {
-        serde_json::to_writer(&mut *output, self)?;
-        output.write_all(b"\n").map_err(serde_json::Error::io)
-    }
-}
-
 pub(super) async fn data(
     State(state): State<AppState>,
     Extension(storage): Extension<Option<Arc<ArchiveStorage>>>,
@@ -353,20 +330,6 @@ async fn encode_page(
     }
     headers.insert(SHA256_HEADER, header_value(&page.checksum));
     Ok((headers, page.body))
-}
-
-pub(super) fn encode_events(events: Vec<ExportEvent>) -> ApiResult<Vec<u8>> {
-    let mut body = Vec::new();
-    for event in events {
-        VersionedEvent::new(&event)?
-            .write(&mut body)
-            .map_err(|_| encode_error())?;
-    }
-    Ok(body)
-}
-
-fn encode_error() -> ApiError {
-    ApiError::Internal("could not encode export event".into())
 }
 
 pub(super) async fn scoped_snapshot(

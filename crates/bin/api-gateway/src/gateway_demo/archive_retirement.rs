@@ -8,7 +8,7 @@ use ids::{AccountId, GatewayArchiveId, GatewayProjectId};
 
 use super::{
     archive_blobs::{ArchiveStorage, Expected},
-    exports::encode_events,
+    exports::ndjson,
     readiness::Readiness,
 };
 
@@ -74,7 +74,7 @@ async fn work(pool: &db::PgPool, storage: &Arc<ArchiveStorage>, age_days: i32) -
     )
     .await?;
     let matches_archive = source.len() as i64 == count
-        && encode_events(source).is_ok_and(|bytes| bytes == archive_bytes);
+        && ndjson::encode(source).is_ok_and(|(prefix, truncated)| !truncated && prefix.body == archive_bytes);
     if !matches_archive || !db_retirement::retire(&mut tx, &task).await? {
         tx.rollback().await?;
         return db_retirement::defer(pool, &task, "archive_source_changed").await;

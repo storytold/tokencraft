@@ -395,15 +395,19 @@ async fn work(pool: &db::PgPool, storage: &Arc<ArchiveStorage>) -> sqlx::Result<
         };
         return gateway_archives::fail(pool, &task, code).await;
     }
-    let (Some(first), Some(last)) = (events.first(), events.last()) else {
+    let Some(first) = events.first().map(|event| event.id.clone()) else {
         return gateway_archives::fail(pool, &task, "archive_empty").await;
     };
-    let first = first.id.clone();
-    let last = last.id.clone();
-    let count = events.len() as i32;
-    let Ok(body) = exports::encode_events(events) else {
+    let Ok(Ok((prefix, truncated))) =
+        tokio::task::spawn_blocking(move || exports::ndjson::encode(events)).await
+    else {
         return gateway_archives::fail(pool, &task, "archive_encoding_failed").await;
     };
+    let Some(last) = prefix.last_id else {
+        return gateway_archives::fail(pool, &task, "archive_partition_too_large").await;
+    };
+    let count = prefix.count;
+    let body = prefix.body;
     let content_sha256 = digest(&body);
     let key = ObjectKey {
         id,
@@ -437,7 +441,7 @@ async fn work(pool: &db::PgPool, storage: &Arc<ArchiveStorage>) -> sqlx::Result<
             event_count: count,
             first_event_id: &first,
             last_event_id: &last,
-            has_more,
+            has_more: has_more || truncated,
             content_sha256: &content_sha256,
             object_sha256: &object_sha256,
             storage_target: &key.storage_target,
