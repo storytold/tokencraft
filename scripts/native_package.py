@@ -333,13 +333,14 @@ def smoke_package(archive, name, pg_bin):
         tool_registry = None
         tool_env = {}
 
-        def launch(state_path):
+        def launch(state_path, *, cwd=work):
             args = [*command, "--state-dir", state_path]
             if tool_registry is not None:
                 args += ["--workflow-tools", tool_registry]
-            return packaged_gateway(args, state_path, {**env, **tool_env}, opener, api)
+            return packaged_gateway(args, state_path, {**env, **tool_env}, opener, api, cwd=cwd)
 
-        with launch(state):
+        with launch(state, cwd=ROOT):
+            print("PASS packaged launcher used its bundled gateway from a source checkout")
             verify_migrations(package, state, pg_bin, db_port, env)
             if revision is not None:
                 with opener.open(api + "/ready", timeout=3) as readiness:
@@ -368,11 +369,11 @@ def smoke_package(archive, name, pg_bin):
 
 
 @contextmanager
-def packaged_gateway(command, state, env, opener, api):
+def packaged_gateway(command, state, env, opener, api, *, cwd):
     work = state.parent
     log = work / "gateway.log"
     with log.open("wb") as output, subprocess.Popen(
-        command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+        command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
     ) as gateway:
         try:
             deadline = monotonic() + 45

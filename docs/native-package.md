@@ -21,6 +21,8 @@ bash examples/connector/smoke.sh http://localhost:4000
 
 The demo starts a private PostgreSQL database and stores its data and encryption keys in `.tokencraft-dev/`. Stop it with Ctrl+C. Use `--state-dir` to choose a location or reopen the same state. [Back up and restore dev state](docs/setup.md#back-up-and-restore-dev-state)
 
+The launcher uses and verifies the gateway beside it even when you invoke it from a source checkout. Pass `--gateway-bin` to select an explicit executable.
+
 If this archive includes a `console/` directory, start the launcher with `./bin/tokencraft dev --console-dir ./console` and open the localhost URL printed by the launcher.
 
 ## Configure your gateway

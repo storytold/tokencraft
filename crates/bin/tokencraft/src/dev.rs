@@ -1,4 +1,5 @@
 mod console;
+mod packaged;
 mod profile;
 mod workflow_tools;
 
@@ -170,7 +171,10 @@ fn parse_port(value: OsString) -> Result<u16> {
         .context("ports must be integers from 1024 through 65535")
 }
 
-async fn run(options: Options) -> Result<()> {
+async fn run(mut options: Options) -> Result<()> {
+    if options.gateway_bin.is_none() {
+        options.gateway_bin = packaged::gateway(&env::current_exe()?).await?;
+    }
     let webhook_config = options
         .webhook_config
         .as_deref()
