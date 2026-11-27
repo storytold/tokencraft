@@ -889,6 +889,41 @@ async fn wait_returns_invalid_status_documents() {
 }
 
 #[tokio::test]
+async fn native_request_reads_reject_evidence_for_a_different_request() {
+    const OTHER: &str = "req_00000000000000000000000000";
+    let status = json!({
+        "id": OTHER, "project_id": "fixture", "status": "succeeded", "events": [],
+        "quote": quote_fixture()
+    });
+    let trace = json!({
+        "revision": "trace-v1", "observed_at": "2026-11-25T18:00:00Z", "analysis_available": false,
+        "evidence": { "schema_version": 1, "request_id": OTHER, "status": "succeeded",
+            "subscription_configured": false, "delivery_attempts_omitted": 0, "steps": [], "coverage": [] },
+        "provider_path": { "attempts": [] }
+    });
+
+    for operation in ["wait", "get", "events", "trace", "provider_path", "cancel"] {
+        let body = if matches!(operation, "trace" | "provider_path") { &trace } else { &status };
+        let (origin, captured) = reply("200 OK", "", &body.to_string()).await;
+        let client = TokenCraftClient::new(&origin, Some("fixture")).unwrap();
+        let result = match operation {
+            "wait" => client.wait(REQUEST, WaitOptions::default()).await.map(drop),
+            "get" => client.get(REQUEST).await.map(drop),
+            "events" => client.events(REQUEST).await.map(drop),
+            "trace" => client.trace(REQUEST).await.map(drop),
+            "provider_path" => client.provider_path(REQUEST).await.map(drop),
+            "cancel" => client.cancel(REQUEST).await.map(drop),
+            _ => unreachable!(),
+        };
+        let error = result.expect_err(operation);
+        assert!(matches!(&error, Error::Gateway { code, .. } if code == "invalid_response"));
+        assert_eq!(error.request_id(), Some(REQUEST));
+        let (head, _) = captured.await.unwrap();
+        assert!(head.contains(&format!("/v1/requests/{REQUEST}")));
+    }
+}
+
+#[tokio::test]
 async fn wait_stops_at_a_denied_status_even_if_its_error_body_stalls() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());

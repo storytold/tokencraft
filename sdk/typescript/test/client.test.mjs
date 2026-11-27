@@ -422,19 +422,19 @@ test("submission retry delays honor the total deadline and caller cancellation",
 
 test("wait polls in-flight requests and exposes uncertain provider acceptance to the caller", async () => {
   const states = ["queued", "running", "awaiting_reconciliation"];
-  const client = new TokenCraft({ ...options, fetch: async () => Response.json({ status: states.shift() }) });
+  const client = new TokenCraft({ ...options, fetch: async () => Response.json({ id: requestId, status: states.shift() }) });
   assert.equal((await client.wait(requestId, { pollIntervalMs: 1 })).status, "awaiting_reconciliation");
   assert.equal(states.length, 0);
 });
 
 test("wait reuses the validator across a rollout response and an empty 304", async () => {
   const reads = [
-    { validator: null, response: Response.json({ status: "queued" }, { headers: { ETag: 'W/"queued"' } }) },
+    { validator: null, response: Response.json({ id: requestId, status: "queued" }, { headers: { ETag: 'W/"queued"' } }) },
     { validator: 'W/"queued"', response: Response.json({}, { status: 503, headers: {
       ETag: '"wrong"', "Retry-After": "Sun Nov  6 08:49:37 1994",
     } }) },
     { validator: 'W/"queued"', response: new Response(null, { status: 304 }) },
-    { validator: 'W/"queued"', response: Response.json({ status: "succeeded" }) },
+    { validator: 'W/"queued"', response: Response.json({ id: requestId, status: "succeeded" }) },
   ];
   const client = new TokenCraft({ ...options, fetch: async (_, init) => {
     const next = reads.shift();
@@ -495,6 +495,23 @@ test("wait returns invalid status documents once", async () => {
   assert.equal(reads, 1);
 });
 
+test("native request reads reject evidence for a different request", async () => {
+  const otherId = "req_00000000000000000000000000";
+  let calls = 0;
+  const client = new TokenCraft({ ...options, fetch: async (url) => {
+    assert.ok(url.pathname.startsWith("/edge/v1/requests/" + requestId));
+    calls += 1;
+    return Response.json(url.pathname.endsWith("/trace")
+      ? { evidence: { request_id: otherId }, provider_path: { attempts: [] } }
+      : { id: otherId, status: "succeeded", events: [] });
+  } });
+  for (const operation of ["wait", "get", "events", "trace", "providerPath", "cancel"]) {
+    const before = calls;
+    await assert.rejects(client[operation](requestId), { code: "invalid_response", requestId });
+    assert.equal(calls, before + 1);
+  }
+});
+
 test("wait stops at a denied status even if its error body stalls", async () => {
   let reads = 0;
   let canceled = false;
@@ -520,7 +537,7 @@ test("the polling deadline still applies while respecting Retry-After", async ()
   const client = new TokenCraft({ ...options, fetch: async () => {
     reads++;
     const later = new Date(Date.now() + 60_000).toUTCString();
-    return Response.json({ status: "running" }, { headers: { "Retry-After": later } });
+    return Response.json({ id: requestId, status: "running" }, { headers: { "Retry-After": later } });
   } });
   await assert.rejects(client.wait(requestId, { pollIntervalMs: 1, timeoutMs: 40 }), TokenCraftTimeoutError);
   assert.equal(reads, 1);
@@ -546,7 +563,7 @@ test("caller abort propagates through polling", async () => {
     ...options,
     fetch: async () => {
       controller.abort(reason);
-      return Response.json({ status: "queued" });
+      return Response.json({ id: requestId, status: "queued" });
     },
   });
   await assert.rejects(client.wait(requestId, { signal: controller.signal }), (issue) => issue === reason);

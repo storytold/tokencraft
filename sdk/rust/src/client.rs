@@ -424,18 +424,24 @@ impl TokenCraftClient {
 
     pub async fn get(&self, id: &str) -> Result<RequestTrace, Error> {
         let request = self.request_for(Method::GET, id, "")?;
-        self.send(request, Some(id)).await
+        let trace: RequestTrace = self.send(request, Some(id)).await?;
+        check_request_id(&trace.id, id)?;
+        Ok(trace)
     }
 
     pub async fn events(&self, id: &str) -> Result<RequestEvents, Error> {
         let request = self.request_for(Method::GET, id, "/events")?;
-        self.send(request, Some(id)).await
+        let events: RequestEvents = self.send(request, Some(id)).await?;
+        check_request_id(&events.id, id)?;
+        Ok(events)
     }
 
     /// Read the request's recorded timing, logs, and provider attempts.
     pub async fn trace(&self, id: &str) -> Result<RequestTraceSnapshot, Error> {
         let request = self.request_for(Method::GET, id, "/trace")?;
-        self.send(request, Some(id)).await
+        let trace: RequestTraceSnapshot = self.send(request, Some(id)).await?;
+        check_request_id(&trace.evidence.request_id, id)?;
+        Ok(trace)
     }
 
     /// Download the request's redacted trace as an OTLP/HTTP JSON document.
@@ -452,11 +458,19 @@ impl TokenCraftClient {
 
     pub async fn provider_path(&self, id: &str) -> Result<Option<ProviderPath>, Error> {
         #[derive(serde::Deserialize)]
+        struct Evidence {
+            request_id: String,
+        }
+        #[derive(serde::Deserialize)]
         struct Trace {
             provider_path: Option<ProviderPath>,
+            evidence: Option<Evidence>,
         }
         let request = self.request_for(Method::GET, id, "/trace")?;
         let trace: Trace = self.send(request, Some(id)).await?;
+        if let Some(evidence) = trace.evidence {
+            check_request_id(&evidence.request_id, id)?;
+        }
         Ok(trace.provider_path)
     }
 
@@ -498,7 +512,9 @@ impl TokenCraftClient {
         let request = self
             .request_for(Method::POST, id, "/cancel")?
             .json(&serde_json::json!({}));
-        self.send(request, Some(id)).await
+        let trace: RequestTrace = self.send(request, Some(id)).await?;
+        check_request_id(&trace.id, id)?;
+        Ok(trace)
     }
 
     pub async fn list(&self, filters: ListOptions<'_>) -> Result<RequestPage, Error> {
@@ -556,6 +572,7 @@ impl TokenCraftClient {
     pub async fn wait(&self, id: &str, options: WaitOptions) -> Result<RequestTrace, Error> {
         let request = self.request_for(Method::GET, id, "")?;
         self.poll(request, id, options, |trace: &RequestTrace| {
+            check_request_id(&trace.id, id)?;
             Ok(trace.status.is_terminal() || trace.status == RequestStatus::AwaitingReconciliation)
         })
         .await
@@ -735,6 +752,18 @@ impl TokenCraftClient {
         }
         Err(Error::from_gateway(response, request_id).await)
     }
+}
+
+fn check_request_id(observed: &str, expected: &str) -> Result<(), Error> {
+    if observed == expected {
+        return Ok(());
+    }
+    Err(Error::Gateway {
+        status: StatusCode::OK,
+        code: "invalid_response".into(),
+        message: "the response did not match the requested TokenCraft ID".into(),
+        request_id: Some(expected.to_owned()),
+    })
 }
 
 pub(super) fn validate_idempotency_key(key: &str) -> Result<(), Error> {

@@ -108,15 +108,18 @@ export class TokenCraft {
   }
 
   get(requestId: string, options: CallOptions = {}): Promise<RequestTrace> {
-    return this.#call("GET", requestPath(requestId), { ...options, auth: true, requestId });
+    return this.#call<RequestTrace>("GET", requestPath(requestId), { ...options, auth: true, requestId })
+      .then((trace) => checkedRequest(trace, trace.id, requestId));
   }
 
   events(requestId: string, options: CallOptions = {}): Promise<RequestEvents> {
-    return this.#call("GET", `${requestPath(requestId)}/events`, { ...options, auth: true, requestId });
+    return this.#call<RequestEvents>("GET", `${requestPath(requestId)}/events`, { ...options, auth: true, requestId })
+      .then((events) => checkedRequest(events, events.id, requestId));
   }
 
   trace(requestId: string, options: CallOptions = {}): Promise<RequestTraceSnapshot> {
-    return this.#call("GET", `${requestPath(requestId)}/trace`, { ...options, auth: true, requestId });
+    return this.#call<RequestTraceSnapshot>("GET", `${requestPath(requestId)}/trace`, { ...options, auth: true, requestId })
+      .then((trace) => trace.evidence == null ? trace : checkedRequest(trace, trace.evidence.request_id, requestId));
   }
 
   traceOtlp(requestId: string, options: CallOptions = {}): Promise<OtlpTrace> {
@@ -190,7 +193,8 @@ export class TokenCraft {
   }
 
   cancel(requestId: string, options: CallOptions = {}): Promise<RequestTrace> {
-    return this.#call("POST", `${requestPath(requestId)}/cancel`, { ...options, auth: true, requestId, body: {} });
+    return this.#call<RequestTrace>("POST", `${requestPath(requestId)}/cancel`, { ...options, auth: true, requestId, body: {} })
+      .then((trace) => checkedRequest(trace, trace.id, requestId));
   }
 
   async list(options: ListOptions = {}): Promise<RequestPage> {
@@ -276,6 +280,7 @@ export class TokenCraft {
 
   async wait(requestId: string, options: WaitOptions = {}): Promise<RequestTrace> {
     return this.#poll<RequestTrace>(requestPath(requestId), requestId, options, (trace) => {
+      checkedRequest(trace, trace.id, requestId);
       if (inspectable.has(trace.status)) return true;
       if (trace.status === "queued" || trace.status === "running") return false;
       throw new TokenCraftError(200, "invalid_response", "The gateway returned an unknown request status.", requestId);
@@ -422,6 +427,13 @@ function validateIdempotencyKey(key: string): void {
 function requestPath(id: string): string {
   if (!isRequestId(id)) throw new TypeError("Supply a valid TokenCraft request ID.");
   return `v1/requests/${id}`;
+}
+
+function checkedRequest<T>(value: T, observedId: unknown, requestId: string): T {
+  if (observedId !== requestId) {
+    throw new TokenCraftError(200, "invalid_response", "The response did not match the requested TokenCraft ID.", requestId);
+  }
+  return value;
 }
 
 function pathWith(path: string, values: Record<string, string | undefined>): string {
