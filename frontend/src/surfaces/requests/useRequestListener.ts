@@ -3,6 +3,8 @@ import { ApiError } from "@/lib/api";
 import type { ProjectScope } from "@/lib/gateway";
 import { comparisonApi, errorMessage, type Trace, type TraceSnapshot } from "@/surfaces/comparison/api";
 
+const TRACE_READ_TIMEOUT_MS = 10_000;
+
 type ReadRequest<T> = (scope: ProjectScope, id: string, signal: AbortSignal, validator: string | null) =>
   Promise<{ data: T | null; validator: string | null; delay: number }>;
 
@@ -73,8 +75,10 @@ function useRequestListener<T>(
     async function observe() {
       if (reading || stopped || controller.signal.aborted) return;
       reading = true;
+      const deadline = AbortSignal.timeout(TRACE_READ_TIMEOUT_MS);
+      const signal = AbortSignal.any([controller.signal, deadline]);
       try {
-        const next = await read({ account_id, project_id }, requestId, controller.signal, validator);
+        const next = await read({ account_id, project_id }, requestId, signal, validator);
         if (controller.signal.aborted) return;
         failures = 0;
         validator = next.validator;
@@ -91,9 +95,10 @@ function useRequestListener<T>(
         if (controller.signal.aborted) return;
         stopped = cause instanceof ApiError && cause.status >= 400 && cause.status < 500
           && cause.status !== 408 && cause.status !== 429;
+        const error = !stopped && deadline.aborted ? "Timed out reading the request trace." : errorMessage(cause);
         setObservation((previous) => ({
           key, data: !stopped && previous?.key === key ? previous.data : undefined,
-          error: errorMessage(cause), retrying: !stopped,
+          error, retrying: !stopped,
         }));
         if (!stopped) schedule(Math.min(15_000, 1_000 * 2 ** Math.min(failures++, 4)));
       } finally {
