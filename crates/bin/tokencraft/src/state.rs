@@ -6,8 +6,10 @@ use std::{
 };
 
 use anyhow::{ensure, Context, Result};
+use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 const SECRETS_FILE: &str = "dev-keys.json";
 
@@ -23,6 +25,14 @@ pub(crate) struct Secrets {
     pub database: String,
     pub session: String,
     pub payload: String,
+}
+
+impl Secrets {
+    pub(crate) fn derive_key(&self, purpose: &[u8]) -> Result<String> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.payload.as_bytes())?;
+        mac.update(purpose);
+        Ok(hex::encode(mac.finalize().into_bytes()))
+    }
 }
 
 impl State {

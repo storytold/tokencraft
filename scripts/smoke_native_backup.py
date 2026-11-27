@@ -5,7 +5,7 @@ import json
 from secrets import token_hex
 import subprocess
 
-from smoke_workflow_contract import call, command, provision, wait_for_run
+from smoke_workflow_contract import call, command, provision, verify_signed_delivery, wait_for_run
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,40 @@ class PublishedRun:
     auth: dict
     idempotency_key: str
     content: bytes
+
+
+def prepare_webhook(port, web_port, receiver):
+    session, account, project = provision(port, origin=f"http://localhost:{web_port}")
+    project_path = f"/v1/projects/{project}"
+    query = f"?account_id={account}"
+    destinations, _ = call(port, project_path + "/webhook-destinations" + query, 200, headers=session)
+    assert destinations == ["native"]
+    client = "native-backup-client"
+    subscription, _ = call(port, project_path + "/webhooks" + query, 201, method="POST", headers=session, body={
+        "name": "Native backup receiver", "destination_id": "native", "client_ref": client,
+    })
+    principal, _ = call(port, project_path + "/service-principals" + query, 201, method="POST", headers=session, body={
+        "name": "Native backup sender", "client_ref": client, "scopes": ["requests:submit", "requests:read"],
+    })
+    auth = {"Authorization": "Bearer " + principal["token"], "Origin": session["Origin"]}
+
+    def verify():
+        quote, _ = call(port, "/v1/quotes/scoped", 200, method="POST", headers=auth, body={
+            "model": "example_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"},
+        })
+        receipt, _ = call(port, "/v1/requests", 202, method="POST",
+                          headers={**auth, "Idempotency-Key": token_hex(16)}, body={
+            "quote_id": quote["id"], "input": quote["input"], "client_ref": client,
+            "image_prompt": "Synthetic webhook fixture",
+            "delivery": {"webhook_subscription_id": subscription["id"]},
+        })
+        verify_signed_delivery(port, project_path + "/webhook-deliveries", query, session, receiver,
+            subscription, "request.succeeded", {
+                "request_id": receipt["id"], "project_id": project, "status": "succeeded",
+                "fetch_url": receipt["status_url"], "client_ref": client,
+            })
+
+    return verify
 
 
 def prepare_workflow(port, web_port):
@@ -73,7 +107,7 @@ def defer_workflow(work, state, pg_bin, db_port, env, receipt):
     return parked
 
 
-def verify_backup(launcher, port, env, state, launch, workflow, parked):
+def verify_backup(launcher, port, env, state, launch, workflow, parked, verify_webhook):
     work = state.parent
     backup, restored = work / "backup", work / "restored"
     rejected = subprocess.run([launcher, "backup", state, backup], cwd=work, env=env, capture_output=True,
@@ -94,4 +128,6 @@ def verify_backup(launcher, port, env, state, launch, workflow, parked):
         assert saved["id"] == workflow.receipt["id"] and saved["status"] == "succeeded"
         actual, _ = call(port, path + "/outputs/image", 200, headers=workflow.auth)
         assert actual == workflow.content
+        verify_webhook()
     print("PASS native backup restored the original workflow app key, replayed receipt, and PNG bytes")
+    print("PASS restored native state signed a new client webhook with the original subscription secret")

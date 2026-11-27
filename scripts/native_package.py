@@ -24,7 +24,8 @@ from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from postgres_tools import postgres_bin
-from smoke_native_backup import defer_workflow, prepare_workflow, verify_backup
+from smoke_native_backup import defer_workflow, prepare_webhook, prepare_workflow, verify_backup
+from smoke_workflow_contract import webhook_receiver
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,7 +250,7 @@ def verify_binary_versions(package, version, revision):
 
 def smoke_package(archive, name, pg_bin):
     """Run the extracted launcher with an explicit tool PATH and disposable state."""
-    with TemporaryDirectory(prefix="tc-package-") as temp:
+    with TemporaryDirectory(prefix="tc-package-") as temp, ExitStack() as fixtures:
         work = Path(temp)
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(work, filter="data")
@@ -280,6 +281,7 @@ def smoke_package(archive, name, pg_bin):
             (tool_dir / tool).symlink_to(Path(path).resolve())
         env = {"PATH": os.pathsep.join(map(str, (tool_dir, pg_bin))), "LC_ALL": "C", "TMPDIR": temp}
         verify_mapping_example(package, env)
+        receiver = fixtures.enter_context(webhook_receiver())
         with ExitStack() as ports:
             listeners = [ports.enter_context(socket.socket()) for _ in range(4)]
             for listener in listeners:
@@ -290,6 +292,11 @@ def smoke_package(archive, name, pg_bin):
         command = [launcher, "dev",
                    "--api-port", str(api_port), "--db-port", str(db_port),
                    "--connector-port", str(connector_port), "--web-port", str(web_port)]
+        webhook_config = work / "webhooks.json"
+        webhook_config.write_text(json.dumps({
+            "destinations": {"native": f"http://127.0.0.1:{receiver.server_port}/events"},
+        }), encoding="utf-8")
+        command += ["--webhook-config", webhook_config]
         console = package / "console"
         if console.is_dir():
             command += ["--console-dir", console]
@@ -314,9 +321,12 @@ def smoke_package(archive, name, pg_bin):
                 verify_console(opener, f"http://localhost:{web_port}", package, api_port, revision)
             run([tool_dir / "bash", package / "examples/connector/smoke.sh", api],
                 cwd=package, env=env, timeout=90)
+            verify_webhook = prepare_webhook(api_port, web_port, receiver)
+            verify_webhook()
+            print("PASS packaged launcher delivered and retried a signed localhost webhook")
             workflow = prepare_workflow(api_port, web_port)
             parked = defer_workflow(work, state, pg_bin, db_port, env, workflow.receipt)
-        verify_backup(launcher, api_port, env, state, launch, workflow, parked)
+        verify_backup(launcher, api_port, env, state, launch, workflow, parked, verify_webhook)
 
 
 @contextmanager

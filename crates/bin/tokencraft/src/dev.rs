@@ -23,7 +23,7 @@ use self::profile::Profile;
 use crate::{
     connector,
     postgres::{Mode, Postgres},
-    state::{State, private_dir, random_secret, write_private},
+    state::{PrivateFile, State, private_dir, random_secret, write_private},
 };
 
 const HOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -45,6 +45,7 @@ Options:
   --web-port PORT       Allowed localhost console port (default: 3000)
   --console-dir DIR     Serve a packaged frontend build on the web port
   --gateway-bin PATH    Use an existing api-gateway binary
+  --webhook-config PATH Use a local webhook destination registry
   --offline             Build api-gateway using cached Cargo dependencies
   --help                Show this help
 ";
@@ -58,6 +59,7 @@ struct Options {
     gateway_bin: Option<PathBuf>,
     profile: Option<PathBuf>,
     console_dir: Option<PathBuf>,
+    webhook_config: Option<PathBuf>,
     offline: bool,
 }
 
@@ -72,6 +74,7 @@ impl Default for Options {
             gateway_bin: None,
             profile: None,
             console_dir: None,
+            webhook_config: None,
             offline: false,
         }
     }
@@ -133,6 +136,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> {
             Some("--gateway-bin") => options.gateway_bin = Some(value()?.into()),
             Some("--profile") => options.profile = Some(value()?.into()),
             Some("--console-dir") => options.console_dir = Some(value()?.into()),
+            Some("--webhook-config") => options.webhook_config = Some(value()?.into()),
             Some("--offline") => options.offline = true,
             _ => bail!(
                 "unknown option {}. Use tokencraft --help",
@@ -161,6 +165,14 @@ fn parse_port(value: OsString) -> Result<u16> {
 }
 
 async fn run(options: Options) -> Result<()> {
+    let webhook_config = options
+        .webhook_config
+        .as_deref()
+        .map(|path| {
+            profile::read_config(path, 32 * 1024)?
+                .with_context(|| format!("webhook configuration {} was not found", path.display()))
+        })
+        .transpose()?;
     let console = match options.console_dir.as_deref() {
         Some(directory) => Some(console::Console::prepare(directory, options.web_port, options.api_port).await?),
         None => None,
@@ -182,7 +194,7 @@ async fn run(options: Options) -> Result<()> {
     private_dir(&artifacts)?;
     let (mut postgres, database_url) = Postgres::start(&state, options.db_port, Mode::Dev).await?;
     tokio::select! {
-        result = run_stack(&state, &options, providers, database_url, artifacts) => result,
+        result = run_stack(&state, &options, providers, database_url, artifacts, webhook_config) => result,
         result = async {
             match console {
                 Some(console) => console.serve().await,
@@ -240,6 +252,7 @@ async fn run_stack(
     providers: Providers,
     database_url: String,
     artifacts: PathBuf,
+    webhook_config: Option<Vec<u8>>,
 ) -> Result<()> {
     let (archives, archive_key) = state.local_archives()?;
     let profile = match &providers {
@@ -268,6 +281,18 @@ async fn run_stack(
         .env("TOKENCRAFT_DEMO_ARCHIVE_KEY", archive_key)
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    let _webhook_config = if let Some(bytes) = webhook_config {
+        let file = PrivateFile::create(&state.root, &bytes)?;
+        gateway
+            .env("TOKENCRAFT_DEMO_WEBHOOK_CONFIG", &file.path)
+            .env(
+                "TOKENCRAFT_DEMO_WEBHOOK_KEY",
+                state.secrets.derive_key(b"TokenCraft dev webhook signing key v1")?,
+            );
+        Some(file)
+    } else {
+        None
+    };
     let (example, _profile_files) = match providers {
         Providers::Example(example) => {
             gateway

@@ -8,9 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use sha2::Sha256;
 use tokio::process::Command;
 
 use crate::state::{PrivateFile, State};
@@ -27,18 +25,18 @@ pub(super) struct Profile {
 impl Profile {
     pub(super) fn load(directory: &Path) -> Result<Self> {
         let directory = directory.canonicalize().context("resolve the dev profile directory")?;
-        let catalog = read_config(&directory, "catalog.json", 64 * 1024)?
+        let catalog = read_config(&directory.join("catalog.json"), 64 * 1024)?
             .context("the dev profile requires catalog.json")?;
         let mut files = vec![("TOKENCRAFT_CORE_CATALOG", catalog)];
         let mut names = BTreeSet::new();
-        if let Some(bytes) = read_config(&directory, "connector-bindings.json", 32 * 1024)? {
+        if let Some(bytes) = read_config(&directory.join("connector-bindings.json"), 32 * 1024)? {
             let config: Bindings<QueueCredential> = bindings(&bytes, "connector-bindings.json")?;
             for entry in config.bindings {
                 register(&mut names, entry.token_env, QUEUE_TOKEN_PREFIX)?;
             }
             files.push(("TOKENCRAFT_CONNECTORS", bytes));
         }
-        if let Some(bytes) = read_config(&directory, "chat-bindings.json", 16 * 1024)? {
+        if let Some(bytes) = read_config(&directory.join("chat-bindings.json"), 16 * 1024)? {
             let config: Bindings<ChatBinding> = bindings(&bytes, "chat-bindings.json")?;
             for entry in config.bindings {
                 for name in entry.key_env.into_iter().chain(
@@ -60,7 +58,8 @@ impl Profile {
                 Ok((name, value))
             })
             .collect::<Result<_>>()?;
-        let rate_feed = config_path(&directory, "rates.json", 64 * 1024)?;
+        let rate_path = directory.join("rates.json");
+        let rate_feed = config_path(&rate_path, 64 * 1024)?.map(Path::to_owned);
         Ok(Self { files, credentials, rate_feed })
     }
 
@@ -70,11 +69,9 @@ impl Profile {
         state: &State,
     ) -> Result<Vec<PrivateFile>> {
         // Keep the same credential vault on restart and restore of this dev state.
-        let mut vault_key = Hmac::<Sha256>::new_from_slice(state.secrets.payload.as_bytes())?;
-        vault_key.update(b"TokenCraft dev provider credential key v1");
         gateway.env(
             "TOKENCRAFT_PROVIDER_CREDENTIAL_KEY",
-            hex::encode(vault_key.finalize().into_bytes()),
+            state.secrets.derive_key(b"TokenCraft dev provider credential key v1")?,
         );
         gateway.envs(&self.credentials);
         if let Some(rate_feed) = &self.rate_feed {
@@ -139,9 +136,8 @@ fn register(names: &mut BTreeSet<String>, name: String, prefix: &str) -> Result<
     Ok(())
 }
 
-fn config_path(directory: &Path, name: &str, limit: u64) -> Result<Option<PathBuf>> {
-    let path = directory.join(name);
-    let metadata = match fs::metadata(&path) {
+fn config_path(path: &Path, limit: u64) -> Result<Option<&Path>> {
+    let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
@@ -151,19 +147,20 @@ fn config_path(directory: &Path, name: &str, limit: u64) -> Result<Option<PathBu
         "{} must be a regular file",
         path.display()
     );
-    ensure!(metadata.len() <= limit, "{name} exceeds {} KiB", limit / 1024);
+    ensure!(metadata.len() <= limit, "{} exceeds {} KiB", path.display(), limit / 1024);
     Ok(Some(path))
 }
 
-fn read_config(directory: &Path, name: &str, limit: u64) -> Result<Option<Vec<u8>>> {
-    let Some(path) = config_path(directory, name, limit)? else {
+pub(super) fn read_config(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
+    let Some(path) = config_path(path, limit)? else {
         return Ok(None);
     };
     let mut bytes = Vec::new();
-    File::open(&path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() as u64 <= limit,
-        "{name} exceeds {} KiB",
+        "{} exceeds {} KiB",
+        path.display(),
         limit / 1024
     );
     Ok(Some(bytes))

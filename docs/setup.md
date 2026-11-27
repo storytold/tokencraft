@@ -101,6 +101,22 @@ The profile starts a private PostgreSQL cluster and gateway. It uses the supplie
 
 Check the loaded models at `GET /v1/catalog/models`. Use `GET /v1/catalog/models/scoped` with a project credential that has `requests:submit` to discover private models shared with that project. [Import ArtCraft presets into the catalog](provider-connectors.md#prepare-offers-from-the-artcraft-catalog)
 
+### Receive a signed webhook locally
+
+Start your receiver on a loopback address and save its destination in `webhooks.json`.
+
+```json
+{"destinations":{"local_events":"http://127.0.0.1:4011/events"}}
+```
+
+```sh
+tokencraft dev --webhook-config ./webhooks.json
+```
+
+The development launcher accepts HTTP on a literal IPv4 or IPv6 loopback address with an explicit port. The flag also works with `--profile`. In the console or project API, register a subscription using `local_events`, save the issued signing secret in your receiver, and reference the subscription when submitting a request. Restart the launcher to apply configuration changes. [Subscription and signature verification](api-contracts.md#manage-project-webhooks)
+
+The state directory preserves the signing identity across restarts and restores. Keep the destination file with your configuration and pass it again when reopening restored state. For a hosted gateway, configure reviewed HTTPS destinations and its persistent signing key separately. [Hosted webhook setup](deployment.md#run-behind-an-https-ingress)
+
 ### Browser console
 
 The browser console is built from the frontend checkout. For a console you can run with the native launcher, build the frontend from its `frontend/` directory with Node.js 22.
@@ -138,7 +154,7 @@ Use `cargo run --locked -p tokencraft --` before the subcommand when running fro
 
 Use a new destination each time. Restore verifies the file checksums before loading the database in one transaction and checks that PostgreSQL records a clean shutdown before publishing the new state. The next `dev` launch applies any pending migrations. Keep backups in private storage and restore from trusted copies. The backup holds the keys that protect local content as well as the database.
 
-Keep the reviewed profile and its service credentials with your deployment configuration. Use `dev --profile` to reopen restored state with the same bindings.
+Keep the reviewed profile, its service credentials, and any webhook destination file with your deployment configuration. Pass the same `--profile` and `--webhook-config` options when reopening restored state.
 
 These commands cover state managed by `tokencraft dev`. Restore recovers the contents as of the backup. For a separately deployed gateway, coordinate PostgreSQL, object storage, connector state, and secret recovery with the deployment's retention and content-removal records.
 

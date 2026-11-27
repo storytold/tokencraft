@@ -28,6 +28,7 @@ If this archive includes a `console/` directory, start the launcher with `./bin/
 From the package directory, run `export PATH="$PWD/bin:$PATH"` before following guides that invoke TokenCraft commands by name.
 
 - [Run a reviewed catalog with your own models and bindings](docs/setup.md#start-with-a-reviewed-catalog)
+- [Receive and verify signed webhooks locally](docs/setup.md#receive-a-signed-webhook-locally)
 - [Compare provider prices in the ArtCraft reference catalog](catalog/artcraft-v1.json)
 - [Run fal, Kinovi, OpenRouter, or your own compute endpoints](plugins/providers/README.md)
 - [Preview and validate provider mappings with the bundled CLI](docs/provider-mapping.md#try-the-example)
