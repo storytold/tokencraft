@@ -197,7 +197,7 @@ pub(super) async fn advance(runtime: &Runtime, row: db::Run) -> ApiResult<()> {
             });
             checkpoint(runtime, &row, state, "running", 1).await
         }
-        Err(ApiError::ActiveRequestLimit | ApiError::ServiceUnavailable(_)) => {
+        Err(ApiError::ActiveRequestLimit | ApiError::ServiceUnavailable(_) | ApiError::QuoteStale) => {
             checkpoint(runtime, &row, state, "queued", 3).await
         }
         Err(ApiError::SubmissionRateLimit(seconds)) => {
@@ -434,7 +434,7 @@ async fn submit(
     let (accepted, _) = requests::submit_workflow(
         requests::WorkflowAdmission {
             pool: &runtime.pool,
-            catalog: &catalog,
+            catalog: &runtime.catalog,
             providers: runtime.providers.as_deref(),
             access: &access,
             idempotency_key: &idempotency,

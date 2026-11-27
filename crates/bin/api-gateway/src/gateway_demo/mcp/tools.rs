@@ -282,7 +282,7 @@ impl Gateway {
             Workload::Text { .. } => return Err(ApiError::BadRequest("use a media workload".into())),
         }
         let (receipt, duplicate) = requests::submit(
-            &self.state.pool, &self.catalog.current(), None, self.providers.as_deref(), Some(&self.quote_seals), &access,
+            &self.state.pool, &self.catalog, None, self.providers.as_deref(), Some(&self.quote_seals), &access,
             &input.idempotency_key, admitted,
         ).await?;
         Ok(Receipt {

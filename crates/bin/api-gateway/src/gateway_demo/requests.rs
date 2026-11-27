@@ -12,6 +12,7 @@ use super::access::{parse_id, Access};
 use super::artifacts::MediaResult;
 use super::availability::{AvailabilityInput, RouteAvailability};
 use super::catalog::{digest, valid_identifier, Adapter, Catalog};
+use super::catalog_refresh::CatalogStore;
 use super::chat_input::{validate_messages, ChatInput, ChatOptions, ChatResult, Message};
 use super::providers::{
     connector::{MediaInput as ConnectorInput, StoredInput, WorkflowFrame},
@@ -217,7 +218,7 @@ pub(super) fn media_quote(
 
 pub(super) async fn submit(
     pool: &db::PgPool,
-    catalog: &Catalog,
+    catalog: &CatalogStore,
     webhooks: Option<&WebhookConfig>,
     providers: Option<&ProviderRuntime>,
     seals: Option<&super::quote_seals::QuoteSeals>,
@@ -230,7 +231,7 @@ pub(super) async fn submit(
 
 pub(super) struct WorkflowAdmission<'a> {
     pub pool: &'a db::PgPool,
-    pub catalog: &'a Catalog,
+    pub catalog: &'a CatalogStore,
     pub providers: Option<&'a ProviderRuntime>,
     pub access: &'a Access,
     pub idempotency_key: &'a str,
@@ -250,7 +251,7 @@ pub(super) async fn submit_workflow(
 
 async fn submit_inner(
     pool: &db::PgPool,
-    catalog: &Catalog,
+    catalog_store: &CatalogStore,
     webhooks: Option<&WebhookConfig>,
     providers: Option<&ProviderRuntime>,
     seals: Option<&super::quote_seals::QuoteSeals>,
@@ -411,6 +412,8 @@ async fn submit_inner(
         return Ok((accepted, true));
     }
 
+    let snapshot = catalog_store.current();
+    let catalog = snapshot.as_ref();
     let policies = Policies::load(&mut *tx, key.scope).await?;
     if let QuoteSelection::Advised(selection) = &request.selection {
         selection.validate_policy(&policies)?;
@@ -738,9 +741,10 @@ async fn submit_inner(
             db_queries::workflows::lock_active_run(&mut *tx, run, lease).await?
                 .ok_or_else(lease_ended)?;
         }
-        // Automatic admissions also use a time-limited price. Recheck after the
-        // budget and quota waits before making either reservation durable.
-        if admission_deadline.is_some_and(|deadline| Utc::now() >= deadline) {
+        // Budget and quota waits can outlast the quote deadline or the loaded revision.
+        if admission_deadline.is_some_and(|deadline| Utc::now() >= deadline)
+            || catalog_store.current().revision != catalog.revision
+        {
             return Err(ApiError::QuoteStale);
         }
         if retry_after > 0 {

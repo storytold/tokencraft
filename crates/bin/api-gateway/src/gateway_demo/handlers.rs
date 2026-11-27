@@ -191,7 +191,7 @@ pub async fn submit(
     let key = idempotency_key(&headers)?;
     let (mut request, replay) = requests::submit(
         &state.pool,
-        &catalog.current(),
+        &catalog,
         webhooks.as_deref(),
         providers.as_deref(),
         Some(&seals),

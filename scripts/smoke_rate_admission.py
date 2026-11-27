@@ -21,20 +21,147 @@ from smoke_workflow_contract import (
 )
 
 
-@contextmanager
 def hold_budget(psql, directory, env, account):
+    return hold_lock(psql, directory, env, account,
+                     "SELECT 'held' FROM pg_advisory_xact_lock("
+                     "hashtextextended('gateway_monthly_budget:' || :'account', 0))")
+
+
+@contextmanager
+def hold_lock(psql, directory, env, account, statement):
     with subprocess.Popen([*psql, "-v", f"account={account}"], cwd=directory, env=env,
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as holder:
         try:
-            holder.stdin.write("SET statement_timeout = '5s';\nBEGIN;\n"
-                               "SELECT 'held' FROM pg_advisory_xact_lock("
-                               "hashtextextended('gateway_monthly_budget:' || :'account', 0));\n")
+            holder.stdin.write(f"SET statement_timeout = '5s';\nBEGIN;\n{statement};\n")
             holder.stdin.flush()
             assert holder.stdout.readline().strip() == "held"
             yield
         finally:
             holder.stdin.close()
             holder.wait(timeout=5)
+
+
+def verify_revision_race(port, psql, directory, pg_env, feed, workload, prompt, worker, connector):
+    def scope():
+        session, account, project = provision(port)
+        principal = f"/v1/projects/{project}/service-principals?account_id={account}"
+        row, _ = call(port, principal, 201, method="POST", headers=session, body={
+            "name": "Concurrent admission fixture", "scopes": ["requests:submit", "requests:read", "usage:read"],
+        })
+        return session, account, {"Authorization": "Bearer " + row["token"]}
+
+    late_session, late_account, late_auth = scope()
+    _, early_account, early_auth = scope()
+    workflow_session, workflow_account, project, draft = draft_image_workflow(port, 5_000_000)
+    workflow_scope = f"?account_id={workflow_account}"
+    workflow_path = f"/v1/projects/{project}/workflows/{draft['id']}/test-runs{workflow_scope}"
+
+    def set_budget(session, account):
+        policy = f"/v1/routing-policy?account_id={account}"
+        call(port, policy, 200, method="PUT", headers=session, body={
+            "expected_revision": 0, "policy": {"monthly_estimated_budget_usd_nanos": 20_000_000},
+        })
+        return policy
+
+    policy = set_budget(late_session, late_account)
+    set_budget(workflow_session, workflow_account)
+
+    def quote():
+        return call(port, "/v1/quotes/scoped", 200, method="POST", headers=late_auth, body={
+            "model": "example_image", "workload": workload, "max_total_usd_nanos": 5_000_000,
+        })[0]
+
+    def stored_quote(receipt, auth):
+        return call(port, f"/v1/requests/{receipt['id']}", 200, headers=auth)[0]["quote"]
+
+    def estimate(quoted):
+        assert quoted["selected_offer_id"] == "primary"
+        return next(row["estimated_usd_nanos"] for row in quoted["candidates"] if row["offer_id"] == "primary")
+
+    key = {**late_auth, "Idempotency-Key": token_hex(16)}
+
+    def submit(quoted, expected):
+        return call(port, "/v1/requests", expected, method="POST", headers=key, body={
+            "quote_id": quoted["id"], "input": quoted["input"], "image_prompt": prompt["prompt"],
+        }, timeout=30)[0]
+
+    def waiters(predicate):
+        return int(command(*psql, "-c", f"SELECT count(*) FROM pg_stat_activity WHERE {predicate}",
+                           cwd=directory, env=pg_env))
+
+    before = quote()
+    assert estimate(before) == 4_000_000
+    updated = json.loads(feed.read_bytes())
+    observed = datetime.now(timezone.utc)
+    assert observed < datetime.fromisoformat(updated["rates"]["primary"]["valid_until"])
+    updated["rates"]["primary"].update(
+        observed_at=observed.isoformat(), valid_until=(observed + timedelta(hours=1)).isoformat(),
+        schedule={"kind": "image", "usd_nanos_per_image": 4_250_000},
+    )
+    candidate = feed.with_suffix(".next.json")
+    candidate.write_text(json.dumps(updated))
+
+    with ThreadPoolExecutor(max_workers=2) as tasks:
+        with ExitStack() as locks:
+            worker.send_signal(signal.SIGSTOP)
+            try:
+                run, _ = call(port, workflow_path, 202, method="POST", body={
+                    "inputs": {}, "revision": draft["revision"],
+                }, headers={**workflow_session, "Idempotency-Key": token_hex(16)})
+                locks.enter_context(hold_budget(psql, directory, pg_env, workflow_account))
+            finally:
+                worker.send_signal(signal.SIGCONT)
+            locks.enter_context(hold_budget(psql, directory, pg_env, late_account))
+            locks.enter_context(hold_lock(
+                psql, directory, pg_env, early_account,
+                "SELECT 'held' FROM accounts WHERE id = :'account' FOR NO KEY UPDATE",
+            ))
+            late = tasks.submit(submit, before, (202, 409))
+            early = tasks.submit(
+                call, port, "/v1/image", 202, method="POST", body=prompt, timeout=30,
+                headers={**early_auth, "Idempotency-Key": token_hex(16), "X-TokenCraft-Max-Cost-Nanos": "5000000"},
+            )
+            budget_wait = "wait_event = 'advisory' AND query LIKE '%gateway_monthly_budget:%'"
+            account_wait = "wait_event_type = 'Lock' AND query LIKE '%FROM accounts%FOR SHARE%'"
+            eventually(lambda: waiters(budget_wait) == 2, "sealed quote and workflow child at their budget locks",
+                       timeout=5)
+            eventually(lambda: waiters(account_wait) == 1, "automatic admission at the account lock", timeout=4)
+            candidate.replace(feed)
+            eventually(lambda: estimate(quote()) == 4_250_000, "the newer API rate")
+            eventually(lambda: "catalog rate feed recovered" in (directory / "rate-worker.log").read_text(),
+                       "the worker's accepted rate refresh")
+            after = quote()
+            assert after["catalog_revision"] != before["catalog_revision"]
+            assert waiters(budget_wait) == 2 and waiters(account_wait) == 1
+        held = late.result(timeout=5)
+        automatic, _ = early.result(timeout=5)
+
+    automatic_quote = stored_quote(automatic, early_auth)
+    if "id" in held:
+        raise AssertionError(
+            f"Superseded quote admitted at {estimate(stored_quote(held, late_auth))}; "
+            f"automatic admission used {estimate(automatic_quote)}"
+        )
+    assert held["error"]["code"] == "quote_stale", held
+    assert automatic_quote["catalog_revision"] == after["catalog_revision"]
+    assert estimate(automatic_quote) == 4_250_000
+    usage, _ = call(port, "/v1/usage", 200, headers=late_auth)
+    assert usage["totals"]["requests"] == 0
+    budget, _ = call(port, policy, 200, headers=late_session)
+    assert budget["monthly_budget"]["reserved_usd_nanos"] == "0"
+    accepted = submit(after, 202)
+    assert stored_quote(accepted, late_auth)["catalog_revision"] == after["catalog_revision"]
+    assert submit(after, 200) == accepted
+    print("PASS catalog refresh rejected a held sealed quote and repriced automatic admission after its account lock")
+
+    finished, _ = wait_for_run(port, run, workflow_session)
+    child = finished["steps"][0]["request"]
+    child_status, _ = call(port, f"/v1/requests/{child}{workflow_scope}&project_id={project}", 200,
+                           headers=workflow_session)
+    assert child_status["quote"]["catalog_revision"] == after["catalog_revision"]
+    assert estimate(child_status["quote"]) == 4_250_000
+    assert connector.jobs[child] == 1
+    print("PASS an in-flight workflow child retried pricing and dispatched once at the refreshed rate")
 
 
 def verify_automatic_routing(port, policy, project, session, auth, workload, connector):
@@ -143,20 +270,27 @@ def verify_data_routing(port, policy, project, session, auth, workload, connecto
     print("PASS normalized data limits survive admission and tightened retention blocks queued provider submission")
 
 
-def worker_rate_probe(port):
+def draft_image_workflow(port, cap):
     session, account, project = provision(port)
     scope = f"?account_id={account}"
     project_path = f"/v1/projects/{project}"
     draft, _ = call(port, project_path + "/workflows" + scope, 201, method="POST", headers=session, body={
-        "schema": 1, "title": "Worker rate refresh", "max_usd_nanos": 4_000_000,
+        "schema": 1, "title": "Worker rate refresh", "max_usd_nanos": cap,
         "inputs": {}, "outputs": {"image": "generate"}, "nodes": [{
             "id": "generate", "title": "Generate an image", "kind": "image", "model": "example_image",
-            "max_usd_nanos": 4_000_000, "settings": {
+            "max_usd_nanos": cap, "settings": {
                 "prompt": {"source": "fixed", "value": "Synthetic worker rate fixture"},
                 "aspect_ratio": {"source": "fixed", "value": "1:1"},
             },
         }],
     })
+    return session, account, project, draft
+
+
+def worker_rate_probe(port):
+    session, account, project, draft = draft_image_workflow(port, 4_000_000)
+    scope = f"?account_id={account}"
+    project_path = f"/v1/projects/{project}"
     management = project_path + f"/workflows/{draft['id']}"
 
     def verify(quote, connector, *, published=False):
@@ -287,7 +421,10 @@ def verify(gateway, directory, settings, session, account, project):
         assert replacement["id"] != accepted["id"]
         assert not connector.jobs
         worker_port = loopback_port()
-        worker_settings = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
+        worker_settings = dict(
+            settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port),
+            RUST_LOG="warn,api_gateway::gateway_demo::catalog_refresh=info",
+        )
         worker = stack.enter_context(service("rate-worker", [gateway], directory, worker_settings, lambda: ready(worker_port)))
         for receipt in (accepted, replacement):
             wait_for_status(port, receipt, auth, "succeeded", 18)
@@ -329,26 +466,23 @@ def verify(gateway, directory, settings, session, account, project):
         assert worker.poll() is None
         print("PASS the same worker admitted a workflow child at the refreshed rate")
 
-        valid = feed.read_bytes()
         updated["rates"]["primary"]["schedule"]["usd_nanos_per_image"] = 2_000_000
         candidate.write_text(json.dumps(updated))
         candidate.replace(feed)
-        try:
-            def rejected():
-                message = "catalog rate feed rejected"
-                return all(message in (directory / f"rate-{role}.log").read_text() for role in ("api", "worker"))
 
-            eventually(rejected, "API and worker rate rejection")
-            accepted_quote = quote(4_000_000)
-            assert accepted_quote["candidates"][0]["estimated_usd_nanos"] == 4_000_000
-            probe(accepted_quote, connector, published=True)
-            print("PASS a published workflow kept the accepted rate after both replicas rejected a conflicting observation")
-        finally:
-            candidate.write_bytes(valid)
-            candidate.replace(feed)
+        def rejected():
+            message = "catalog rate feed rejected"
+            return all(message in (directory / f"rate-{role}.log").read_text() for role in ("api", "worker"))
+
+        eventually(rejected, "API and worker rate rejection")
+        accepted_quote = quote(4_000_000)
+        assert accepted_quote["candidates"][0]["estimated_usd_nanos"] == 4_000_000
+        probe(accepted_quote, connector, published=True)
+        print("PASS a published workflow kept the accepted rate after both replicas rejected a conflicting observation")
 
         verify_automatic_routing(port, policy, project, session, auth, workload, connector)
         verify_data_routing(port, policy, project, session, auth, workload, connector, worker)
+        verify_revision_race(port, psql, directory, pg_env, feed, workload, prompt, worker, connector)
 
 
 def main():

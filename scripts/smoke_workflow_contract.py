@@ -52,13 +52,14 @@ def command(*args, cwd, env):
     return result.stdout.strip()
 
 
-def call(port, path, expected, *, method="GET", body=None, headers=None, max_bytes=2 * 1024 * 1024):
+def call(port, path, expected, *, method="GET", body=None, headers=None,
+         max_bytes=2 * 1024 * 1024, timeout=5):
     statuses = (expected,) if isinstance(expected, int) else expected
     fields = {"Origin": f"http://localhost:{port}", **(headers or {})}
     if body is not None and not isinstance(body, bytes):
         fields["Content-Type"] = "application/json"
         body = json.dumps(body).encode()
-    connection = HTTPConnection(HOST, port, timeout=5)
+    connection = HTTPConnection(HOST, port, timeout=timeout)
     try:
         connection.request(method, path, body, fields)
         result = connection.getresponse()

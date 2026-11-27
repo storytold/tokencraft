@@ -268,9 +268,9 @@ async fn run(gateway: &MediaGateway, request: Request) -> ApiResult<Response> {
         ));
     }
     let mut admission = body.into_admission(parts.uri.path(), &parts.headers)?;
-    let catalog = gateway.catalog.current();
     let pool = &gateway.app.pool;
     if dry_run {
+        let catalog = gateway.catalog.current();
         admission.validate_prompts()?;
         let scope = access.for_client(admission.client_ref.as_deref())?;
         admission.input.normalize()?;
@@ -301,7 +301,7 @@ async fn run(gateway: &MediaGateway, request: Request) -> ApiResult<Response> {
     }
     let (mut accepted, replay) = requests::submit(
         pool,
-        &catalog,
+        &gateway.catalog,
         gateway.webhooks.as_deref(),
         gateway.providers.as_deref(),
         Some(&gateway.quote_seals),

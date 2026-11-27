@@ -433,7 +433,7 @@ async fn execute(
     };
     let (accepted, _) = requests::submit(
         &state.pool,
-        &catalog.current(),
+        &catalog,
         webhooks.as_deref(),
         Some(runtime),
         None,
