@@ -3,23 +3,17 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ArrowUpRight, Box, ChevronDown, Clapperboard, FileText, Image, Images } from "lucide-react";
 import { ChoicePicker } from "@/components/ChoicePicker";
 import { ModelIcon } from "@/components/ModelArt";
-import { Badge, Button, Card, Container } from "@/components/ui";
+import { Card, Container } from "@/components/ui";
 import { MODALITY_LABEL, type Model, type Modality } from "@/lib/catalog";
-import { demoEnabled } from "@/lib/gateway";
 import {
   comparisonExamples, comparisonModalities, comparisonModelsFor, defaultComparisonModels,
-  lowestCatalogEstimate, modelComparisonUrl, priceBasis, selectedComparisonModels,
+  modelComparisonUrl, selectedComparisonModels,
   suggestedExample, type ComparisonExample,
 } from "@/lib/model-comparison";
 import { loadPublishedResults, resultForPrompt, type PublishedResults } from "@/lib/model-examples";
-import { comparisonApi, type ModelQuote, type QuoteInput } from "@/surfaces/comparison/api";
-import { useDeadlineClock } from "@/surfaces/comparison/QuoteExpiry";
-import { lowestCurrentQuotePrice } from "./modelQuotePrice";
 
 const modalityIcons = { image: Image, video: Clapperboard, "3d": Box, world: Box, chat: FileText };
 const modalityLabels: Record<Modality, string> = { ...MODALITY_LABEL, "3d": "3D", world: "World", chat: "Text" };
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 });
-const priceReadTimeoutMs = 10_000;
 
 export default function CompareModelsPage() {
   const [params, setParams] = useSearchParams();
@@ -59,7 +53,7 @@ export default function CompareModelsPage() {
     <Container className="space-y-6 pb-14 pt-7 sm:pt-10">
       <header className="space-y-2 border-b border-border pb-5">
         <h1 className="font-display text-4xl font-extrabold tracking-[-0.05em] sm:text-5xl">Compare models</h1>
-        <p className="text-sm text-muted sm:text-base">Compare recorded outputs from the same input and see the lowest listed estimate for each model.</p>
+        <p className="text-sm text-muted sm:text-base">Compare recorded outputs from the same input across models.</p>
       </header>
 
       <div role="group" aria-label="Comparison modality" className="flex flex-wrap gap-1.5">
@@ -127,10 +121,7 @@ type Records = { key: string; results: ReadonlyMap<string, PublishedResults | un
 
 function ComparisonResults({ modelList, example }: { modelList: Model[]; example: ComparisonExample }) {
   const [records, setRecords] = useState<Records>();
-  const [quotes, setQuotes] = useState<{ key: string; refresh: number; values: ReadonlyMap<string, ModelQuote | null> }>();
-  const [refresh, setRefresh] = useState(0);
   const key = `${example.id}/${modelList.map(({ slug }) => slug).join(",")}`;
-  const workload = useMemo(() => demoEnabled ? quoteWorkload(modelList[0].modality, example) : null, [modelList, example]);
 
   useEffect(() => {
     const suite = example.suite;
@@ -145,78 +136,25 @@ function ComparisonResults({ modelList, example }: { modelList: Model[]; example
     return () => controller.abort();
   }, [example, key, modelList]);
 
-  useEffect(() => {
-    if (!workload) return;
-    const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(priceReadTimeoutMs)]);
-
-    async function loadPrices(workload: QuoteInput["workload"]) {
-      const catalog = await comparisonApi.models(signal);
-      const offered = new Set(catalog.models.map(({ id }) => id));
-      const entries = await Promise.all(modelList.filter(({ slug }) => offered.has(slug)).map(async ({ slug }) => {
-        const quote = await comparisonApi.modelQuote({
-          model: slug, provider: null, max_total_usd_nanos: null, workload,
-        }, signal).catch(() => null);
-        const valid = quote && Array.isArray(quote.candidates)
-          && quote.candidates.every((candidate) => candidate && typeof candidate === "object");
-        return [slug, valid ? quote : null] as const;
-      }));
-      if (!controller.signal.aborted) setQuotes({ key, refresh, values: new Map(entries) });
-    }
-
-    void loadPrices(workload).catch(() => {
-      if (!controller.signal.aborted) {
-        setQuotes({ key, refresh, values: new Map(modelList.map(({ slug }) => [slug, null])) });
-      }
-    });
-    return () => controller.abort();
-  }, [key, modelList, refresh, workload]);
-
   const published = records?.key === key ? records.results : undefined;
-  const currentQuotes = quotes?.key === key && quotes.refresh === refresh ? quotes.values : undefined;
-  const checkingPrices = workload !== null && !currentQuotes;
 
   return (
     <section className="space-y-3" aria-labelledby="compare-results-title">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="compare-results-title" className="font-display text-xl font-bold">Model outputs</h2>
-        {workload && <Button type="button" size="sm" variant="outline" disabled={checkingPrices}
-          onClick={() => setRefresh((value) => value + 1)}>Refresh prices</Button>}
-      </div>
+      <h2 id="compare-results-title" className="font-display text-xl font-bold">Model outputs</h2>
       <div className={`grid items-start gap-4 ${modelList.length > 1 ? "sm:grid-cols-2" : ""} ${modelList.length === 3 ? "lg:grid-cols-3" : ""}`}>
         {modelList.map((model) => {
           const asset = example.suite
             ? resultForPrompt(example.suite, example, model.slug, published?.get(model.slug))?.artifact
             : undefined;
-          return <ModelResult key={model.slug} model={model} example={example} asset={asset}
-            pending={!asset && Boolean(example.suite && !published)}
-            checkingPrice={checkingPrices} gatewayQuote={currentQuotes?.get(model.slug)} />;
+          return <ModelResult key={model.slug} model={model} asset={asset}
+            pending={!asset && Boolean(example.suite && !published)} />;
         })}
       </div>
     </section>
   );
 }
 
-function quoteWorkload(modality: Modality, example: ComparisonExample): QuoteInput["workload"] | null {
-  switch (modality) {
-    case "image": return { kind: "image", count: 1, aspect_ratio: "1:1", max_relative_error_bps: 0 };
-    case "video": return {
-      kind: "video", duration_seconds: Number(example.suite?.settings.duration_seconds ?? 6),
-      aspect_ratio: "16:9", resolution: "720p", max_relative_error_bps: 0,
-    };
-    case "3d": return { kind: "mesh", format: "glb" };
-    case "chat": return { kind: "text", max_input_tokens: 1000, max_output_tokens: 500 };
-    case "world": return null;
-  }
-}
-
-function ModelResult({ model, example, asset, pending, checkingPrice, gatewayQuote }: {
-  model: Model; example: ComparisonExample; asset?: string; pending: boolean;
-  checkingPrice: boolean; gatewayQuote?: ModelQuote | null;
-}) {
-  const now = useDeadlineClock([gatewayQuote?.expires_at, ...(gatewayQuote?.candidates.map(row => row.rate_valid_until) ?? [])]);
-  const estimate = gatewayQuote ? lowestCurrentQuotePrice(gatewayQuote, now)
-    : checkingPrice || gatewayQuote === null ? null : lowestCatalogEstimate(model, example);
+function ModelResult({ model, asset, pending }: { model: Model; asset?: string; pending: boolean }) {
   return (
     <Card className="min-w-0 overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3.5">
@@ -230,17 +168,6 @@ function ModelResult({ model, example, asset, pending, checkingPrice, gatewayQuo
         <ArrowUpRight className="h-4 w-4 shrink-0 text-muted" aria-hidden />
       </div>
       {asset ? <OutputAsset key={asset} model={model} asset={asset} /> : <UnavailableOutput pending={pending} />}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border p-4">
-        <div aria-live="polite" aria-busy={checkingPrice}>
-          <p className="text-xs text-muted">Lowest estimated cost</p>
-          <p className="mt-0.5 font-mono text-lg font-semibold">{checkingPrice ? "Checking price…"
-            : estimate === null ? "Unavailable" : money.format(estimate)}</p>
-        </div>
-        <div className="text-right">
-          <p className="text-xs text-muted">{priceBasis(model, example)}</p>
-          {estimate !== null && <Badge className="mt-1 text-[11px]">{gatewayQuote ? "Live quote" : "Catalog estimate"}</Badge>}
-        </div>
-      </div>
     </Card>
   );
 }

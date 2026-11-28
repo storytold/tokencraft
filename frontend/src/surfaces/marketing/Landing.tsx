@@ -24,7 +24,6 @@ const features = [
 type ExampleRoute = {
   model: string;
   provider: string;
-  price: number;
   rating?: number;
   unavailable?: string;
 };
@@ -46,9 +45,9 @@ const routingExamples: RoutingExample[] = [
     settings: "One image · 4:3 aspect ratio",
     supportsQuality: true,
     routes: [
-      { model: "Fast image model", provider: "Provider A", price: 0.02, rating: 7, unavailable: "4:3 unsupported" },
-      { model: "Fast image model", provider: "Provider B", price: 0.04, rating: 7 },
-      { model: "Detail image model", provider: "Provider C", price: 0.07, rating: 9 },
+      { model: "Fast image model", provider: "Provider A", rating: 7, unavailable: "4:3 unsupported" },
+      { model: "Fast image model", provider: "Provider B", rating: 7 },
+      { model: "Detail image model", provider: "Provider C", rating: 9 },
     ],
   },
   {
@@ -58,9 +57,9 @@ const routingExamples: RoutingExample[] = [
     settings: "Eight seconds · 1080p",
     supportsQuality: true,
     routes: [
-      { model: "Fast video model", provider: "Provider C", price: 0.24, rating: 7, unavailable: "720p maximum" },
-      { model: "Fast video model", provider: "Provider B", price: 0.40, rating: 7 },
-      { model: "Studio video model", provider: "Provider A", price: 0.56, rating: 9 },
+      { model: "Fast video model", provider: "Provider C", rating: 7, unavailable: "720p maximum" },
+      { model: "Fast video model", provider: "Provider B", rating: 7 },
+      { model: "Studio video model", provider: "Provider A", rating: 9 },
     ],
   },
   {
@@ -70,15 +69,14 @@ const routingExamples: RoutingExample[] = [
     settings: "128K context window",
     supportsQuality: false,
     routes: [
-      { model: "Long-context model", provider: "Provider A", price: 0.06, unavailable: "64K context limit" },
-      { model: "Long-context model", provider: "Provider C", price: 0.14 },
-      { model: "Long-context model", provider: "Provider B", price: 0.22 },
+      { model: "Long-context model", provider: "Provider A", unavailable: "64K context limit" },
+      { model: "Long-context model", provider: "Provider C" },
+      { model: "Long-context model", provider: "Provider B" },
     ],
   },
 ];
 
 const minimumRating = 8;
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
 export default function Landing() {
   const { user } = useAuth();
@@ -160,7 +158,7 @@ export default function Landing() {
           <p className="landing-kicker">The open-source AI gateway</p>
           <h1 id="landing-title">The right AI for <span>what you need.</span></h1>
           <p className="landing-hero-description">
-            One integration for text, images, video, audio and 3D. TokenCraft finds the best-priced fit across connected models and providers as the lineup changes. You pay the inference cost with zero markup.
+            One integration for text, images, video, audio and 3D. Route requests across connected models and providers using your workload and routing policy.
           </p>
           <div className="landing-actions">
             <Link to={start} className="landing-button landing-button-primary"><KeyRound size={18} aria-hidden /> Get API key</Link>
@@ -176,7 +174,7 @@ export default function Landing() {
               <p className="landing-kicker">How routing works</p>
               <h2 id="landing-routing-title" className="landing-heading">Connect once. Reach many providers.</h2>
             </div>
-            <p className="landing-lede">Send requests through one API. TokenCraft checks which routes can do the job and compares what each would cost. Use a favorite model or let TokenCraft choose where automatic model routing is supported.</p>
+            <p className="landing-lede">Send requests through one API. TokenCraft checks which routes fit the workload and applies your routing policy. Use a favorite model or let TokenCraft choose where automatic model routing is supported.</p>
           </div>
           <RoutingExplorer />
         </Container>
@@ -188,7 +186,7 @@ export default function Landing() {
             <div>
               <p className="landing-kicker">Model catalog</p>
               <h2 id="landing-catalog-title" className="landing-heading">Many models. One place.</h2>
-              <p className="landing-lede">Browse by what you’re making, then compare model capabilities, examples and prices.</p>
+              <p className="landing-lede">Browse by what you’re making, then compare model capabilities and recorded outputs.</p>
             </div>
             <Link to="/models" className="landing-button landing-button-outline">Browse all models</Link>
           </div>
@@ -257,7 +255,7 @@ function RoutingExplorer() {
   const routes = example.routes.map((route) => ({
     ...route,
     excluded: route.unavailable ?? (checkRating && (route.rating ?? 0) < minimumRating ? "Below quality bar" : undefined),
-  })).sort((first, second) => first.price - second.price);
+  }));
   const selected = routes.find((route) => !route.excluded);
 
   return (
@@ -265,7 +263,7 @@ function RoutingExplorer() {
       <div className="landing-explorer-header">
         <div>
           <h3 id="landing-explorer-title"><GitBranch size={18} aria-hidden /> Routing explorer</h3>
-          <p>Illustrative routes and prices</p>
+          <p>Illustrative provider routes</p>
         </div>
         <div className="landing-explorer-controls" role="group" aria-label="Choose an example workload">
           {routingExamples.map((option) => {
@@ -300,10 +298,7 @@ function RoutingExplorer() {
                     <strong>{route.model}</strong>
                     <span>{route.provider}{checkRating && route.rating !== undefined && ` · ${route.rating}/10`}</span>
                   </div>
-                  <div className="landing-offer-result">
-                    <strong className="landing-offer-cost">{money.format(route.price)}</strong>
-                    <span>{route.excluded ?? (route === selected ? "Lowest eligible" : "Eligible")}</span>
-                  </div>
+                  <span className="landing-offer-result">{route.excluded ?? (route === selected ? "Selected" : "Eligible")}</span>
                 </li>
               ))}
             </ul>
@@ -312,10 +307,7 @@ function RoutingExplorer() {
         <div className="landing-route-total" role="status" aria-atomic="true">
           <Check size={20} aria-hidden />
           {selected ? (
-            <>
-              <div><strong>Selected route</strong><p>{selected.model} · {selected.provider}</p></div>
-              <div className="landing-offer-result"><strong className="landing-offer-cost">{money.format(selected.price)} total</strong><p>Zero markup</p></div>
-            </>
+            <div><strong>Selected route</strong><p>{selected.model} · {selected.provider}</p></div>
           ) : <strong>No eligible route for this request</strong>}
         </div>
       </div>

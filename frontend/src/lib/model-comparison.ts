@@ -1,4 +1,4 @@
-import { MODELS, MODEL_BY_SLUG, type Model, type Modality, type PriceUnit } from "./catalog";
+import { MODELS, MODEL_BY_SLUG, type Model, type Modality } from "./catalog";
 import { resultForPrompt, suiteForModel, type PromptSuite, type SharedPrompt } from "./model-examples";
 
 const MAX_MODELS = 3;
@@ -69,30 +69,4 @@ export function modelComparisonUrl(models: readonly Model[], example?: Compariso
   const params = new URLSearchParams({ models: models.map((model) => model.slug).join(",") });
   if (example) params.set("example", example.id);
   return "/compare?" + params;
-}
-
-export function lowestCatalogEstimate(model: Model, example: ComparisonExample) {
-  const cheapest = (unit: PriceUnit) => Math.min(
-    ...model.pricing.filter((price) => price.unit === unit && Number.isFinite(price.usd) && price.usd >= 0).map((price) => price.usd),
-  );
-  const duration = Number(example.suite?.settings.duration_seconds ?? 6);
-  const cost: Record<Modality, () => number> = {
-    image: () => cheapest("per_image"),
-    video: () => cheapest("per_video_second") * duration,
-    "3d": () => cheapest("per_mesh"),
-    world: () => cheapest("per_splat"),
-    chat: () => cheapest("per_million_tokens_in") / 1000 + cheapest("per_million_tokens_out") / 2000,
-  };
-  const amount = cost[model.modality]();
-  return Number.isFinite(amount) ? amount : null;
-}
-
-export function priceBasis(model: Model, example: ComparisonExample) {
-  switch (model.modality) {
-    case "image": return "1 square image";
-    case "video": return `${example.suite?.settings.duration_seconds ?? 6}s clip`;
-    case "3d": return "1 mesh";
-    case "world": return "1 world";
-    case "chat": return "1,000 input + 500 output tokens";
-  }
 }

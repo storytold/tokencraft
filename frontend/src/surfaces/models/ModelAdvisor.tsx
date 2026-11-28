@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { Button, Textarea } from "@/components/ui";
 import { ModelIcon } from "@/components/ModelArt";
 import { useAuth } from "@/lib/auth";
-import { MODEL_BY_SLUG, priceLabel } from "@/lib/catalog";
+import { MODEL_BY_SLUG } from "@/lib/catalog";
 import { modelComparisonUrl, selectedComparisonModels, suggestedExample } from "@/lib/model-comparison";
 import { entryPath } from "@/lib/onboarding";
 import { advisorApi, catalogAdvice, type Advice } from "./model-advisor";
@@ -173,7 +173,6 @@ function AdviceResults({ result }: { result: Result }) {
                   {recommendation.community.weaknesses.map((theme) => <p key={theme}><span className="font-medium">Reported weakness</span> · {theme}</p>)}
                 </div>
               )}
-              <p className="text-xs text-muted">{priceLabel(model.pricing[0])} · Catalog estimate</p>
             </li>
           ))}
         </ol>

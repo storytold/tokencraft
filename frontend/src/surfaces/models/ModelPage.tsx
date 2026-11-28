@@ -10,14 +10,14 @@ import { Playground } from "./Playground";
 import { Gallery, type RemixValues } from "./Gallery";
 import { ModelReviews } from "./ModelReviews";
 import { SharedExamples } from "./SharedExamples";
-import { MODEL_BY_SLUG, MODALITY_LABEL, priceLabel, type Model } from "@/lib/catalog";
+import { MODEL_BY_SLUG, MODALITY_LABEL, type Model } from "@/lib/catalog";
 import { generationEndpoint, modelContract, modelPrimitive, modelRequestExample } from "@/lib/generation-contract";
 import { examplesForModel } from "@/lib/gallery";
 import { suiteForModel } from "@/lib/model-examples";
 import { cn } from "@/lib/cn";
 import { apiReferencePath } from "@/surfaces/marketing/api-reference-path";
 
-const TABS = ["Overview", "Examples", "Playground", "API", "Pricing", "Changelog"] as const;
+const TABS = ["Overview", "Examples", "Playground", "API", "Changelog"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Tabs sync to the URL hash (linkable, back/forward history) — matches the design's #anchors. */
@@ -26,7 +26,6 @@ const TAB_HASH: Record<Tab, string> = {
   Playground: "playground",
   API: "api",
   Examples: "examples",
-  Pricing: "pricing",
   Changelog: "changelog",
 };
 function tabFromHash(hash: string): Tab {
@@ -77,18 +76,12 @@ export default function ModelPage() {
               <p className="mt-1.5 text-xs text-muted">{model.provider} · {MODALITY_LABEL[model.modality]}</p>
             </div>
           </div>
-          <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1.5 sm:w-auto sm:justify-start sm:gap-x-4">
-            <Link to={{ search: location.search, hash: TAB_HASH.Pricing }} className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-xs font-medium hover:text-brand">
-              <span className="text-muted">From</span>
-              <span className="font-mono">{priceLabel(model.pricing[0])}</span>
-            </Link>
-            {(tab !== "Playground" || examplesAction) && (
-              <Button size="sm" className="shrink-0 px-2.5 text-xs" onClick={() => setTab(examplesAction ? "Examples" : "Playground")}>
-                <ActionIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                {examplesAction ? "Compare examples" : "Open playground"}
-              </Button>
-            )}
-          </div>
+          {(tab !== "Playground" || examplesAction) && (
+            <Button size="sm" className="shrink-0 px-2.5 text-xs" onClick={() => setTab(examplesAction ? "Examples" : "Playground")}>
+              <ActionIcon className="h-3.5 w-3.5" aria-hidden="true" />
+              {examplesAction ? "Compare examples" : "Open playground"}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -148,29 +141,6 @@ export default function ModelPage() {
         {tab === "API" && <ApiTab model={model} />}
 
         {tab === "Examples" && <ModelExamples key={model.slug} model={model} onRemix={applyRemix} />}
-
-        {tab === "Pricing" && (
-          <Card className="overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="border-b border-border bg-surface2/50 text-left text-muted">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Price</th>
-                  <th className="px-4 py-3 font-medium">Unit</th>
-                  <th className="px-4 py-3 font-medium">Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {model.pricing.map((p, i) => (
-                  <tr key={i} className="border-b border-border/60 last:border-0">
-                    <td className="px-4 py-3 font-medium text-fg">{priceLabel(p)}</td>
-                    <td className="px-4 py-3 font-mono text-[13px] text-muted">{p.unit}</td>
-                    <td className="px-4 py-3 text-muted">{p.note ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-        )}
 
         {tab === "Changelog" && (
           <div className="space-y-4">

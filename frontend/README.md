@@ -34,7 +34,7 @@ src/
     cn.ts         class merge helper
   components/     shared UI primitives (ui.tsx) + ModelCard
   surfaces/       → future apps, one folder per surface
-    marketing/    landing, pricing, docs (public)
+    marketing/    landing and developer docs (public)
     models/       catalog (gallery/table views, rank + sort), model page + gallery + playground
     rankings/     the Rankings product — overview, per-media pages, model detail
     auth/         login, signup, password reset

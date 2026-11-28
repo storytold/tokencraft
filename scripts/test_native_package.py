@@ -118,7 +118,7 @@ class NativeConsoleBuildTest(unittest.TestCase):
 
             document = index.replace(b"<head>", b"<head>" + marker)
             served = {
-                "/pricing": document,
+                "/models": document,
                 "/docs": document,
                 "/docs/api/post/v1/requests": document,
                 "/docs/api/get/.well-known/oauth-authorization-server": document,
@@ -134,7 +134,7 @@ class NativeConsoleBuildTest(unittest.TestCase):
                     return BytesIO(served[urlsplit(url).path])
 
             verify_console(Opener(), "http://localhost:3000", package, 4000, revision)
-            served["/assets/index-fixture.js"] = served["/pricing"]
+            served["/assets/index-fixture.js"] = served["/models"]
             with self.assertRaisesRegex(RuntimeError, "assets/index-fixture.js differs from the release asset"):
                 verify_console(Opener(), "http://localhost:3000", package, 4000, revision)
 

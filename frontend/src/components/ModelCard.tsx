@@ -3,7 +3,7 @@ import { ArrowUpRight, TrendingDown, TrendingUp } from "lucide-react";
 import { Badge, Card } from "@/components/ui";
 import { Sparkline } from "@/components/Sparkline";
 import { ModelIcon } from "@/components/ModelArt";
-import { MODALITY_LABEL, priceLabel, type Model } from "@/lib/catalog";
+import { MODALITY_LABEL, type Model } from "@/lib/catalog";
 import type { ModelStats } from "@/lib/model-stats";
 
 /** Optional ranking/usage overlay for the catalog index (design §3.3). */
@@ -40,22 +40,18 @@ export function ModelCard({
           {model.status === "new" && <Badge className="text-xs" tone="green">New</Badge>}
           {model.status === "preview" && <Badge className="text-xs" tone="amber">Preview</Badge>}
         </div>
-        <div className="border-t border-border pt-3">
-          {stats && metric ? (
-            <div className="flex items-end justify-between gap-2 pt-1">
-              <div>
-                <div className="text-xs text-muted">{metric.label}</div>
-                <div className="flex items-center gap-1.5 text-sm font-semibold text-fg">
-                  {metric.value}
-                  <WoW ratio={stats.wow} />
-                </div>
+        {stats && metric && (
+          <div className="flex items-end justify-between gap-2 border-t border-border pt-4">
+            <div>
+              <div className="text-xs text-muted">{metric.label}</div>
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-fg">
+                {metric.value}
+                <WoW ratio={stats.wow} />
               </div>
-              <Sparkline data={stats.sparkline} />
             </div>
-          ) : (
-            <p className="text-sm font-medium text-fg">{priceLabel(model.pricing[0])}</p>
-          )}
-        </div>
+            <Sparkline data={stats.sparkline} />
+          </div>
+        )}
       </Card>
     </Link>
   );

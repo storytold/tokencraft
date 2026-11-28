@@ -484,14 +484,12 @@
   background: #42291e;
 }
 
-.landing-offer-selected :is(strong, span),
-.landing-route-total .landing-offer-cost { color: #ffd2b2; }
+.landing-offer-selected :is(strong, span) { color: #ffd2b2; }
 .landing-offer-result { min-width: 0; text-align: right; }
-.landing-offer-cost { font-family: "Geist Mono", ui-monospace, monospace; }
 
 .landing-route-total {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.75rem;
   margin-top: 1.1rem;

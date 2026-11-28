@@ -12,7 +12,6 @@ const NAV = [
   { to: "/models", label: "Models" },
   ...(demoEnabled ? [{ to: "/playground", label: "Playground" }] : [{ to: "/rankings", label: "Rankings" }]),
   { to: "/compare", label: "Compare" },
-  { to: "/pricing", label: "Pricing" },
   { to: "/docs", label: "Docs" },
 ];
 

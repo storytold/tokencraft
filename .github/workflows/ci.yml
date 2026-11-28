@@ -180,14 +180,10 @@ jobs:
         run: node --experimental-strip-types --test ../scripts/console_retention_timer.test.mjs
       - name: Verify console submission snapshots and receipts
         run: node --experimental-strip-types --test ../scripts/console_model_submission.test.mjs
-      - name: Verify model comparison price expiry
-        run: node --experimental-strip-types --test ../scripts/console_model_quote_price.test.mjs
       - name: Verify console aspect ratio defaults and input
         run: node --experimental-strip-types --test ../scripts/console_aspect_ratio.test.mjs
       - name: Verify scoped console artifact downloads
         run: node --experimental-strip-types --test ../scripts/console_artifact_transfer.test.mjs
-      - name: Verify public catalog transfer and offer limits
-        run: node --experimental-strip-types --test ../scripts/console_reference_catalog.test.mjs
       - name: Verify console webhook rotation recovery state
         run: node --experimental-strip-types --test ../scripts/console_webhook_rotation.test.mjs
       - name: Reject a hosted console build without a revision

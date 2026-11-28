@@ -1,4 +1,3 @@
-import { referenceCatalogUrl } from "./referenceCatalog";
 import { apiReferencePath } from "./api-reference-path";
 
 type Endpoint = readonly [method: "GET" | "POST" | "PUT", path: string, summary: string, doc?: string];
@@ -206,16 +205,16 @@ export function buildDocs({ baseUrl, demo, keyPath }: { baseUrl: string; demo: b
       ],
     },
     {
-      id: "provider-catalog", title: "Provider pricing catalog", group: "Reference", topics: [
+      id: "provider-catalog", title: "Provider catalog endpoint", group: "Reference", topics: [
         {
-          id: "artcraft-reference-catalog", title: "Browse the ArtCraft catalog",
+          id: "artcraft-reference-catalog", title: "Read the ArtCraft reference catalog",
           paragraphs: [
-            "The public ArtCraft catalog lists supported provider plugins, model capabilities, and supplier rates with their billing terms.",
+            "The ArtCraft reference catalog is a versioned JSON endpoint for supported provider plugins, model capabilities, and supplier billing terms.",
             "For a self-hosted gateway, import the presets you want with your own plugin bindings and routing rates. Add custom models directly to your gateway catalog.",
           ],
           keywords: ["supplier rates", "list prices", "provider plugins", "self-hosted catalog", "custom models"],
           links: [
-            { label: "Open ArtCraft catalog JSON", href: referenceCatalogUrl, external: true },
+            { label: "Open catalog JSON", href: "/catalog/artcraft-v1.json", external: true },
             { label: "Curate a self-hosted catalog", href: "https://github.com/storytold/tokencraft/blob/main/docs/provider-connectors.md#prepare-offers-from-the-artcraft-catalog", external: true },
           ],
         },

@@ -5,7 +5,7 @@ import { Badge, Button, Card, Input, Label, Select, Slider, Textarea } from "@/c
 import { AccountModal } from "@/components/AccountModal";
 import { useAuth } from "@/lib/auth";
 import { mockGenerate, playgroundHistory, type GenerateResult, type PlayRun } from "@/lib/mock-api";
-import { MODALITY_LABEL, priceLabel, type Control, type Model } from "@/lib/catalog";
+import { MODALITY_LABEL, type Control, type Model } from "@/lib/catalog";
 import { cn } from "@/lib/cn";
 import { demoEnabled } from "@/lib/gateway";
 import { generationEndpoint, modelPrimitive } from "@/lib/generation-contract";
@@ -121,7 +121,7 @@ function MockPlayground({ model, initialValues }: { model: Model; initialValues?
           </Button>
         </div>
         <p className="mt-3 text-xs text-muted">
-          Estimated {priceLabel(model.pricing[0])}. Mock run — no request leaves your browser.
+          This preview runs locally in your browser.
         </p>
       </Card>
 
@@ -153,14 +153,10 @@ function MockPlayground({ model, initialValues }: { model: Model; initialValues?
                   <p className="mt-2 text-sm opacity-80">Mock {MODALITY_LABEL[model.modality]} preview</p>
                 </div>
               </div>
-              <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <Stat label="Request" value={result.requestId} mono />
                 <Stat label="Latency" value={`${(result.latencyMs / 1000).toFixed(1)}s`} />
-                <Stat label="Cost" value={`$${result.costUsd.toFixed(4)}`} />
               </div>
-              <p className="mt-3 rounded-lg bg-surface2/60 px-3 py-2 text-xs text-muted">
-                Cost breakdown: {result.costBreakdown}
-              </p>
             </div>
           )}
         </div>
@@ -244,7 +240,6 @@ function PlaygroundHistory({ model, sessionRuns }: { model: Model; sessionRuns: 
                   {r.status === "failed" && <Badge tone="red">failed</Badge>}
                 </td>
                 <td className="hidden px-3 py-3 text-right text-xs text-muted sm:table-cell">{(r.latencyMs / 1000).toFixed(1)}s</td>
-                <td className="py-3 pl-3 pr-5 text-right font-medium text-fg">${r.costUsd.toFixed(3)}</td>
               </tr>
             ))}
           </tbody>

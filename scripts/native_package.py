@@ -203,7 +203,7 @@ def verify_console(opener, origin, package, api_port, revision, *, console_dir=N
     if script is None:
         raise RuntimeError("The compiled console index has no entry script.")
     entry = script[1][1:].decode()
-    pages = ("/pricing", "/docs", "/docs/api/post/v1/requests",
+    pages = ("/models", "/docs", "/docs/api/post/v1/requests",
              "/docs/api/get/.well-known/oauth-authorization-server")
     marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
     for page in pages:

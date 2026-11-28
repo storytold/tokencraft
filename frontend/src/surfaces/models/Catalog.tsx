@@ -5,7 +5,7 @@ import { Badge, Button, Container, Input, Select } from "@/components/ui";
 import { Sparkline } from "@/components/Sparkline";
 import { ModelCard } from "@/components/ModelCard";
 import { ModelIcon } from "@/components/ModelArt";
-import { MODELS, MODALITY_LABEL, PROVIDERS, priceLabel, type Modality } from "@/lib/catalog";
+import { MODELS, MODALITY_LABEL, PROVIDERS, type Modality } from "@/lib/catalog";
 import { SORTS, rankModels, sortMetric, type RankedModel, type SortKey } from "@/lib/model-stats";
 import { cn } from "@/lib/cn";
 import { ModelAdvisor } from "./ModelAdvisor";
@@ -89,7 +89,7 @@ export default function Catalog() {
         <Container className="pb-6 pt-7 sm:py-11">
           <div className="motion-safe:animate-fade-up">
             <h1 id="catalog-title" className="font-display text-4xl font-extrabold tracking-tight sm:text-5xl">Model catalog</h1>
-            <p className="mt-2 text-sm leading-6 text-muted sm:text-base">Explore {MODELS.length} models and compare their capabilities, creators, and prices.</p>
+            <p className="mt-2 text-sm leading-6 text-muted sm:text-base">Explore {MODELS.length} models and compare their capabilities and creators.</p>
             <div className="mt-6 flex flex-col items-end gap-2.5 sm:flex-row sm:items-center sm:gap-3">
               <div role="search" className="group relative w-full min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted group-focus-within:text-brand motion-safe:transition-colors" aria-hidden="true" />
@@ -220,7 +220,6 @@ function TableView({ ranked, sort }: { ranked: RankedModel[]; sort: SortKey }) {
             <th className="px-4 py-3 font-medium">#</th>
             <th className="px-4 py-3 font-medium">Model</th>
             <th className="hidden px-4 py-3 font-medium sm:table-cell">Modality</th>
-            <th className="hidden px-4 py-3 font-medium md:table-cell">Price</th>
             <th className="px-4 py-3 text-right font-medium">{metricLabel}</th>
             <th className="hidden px-4 py-3 text-right font-medium sm:table-cell">Weekly</th>
             <th className="hidden px-4 py-3 lg:table-cell">14-day</th>
@@ -255,7 +254,6 @@ function TableView({ ranked, sort }: { ranked: RankedModel[]; sort: SortKey }) {
                 <td className="hidden px-4 py-3 sm:table-cell">
                   <Badge>{MODALITY_LABEL[m.modality]}</Badge>
                 </td>
-                <td className="hidden px-4 py-3 text-muted md:table-cell">{priceLabel(m.pricing[0])}</td>
                 <td className="px-4 py-3 text-right font-semibold text-fg">{met.value}</td>
                 <td className="hidden px-4 py-3 text-right sm:table-cell">
                   <span className={cn("inline-flex items-center gap-0.5 text-xs font-semibold", up ? "text-emerald-500" : "text-rose-500")}>
