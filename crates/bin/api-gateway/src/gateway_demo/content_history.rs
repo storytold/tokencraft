@@ -40,8 +40,8 @@ const MAX_BUNDLE: usize = 8 + MAX_INPUT + MAX_OUTPUT;
 const ARTIFACT_SLOTS: std::ops::Range<i16> = 0..8;
 
 pub(super) struct Store {
-    primary: Target,
-    previous: Option<Target>,
+    primary: Arc<Target>,
+    previous: Option<Arc<Target>>,
     pub(super) retain_media: bool,
     slots: Semaphore,
 }
@@ -62,8 +62,8 @@ impl Store {
             (None, None) => return Ok(None),
         };
         Ok(Some(Self {
-            primary,
-            previous,
+            primary: Arc::new(primary),
+            previous: previous.map(Arc::new),
             retain_media,
             slots: Semaphore::new(4),
         }))
@@ -74,8 +74,8 @@ impl Store {
     }
 
     fn resolve(&self, target: &str) -> Result<&Target, &'static str> {
-        std::iter::once(&self.primary)
-            .chain(&self.previous)
+        std::iter::once(self.primary.as_ref())
+            .chain(self.previous.as_deref())
             .find(|candidate| candidate.id() == target)
             .ok_or(IO_ERROR)
     }
@@ -88,23 +88,29 @@ impl Store {
         if self.primary.permits_restore() {
             restore_job::spawn(pool.clone(), Arc::clone(&self), Arc::clone(&readiness));
         }
-        tokio::spawn(async move {
-            let mut timer = tokio::time::interval(Duration::from_secs(2));
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                readiness.work_tick(&mut timer).await;
-                for target in std::iter::once(&self.primary).chain(&self.previous) {
-                    if let Err(error) = self.work(&pool, &runtime, target).await {
-                        tracing::warn!(sqlstate = ?error.as_database_error().and_then(|e| e.code()),
-                            "content archive database operation deferred");
+        // Each configured target has its own bounded work loop and retry cadence.
+        for target in std::iter::once(&self.primary).chain(&self.previous) {
+            let (target, pool, runtime, readiness) = (
+                Arc::clone(target), pool.clone(), Arc::clone(&runtime), Arc::clone(&readiness),
+            );
+            tokio::spawn(async move {
+                let mut timer = tokio::time::interval(Duration::from_secs(2));
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    readiness.work_tick(&mut timer).await;
+                    if let Err(error) = Self::work(&pool, &runtime, &target).await {
+                        tracing::warn!(
+                            target = target.id(),
+                            sqlstate = ?error.as_database_error().and_then(|e| e.code()),
+                            "content archive database operation deferred"
+                        );
                     }
                 }
-            }
-        });
+            });
+        }
     }
 
     async fn work(
-        &self,
         pool: &db::PgPool,
         runtime: &ProviderRuntime,
         target: &Target,

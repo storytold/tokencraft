@@ -8,7 +8,7 @@ Deployments using `TOKENCRAFT_CHAT_ARCHIVE_DIR` can keep that setting for chat-o
 
 ## Store content in an S3-compatible bucket
 
-Set the following options on the API and workers. New requests use the bucket when configured. Keep the filesystem directory mounted at its original path for existing requests. Quoting, admission, and archive metadata lookups do not contact the bucket.
+Set the following options on the API and workers. New requests use the bucket when configured. Keep the filesystem directory mounted at its original path for existing requests. The filesystem and bucket each process seals and purges independently. Quoting, admission, and archive metadata lookups do not contact the bucket.
 
 | Setting | Value |
 | --- | --- |

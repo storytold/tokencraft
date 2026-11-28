@@ -95,8 +95,11 @@ def verify(gateway, directory, settings, session, account, project):
             "adapter": "connector_queue", "upstream_model": "fixture-audio", "local_binding": "audio",
             "pricing": {"kind": "audio", "usd_nanos_per_second": 0, "durations_seconds": [1], "format": "wav"},
         }]}))
+        legacy = directory / "legacy-content"
+        legacy.mkdir(mode=0o700)
         settings = dict(settings, TOKENCRAFT_CORE_CATALOG=str(catalog), TOKENCRAFT_CONNECTORS=str(bindings),
                         TOKENCRAFT_CONNECTOR_TOKEN_AUDIO=connector.token,
+                        TOKENCRAFT_CONTENT_ARCHIVE_DIR=str(legacy),
                         TOKENCRAFT_CONTENT_ARCHIVE_S3_ENDPOINT=f"http://{HOST}:{bucket.server_port}",
                         TOKENCRAFT_CONTENT_ARCHIVE_S3_BUCKET="fixture-bucket",
                         TOKENCRAFT_CONTENT_ARCHIVE_S3_REGION="us-east-1",
@@ -114,11 +117,12 @@ def verify(gateway, directory, settings, session, account, project):
         scope = "?" + urlencode({"account_id": account, "project_id": project})
         admin_scope = "?" + urlencode({"account_id": account})
 
-        def query(request, sql):
+        def query(request, sql, **values):
             statement = directory / "restore-fixture.sql"
             statement.write_text(sql + "\n")
+            variables = [part for key, value in values.items() for part in ("-v", f"{key}={value}")]
             return command(psql, "-XqAtw", "-v", "ON_ERROR_STOP=1", "-v", f"request={request}",
-                           "-f", statement, cwd=directory, env=db_env)
+                           *variables, "-f", statement, cwd=directory, env=db_env)
 
         def auth_for(client):
             row, _ = call(port, f"/v1/projects/{project}/service-principals" + admin_scope, 201,
@@ -129,16 +133,22 @@ def verify(gateway, directory, settings, session, account, project):
         auth = auth_for("client-a")
         sibling = auth_for("client-b")
 
-        def archived_request():
+        def submit_audio():
             receipt, _ = call(port, "/v1/audio", 202, method="POST",
                               headers={**auth, "Idempotency-Key": token_hex(16)},
                               body={"task": "text_to_music", "model": "fixture_audio",
                                     "prompt": "Restore test audio", "duration_seconds": 1})
             wait_for_status(port, receipt, auth, "succeeded", 18)
             rid = receipt["id"]
-            query(rid, "UPDATE gateway_content_history SET archive_at = clock_timestamp() - interval '1 second' "
-                       "WHERE request_id = :'request';")
-            base = f"/v1/requests/{rid}/content"
+            return rid, f"/v1/requests/{rid}/content"
+
+        def make_due(rid, target=""):
+            query(rid, "UPDATE gateway_content_history SET archive_at = clock_timestamp() - interval '1 second', "
+                       "target = coalesce(nullif(:'target', ''), target) WHERE request_id = :'request';", target=target)
+
+        def archived_request():
+            rid, base = submit_audio()
+            make_due(rid)
             eventually(lambda: call(port, base, 200, headers=auth)[0]["phase"] == "archived",
                        "the archive is sealed", timeout=16)
             manifest = f"/fixture-bucket/tokencraft-content/v1/{rid}.tch"
@@ -183,8 +193,8 @@ def verify(gateway, directory, settings, session, account, project):
         replacement = dict(worker, API_GATEWAY_PORT=str(replacement_port))
         reserved = "SELECT count(*) FROM gateway_content_restores WHERE request_id = :'request'"
         try:
-            stack.enter_context(service("replacement-worker", [gateway], directory, replacement,
-                                        lambda: ready(replacement_port)))
+            replacement_worker = stack.enter_context(service("replacement-worker", [gateway], directory, replacement,
+                                                              lambda: ready(replacement_port)))
             eventually(lambda: bucket.posts[kept_paths[1]] == 1, "another slot progressed during the read", timeout=6)
             assert bucket.posts[kept_paths[0]] == 0, "two workers claimed the same object"
             # Advance the stalled manifest's lease in the fixture instead of waiting 45 seconds.
@@ -210,6 +220,39 @@ def verify(gateway, directory, settings, session, account, project):
         assert file == connector.audio
         call(port, history + "/artifacts/0", 404, headers=sibling)
         print("PASS the replacement recovered the expired claim, reconciled both POSTs, and restored exact scoped media")
+
+        replacement_worker.terminate()
+        replacement_worker.wait(timeout=8)
+        primary_id, primary_history = submit_audio()
+        legacy_id, legacy_history = submit_audio()
+        bucket.entered.clear()
+        bucket.release_get.clear()
+        bucket.checked.clear()
+        bucket.hold_get = f"/fixture-bucket/tokencraft-content/v1/{primary_id}-0.tcm"
+        make_due(primary_id)
+        assert bucket.entered.wait(8), "the primary seal did not reach the storage read"
+        try:
+            make_due(legacy_id, sha256(bytes(legacy.resolve())).hexdigest())
+            eventually(lambda: call(port, legacy_history, 200, headers=auth)[0]["phase"] == "archived",
+                       "legacy archive while the primary storage read is held", timeout=5)
+            file, _ = call(port, legacy_history + "/artifacts/0", 200, headers=auth)
+            assert file == connector.audio
+            files = (legacy / f"{legacy_id}.tch", legacy / f"{legacy_id}-0.tcm")
+            assert all(path.is_file() for path in files)
+            call(port, f"/v1/projects/{project}/requests/{legacy_id}/content" + admin_scope, 200,
+                 method="DELETE", headers=session)
+            eventually(lambda: not any(path.exists() for path in files) and query(
+                legacy_id, "SELECT purged_at IS NOT NULL FROM gateway_content_history WHERE request_id = :'request';"
+            ) == "t",
+                       "legacy archive purge while the primary storage read is held", timeout=4)
+            assert not bucket.checked.is_set()
+        finally:
+            bucket.release_get.set()
+        eventually(lambda: call(port, primary_history, 200, headers=auth)[0]["phase"] == "archived",
+                   "the primary seal finished after the storage read was released", timeout=8)
+        file, _ = call(port, primary_history + "/artifacts/0", 200, headers=auth)
+        assert file == connector.audio
+        print("PASS the previous filesystem target archived and purged content while primary storage was stalled")
 
 
 def main():
