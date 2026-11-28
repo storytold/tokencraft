@@ -1,4 +1,5 @@
 import { API_BASE_URL, ApiError } from "./api";
+import { parseRetryAfter } from "./retryAfter";
 
 export const demoEnabled = import.meta.env.VITE_TOKENCRAFT_DEMO === "true";
 
@@ -30,7 +31,12 @@ export async function gatewayResponse(path: string, init?: RequestInit): Promise
     if (response.status === 404 && body === null) {
       throw new ApiError(404, "endpoint_unavailable", "This endpoint is unavailable on the connected gateway.");
     }
-    throw new ApiError(response.status, body?.error?.code ?? "request_failed", body?.error?.message ?? `Request failed (${response.status}).`);
+    throw new ApiError(
+      response.status,
+      body?.error?.code ?? "request_failed",
+      body?.error?.message ?? `Request failed (${response.status}).`,
+      parseRetryAfter(response.headers.get("Retry-After")),
+    );
   }
   return response;
 }

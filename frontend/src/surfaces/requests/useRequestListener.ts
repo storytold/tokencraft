@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
+import { scheduleDeadline } from "@/lib/deadline";
 import type { ProjectScope } from "@/lib/gateway";
 import { comparisonApi, errorMessage, type Trace, type TraceSnapshot } from "@/surfaces/comparison/api";
 
 const TRACE_READ_TIMEOUT_MS = 10_000;
+const monotonicNow = () => performance.now();
 
 type ReadRequest<T> = (scope: ProjectScope, id: string, signal: AbortSignal, validator: string | null) =>
-  Promise<{ data: T | null; validator: string | null; delay: number }>;
+  Promise<{ data: T | null; validator: string | null; delay?: number; retryAfterMs?: number }>;
 
 type Observation<T> = { key: string; data?: T; error?: string; retrying?: boolean };
 
@@ -16,11 +18,11 @@ export function requestIsActive(status: Trace["status"] | undefined) {
 
 async function readStatus(scope: ProjectScope, id: string, signal: AbortSignal, validator: string | null) {
   const response = await comparisonApi.trace(scope, id, signal, validator);
-  const delay = response.trace ? requestDelay(response.trace.status) : 0;
   return {
     data: response.trace,
     validator: response.validator,
-    delay: Math.max(delay, response.retryAfterMs),
+    delay: response.trace ? requestDelay(response.trace.status) : undefined,
+    retryAfterMs: response.retryAfterMs,
   };
 }
 
@@ -50,47 +52,66 @@ function useRequestListener<T>(
   version?: string,
 ) {
   const { account_id, project_id } = scope;
+  const target = JSON.stringify([account_id, project_id, id]);
   const key = JSON.stringify([account_id, project_id, id, version]);
   const [observation, setObservation] = useState<Observation<T>>();
   const [revision, setRevision] = useState(0);
+  const retry = useRef<{ target: string; until: number } | undefined>(undefined);
   const current = observation?.key === key ? observation : undefined;
 
   useEffect(() => {
     if (!id) return;
     const requestId = id;
     const controller = new AbortController();
-    let timer: number | undefined;
+    let cancelTimer: (() => void) | undefined;
     let reading = false;
     let stopped = false;
     let failures = 0;
     let validator: string | null = null;
     let delay = 1_000;
 
-    function schedule(delay: number) {
+    function retryUntil() {
+      return retry.current?.target === target ? retry.current.until : 0;
+    }
+
+    function rememberRetryHint(wait?: number) {
+      if (wait !== undefined) {
+        retry.current = { target, until: Math.min(monotonicNow() + wait, Number.MAX_SAFE_INTEGER) };
+      }
+    }
+
+    function schedule(wait: number) {
+      cancelTimer?.();
       if (!document.hidden && !controller.signal.aborted) {
-        timer = window.setTimeout(() => void observe(), delay);
+        const due = Math.max(monotonicNow() + wait, retryUntil());
+        cancelTimer = scheduleDeadline(due, () => void observe(), monotonicNow);
       }
     }
 
     async function observe() {
-      if (reading || stopped || controller.signal.aborted) return;
+      if (reading || stopped || controller.signal.aborted || document.hidden) return;
+      if (retryUntil() > monotonicNow()) {
+        schedule(0);
+        return;
+      }
       reading = true;
       const deadline = AbortSignal.timeout(TRACE_READ_TIMEOUT_MS);
       const signal = AbortSignal.any([controller.signal, deadline]);
       try {
         const next = await read({ account_id, project_id }, requestId, signal, validator);
-        if (controller.signal.aborted) return;
+        signal.throwIfAborted();
         failures = 0;
-        validator = next.validator;
+        validator = next.data ? next.validator : next.validator ?? validator;
+        rememberRetryHint(next.retryAfterMs);
         if (next.data) {
-          delay = next.delay;
+          delay = next.delay ?? delay;
           setObservation({ key, data: next.data });
         } else {
-          setObservation((previous) => previous?.key === key && previous.error
+          setObservation((previous) => previous?.key === key && previous.retrying
             ? { key, data: previous.data }
             : previous);
         }
-        schedule(Math.max(delay, next.delay));
+        schedule(delay);
       } catch (cause) {
         if (controller.signal.aborted) return;
         stopped = cause instanceof ApiError && cause.status >= 400 && cause.status < 500
@@ -100,14 +121,17 @@ function useRequestListener<T>(
           key, data: !stopped && previous?.key === key ? previous.data : undefined,
           error, retrying: !stopped,
         }));
-        if (!stopped) schedule(Math.min(15_000, 1_000 * 2 ** Math.min(failures++, 4)));
+        if (!stopped) {
+          if (cause instanceof ApiError) rememberRetryHint(cause.retryAfterMs);
+          schedule(Math.min(15_000, 1_000 * 2 ** Math.min(failures++, 4)));
+        }
       } finally {
         reading = false;
       }
     }
 
     function resume() {
-      window.clearTimeout(timer);
+      cancelTimer?.();
       if (!document.hidden) void observe();
     }
 
@@ -116,11 +140,11 @@ function useRequestListener<T>(
     window.addEventListener("online", resume);
     return () => {
       controller.abort();
-      window.clearTimeout(timer);
+      cancelTimer?.();
       document.removeEventListener("visibilitychange", resume);
       window.removeEventListener("online", resume);
     };
-  }, [account_id, project_id, id, key, read, revision]);
+  }, [account_id, project_id, id, key, target, read, revision]);
 
   return {
     ...current,

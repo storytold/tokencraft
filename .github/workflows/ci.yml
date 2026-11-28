@@ -178,6 +178,8 @@ jobs:
         run: node ../scripts/console_security_headers.mjs
       - name: Verify the console retention deadline
         run: node --experimental-strip-types --test ../scripts/console_retention_timer.test.mjs
+      - name: Verify console polling retry delays
+        run: node --experimental-strip-types --test ../scripts/console_request_polling.test.mjs
       - name: Verify console submission snapshots and receipts
         run: node --experimental-strip-types --test ../scripts/console_model_submission.test.mjs
       - name: Verify console aspect ratio defaults and input

@@ -1,3 +1,5 @@
+import { parseRetryAfter } from "./retryAfter.ts";
+
 export type ArtifactReference = { byte_length: number; sha256: string };
 export type ArtifactRetryReason = "busy" | "interrupted";
 
@@ -41,15 +43,8 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 
 function retryDelay(response: Response): number | undefined {
   if (response.status !== 429 && response.status !== 503) return;
-  const hint = response.headers.get("Retry-After")?.trim() ?? "";
-  if (/^\d+$/.test(hint)) {
-    const delay = Number(hint) * 1_000;
-    return delay <= maxRetryDelayMs ? delay : undefined;
-  }
-  const date = new Date(hint);
-  if (!Number.isFinite(date.getTime()) || date.toUTCString() !== hint) return;
-  const delay = Math.max(0, date.getTime() - Date.now());
-  return delay <= maxRetryDelayMs ? delay : undefined;
+  const delay = parseRetryAfter(response.headers.get("Retry-After"));
+  return delay !== undefined && delay <= maxRetryDelayMs ? delay : undefined;
 }
 
 export async function readArtifact(

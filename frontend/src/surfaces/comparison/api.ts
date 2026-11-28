@@ -1,5 +1,6 @@
 import { gatewayRequest as request, gatewayResponse, isGatewayEndpointUnavailable, isProviderId, type ProjectScope, type Provider } from "@/lib/gateway";
 import { ApiError } from "@/lib/api";
+import { parseRetryAfter } from "@/lib/retryAfter";
 import type { DataHandling, DataRequirements, PolicyResolution, PolicySetting } from "@/lib/routing-policy";
 import { readModelReceipt, type ModelSubmission } from "./modelSubmission";
 export { demoEnabled, errorMessage } from "@/lib/gateway";
@@ -426,11 +427,10 @@ export const comparisonApi = {
       `/v1/model-requests/${encodeURIComponent(id)}?${new URLSearchParams(scope)}`,
       { signal, headers: validator ? { "If-None-Match": validator } : undefined },
     );
-    const hint = response.headers.get("Retry-After") ?? "";
     return {
       trace: response.status === 304 ? null : await response.json() as Trace,
       validator: response.headers.get("ETag"),
-      retryAfterMs: /^\d+$/.test(hint) ? Number(hint) * 1_000 : 0,
+      retryAfterMs: parseRetryAfter(response.headers.get("Retry-After")),
     };
   },
   previewRoute: (scope: ProjectScope, id: string, options: { max_total_usd_nanos?: number; preferred_providers?: Provider[] }, signal: AbortSignal) =>
