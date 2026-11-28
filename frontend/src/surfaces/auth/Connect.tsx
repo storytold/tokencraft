@@ -2,9 +2,9 @@ import { useRef, useState } from "react";
 import { ArrowRight, Bot, ChevronDown, Copy, Eye, EyeOff, KeyRound, Terminal } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button, Card, Input, Select } from "@/components/ui";
-import { accountDisplayName, api, API_BASE_URL, ApiError } from "@/lib/api";
+import { accountDisplayName, api, API_BASE_URL, isDefiniteClientRejection } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { demoEnabled, errorMessage, withProject } from "@/lib/gateway";
+import { demoEnabled, withProject } from "@/lib/gateway";
 import { connectionCheckPath } from "@/lib/onboarding";
 import { OrgProvider, useOrg } from "@/lib/org";
 import { projectsApi } from "@/surfaces/projects/api";
@@ -109,8 +109,9 @@ function ConnectFlow({ accountId, organization, busy, setBusy }: {
         setSecret(key.secret);
       }
     } catch (error) {
-      const rejected = !signal.aborted && error instanceof ApiError && error.status >= 400 && error.status < 500;
-      setError(rejected ? errorMessage(error) : "We couldn’t confirm the key was created. Check Manage keys before trying again.");
+      setError(isDefiniteClientRejection(error, signal)
+        ? error.message
+        : "We couldn’t confirm the key was created. Check Manage keys before trying again.");
     } finally {
       setBusy(false);
       issuing.current = false;

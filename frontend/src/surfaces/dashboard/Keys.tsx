@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Check, Copy, Plus, Trash2 } from "lucide-react";
 import { Button, Card, Input, Label } from "@/components/ui";
 import { UserAvatar } from "@/components/UserAvatar";
-import { api, ApiError, type ApiAccountUser, type ApiKeyItem } from "@/lib/api";
+import { api, ApiError, isDefiniteClientRejection, type ApiAccountUser, type ApiKeyItem } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useOrg } from "@/lib/org";
+
+const keyRequestTimeoutMs = 15_000;
 
 /**
  * API keys, scoped to the org in the header switcher. Any member may create and delete
@@ -11,10 +14,19 @@ import { useOrg } from "@/lib/org";
  * afterwards only the identifying prefix survives.
  */
 export default function Keys() {
+  const { user } = useAuth();
   const { current, loading } = useOrg();
+  if (!user || loading || !current) return null;
+  return <AccountKeys key={`${user.id}/${current.account_id}`} accountId={current.account_id} />;
+}
+
+function AccountKeys({ accountId }: { accountId: string }) {
+  const formId = useId();
   const [keys, setKeys] = useState<ApiKeyItem[] | null>(null);
   const [creators, setCreators] = useState<Record<string, ApiAccountUser>>({});
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState("");
+  const [revision, setRevision] = useState(0);
 
   // One-time secret from the most recent creation (cleared on navigation/reload — by design).
   const [minted, setMinted] = useState<{ title: string; secret: string } | null>(null);
@@ -22,75 +34,80 @@ export default function Keys() {
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [pendingWrite, setPendingWrite] = useState<"create" | "delete" | null>(null);
+  const activeWrite = useRef<AbortController | null>(null);
 
-  const accountId = current?.account_id ?? null;
+  useEffect(() => () => activeWrite.current?.abort(), []);
 
-  const load = useCallback(async () => {
-    if (!accountId) return;
-    try {
-      const r = await api.listApiKeys(accountId);
-      setKeys(r.api_keys);
-      setError(null);
-      // Resolve creators for display (helper, not a gate — failures just show no portrait).
-      const ids = [...new Set(r.api_keys.map((k) => k.created_by_user_id))];
-      if (ids.length > 0) {
-        api
-          .accountUsers(accountId, ids)
-          .then((res) => {
-            const map: Record<string, ApiAccountUser> = {};
-            for (const u of res.users) map[u.user_id] = u;
-            setCreators(map);
-          })
-          .catch(() => {});
-      }
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't load API keys.");
-    }
-  }, [accountId]);
+  function refresh() {
+    setReadError("");
+    setRevision((version) => version + 1);
+  }
 
   useEffect(() => {
-    setKeys(null);
-    setMinted(null);
-    setShowForm(false);
-    void load();
-  }, [load]);
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(keyRequestTimeoutMs)]);
+    api.listApiKeys(accountId, signal).then(({ api_keys }) => {
+      if (signal.aborted) return;
+      setKeys(api_keys);
+      const ids = [...new Set(api_keys.map((key) => key.created_by_user_id))];
+      if (ids.length === 0) return;
+      // Creator profiles are optional and resolve after the key list.
+      api.accountUsers(accountId, ids, signal).then(({ users }) => {
+        if (!signal.aborted) setCreators(Object.fromEntries(users.map((user) => [user.user_id, user])));
+      }).catch(() => {});
+    }).catch((cause) => {
+      if (!controller.signal.aborted) {
+        setReadError(cause instanceof ApiError ? cause.message : "Couldn’t load API keys.");
+      }
+    });
+    return () => controller.abort();
+  }, [accountId, revision]);
 
-  if (loading || !current) return null;
-
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!accountId || !title.trim()) return;
-    setBusy(true);
+  async function changeKey(operation: "create" | "delete", execute: (signal: AbortSignal) => Promise<unknown>) {
+    if (activeWrite.current) return;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(keyRequestTimeoutMs)]);
+    activeWrite.current = controller;
+    setPendingWrite(operation);
     setError(null);
     try {
-      const r = await api.createApiKey(accountId, title.trim(), description.trim() || undefined);
-      setMinted({ title: r.api_key.title, secret: r.secret });
+      await execute(signal);
+      refresh();
+    } catch (cause) {
+      if (controller.signal.aborted) return;
+      if (isDefiniteClientRejection(cause, signal)) {
+        setError(cause.message);
+        return;
+      }
+      const result = operation === "create" ? "created" : "deleted";
+      setError(`Couldn’t confirm the key was ${result}. Check the key list before trying again.`);
+      refresh();
+    } finally {
+      activeWrite.current = null;
+      setPendingWrite(null);
+    }
+  }
+
+  function create(event: FormEvent) {
+    event.preventDefault();
+    if (minted || !title.trim()) return;
+    void changeKey("create", async (signal) => {
+      const { api_key, secret } = await api.createApiKey(accountId, title.trim(), description.trim() || undefined, signal);
+      if (!api_key || typeof secret !== "string" || !secret) throw new Error("Incomplete key issuance response");
+      setMinted({ title: api_key.title, secret });
       setTitle("");
       setDescription("");
       setShowForm(false);
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't create the key.");
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
+  }
 
-  const remove = async (k: ApiKeyItem) => {
-    if (!accountId) return;
-    if (!window.confirm(`Delete "${k.title}"? Anything using it stops working immediately.`)) return;
-    setDeleting(k.id);
-    try {
-      await api.deleteApiKey(accountId, k.id);
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't delete the key.");
-    } finally {
-      setDeleting(null);
-    }
-  };
+  function remove(key: ApiKeyItem) {
+    if (activeWrite.current || !window.confirm(`Delete "${key.title}"? Anything using it stops working immediately.`)) return;
+    void changeKey("delete", (signal) => api.deleteApiKey(accountId, key.id, signal));
+  }
+
+  const writing = pendingWrite !== null;
 
   return (
     <div className="space-y-6">
@@ -99,7 +116,7 @@ export default function Keys() {
           <h1 className="font-display text-3xl font-bold tracking-tight">API keys</h1>
           <p className="mt-1 text-muted">One secret authenticates every endpoint. Rotate anytime.</p>
         </div>
-        <Button onClick={() => setShowForm((v) => !v)}>
+        <Button disabled={writing || Boolean(minted)} onClick={() => setShowForm((v) => !v)}>
           <Plus className="h-4 w-4" /> Create key
         </Button>
       </div>
@@ -114,42 +131,49 @@ export default function Keys() {
 
       {showForm && (
         <Card className="p-5">
-          <form className="space-y-4" onSubmit={create}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <Label>Name</Label>
-                <Input
-                  placeholder="Production backend"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  required
-                  autoFocus
-                />
+          <form onSubmit={create}>
+            <fieldset className="min-w-0 space-y-4" disabled={writing}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor={`${formId}-name`}>Name</Label>
+                  <Input
+                    id={`${formId}-name`}
+                    placeholder="Production backend"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <Label htmlFor={`${formId}-description`}>Description (optional)</Label>
+                  <Input
+                    id={`${formId}-description`}
+                    placeholder="What uses this key?"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                  />
+                </div>
               </div>
-              <div>
-                <Label>Description (optional)</Label>
-                <Input
-                  placeholder="What uses this key?"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                />
+              <div className="flex gap-2">
+                <Button type="submit" disabled={!title.trim()}>
+                  {pendingWrite === "create" ? "Creating…" : "Create key"}
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>
+                  Cancel
+                </Button>
               </div>
-            </div>
-            <div className="flex gap-2">
-              <Button type="submit" disabled={busy || !title.trim()}>
-                {busy ? "Creating…" : "Create key"}
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>
-                Cancel
-              </Button>
-            </div>
+            </fieldset>
           </form>
         </Card>
       )}
 
       {minted && <MintedSecret title={minted.title} secret={minted.secret} onDismiss={() => setMinted(null)} />}
 
-      {error && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-500">{error}</p>}
+      {error && <p role="alert" className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-500">{error}</p>}
+      {readError && <p role="alert" className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-500">
+        {readError}{" "}<button type="button" className="underline" onClick={refresh}>Refresh keys</button>
+      </p>}
 
       <Card className="overflow-hidden">
         <div className="scrollbar-thin overflow-x-auto">
@@ -168,7 +192,7 @@ export default function Keys() {
               {keys === null ? (
                 <tr>
                   <td colSpan={6} className="px-5 py-4 text-muted">
-                    Loading…
+                    {readError ? "API keys unavailable." : "Loading…"}
                   </td>
                 </tr>
               ) : keys.length === 0 ? (
@@ -206,8 +230,8 @@ export default function Keys() {
                       </td>
                       <td className="px-5 py-3 text-right">
                         <button
-                          onClick={() => void remove(k)}
-                          disabled={deleting !== null}
+                          onClick={() => remove(k)}
+                          disabled={writing}
                           title="Delete key"
                           className="text-muted transition hover:text-rose-500 disabled:opacity-50"
                         >

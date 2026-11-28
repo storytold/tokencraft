@@ -95,18 +95,18 @@ export const projectsApi = {
   }, signal?: AbortSignal) => gatewayRequest<IssuedKey>(
     inProject(scope, "/service-principals"), { ...write("POST", input), signal },
   ),
-  attachKey: (scope: ProjectScope, principalId: string) => gatewayRequest<void>(
-    inProject(scope, "/credentials/attached"), write("PUT", { principal_id: principalId }),
+  attachKey: (scope: ProjectScope, principalId: string, signal: AbortSignal) => gatewayRequest<void>(
+    inProject(scope, "/credentials/attached"), { ...write("PUT", { principal_id: principalId }), signal },
   ),
-  rotateKey: (scope: ProjectScope, principalId: string, expiresInDays: number) => gatewayRequest<IssuedKey>(
+  rotateKey: (scope: ProjectScope, principalId: string, expiresInDays: number, signal: AbortSignal) => gatewayRequest<IssuedKey>(
     inProject(scope, `/service-principals/${encodeURIComponent(principalId)}/keys`),
-    write("POST", { expires_in_days: expiresInDays }),
+    { ...write("POST", { expires_in_days: expiresInDays }), signal },
   ),
-  revokeKey: (scope: ProjectScope, keyId: string) => gatewayRequest<void>(
-    inProject(scope, `/keys/${encodeURIComponent(keyId)}`), { method: "DELETE" },
+  revokeKey: (scope: ProjectScope, keyId: string, signal: AbortSignal) => gatewayRequest<void>(
+    inProject(scope, `/keys/${encodeURIComponent(keyId)}`), { method: "DELETE", signal },
   ),
-  revokePrincipal: (scope: ProjectScope, principalId: string) => gatewayRequest<void>(
-    inProject(scope, `/service-principals/${encodeURIComponent(principalId)}`), { method: "DELETE" },
+  revokePrincipal: (scope: ProjectScope, principalId: string, signal: AbortSignal) => gatewayRequest<void>(
+    inProject(scope, `/service-principals/${encodeURIComponent(principalId)}`), { method: "DELETE", signal },
   ),
 };
 

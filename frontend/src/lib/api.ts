@@ -38,6 +38,11 @@ export class ApiError extends Error {
   }
 }
 
+export function isDefiniteClientRejection(error: unknown, signal: AbortSignal): error is ApiError {
+  return !signal.aborted && error instanceof ApiError
+    && error.status >= 400 && error.status < 500 && error.status !== 408;
+}
+
 /** Nudge the status banner (lib/api-status.ts) to re-check sooner. Fire-and-forget. */
 function reportRequestFailure() {
   try {
@@ -515,10 +520,12 @@ export const api = {
 
   /** Display info (name, email, chosen avatar) for user ids — CURRENT members of the
    * account only; unknown/departed ids are silently omitted. Any member may call. */
-  accountUsers: (accountId: string, ids: string[]) =>
+  accountUsers: (accountId: string, ids: string[], signal?: AbortSignal) =>
     request<{ users: ApiAccountUser[] }>(
       "GET",
       `/v1/accounts/${accountId}/users?ids=${ids.map(encodeURIComponent).join(",")}`,
+      undefined,
+      signal,
     ),
 
   /** Set or clear the business name (owner/admin only; null/blank clears back to the
@@ -548,8 +555,8 @@ export const api = {
 
   /* ── API keys (any member may list/create/delete) ── */
 
-  listApiKeys: (accountId: string) =>
-    request<{ api_keys: ApiKeyItem[] }>("GET", `/v1/accounts/${accountId}/api_keys`),
+  listApiKeys: (accountId: string, signal?: AbortSignal) =>
+    request<{ api_keys: ApiKeyItem[] }>("GET", `/v1/accounts/${accountId}/api_keys`, undefined, signal),
 
   /** Mint a key. `secret` in the response is shown ONCE — it can never be retrieved again. */
   createApiKey: (accountId: string, title: string, description?: string, signal?: AbortSignal) =>
@@ -559,8 +566,8 @@ export const api = {
     }, signal),
 
   /** Revoke ("delete") a key — it stops authenticating immediately. */
-  deleteApiKey: (accountId: string, keyId: string) =>
-    request<{ ok: boolean }>("DELETE", `/v1/accounts/${accountId}/api_keys/${keyId}`),
+  deleteApiKey: (accountId: string, keyId: string, signal?: AbortSignal) =>
+    request<{ ok: boolean }>("DELETE", `/v1/accounts/${accountId}/api_keys/${keyId}`, undefined, signal),
 
   /* ── Audit logs (keyset-paginated) ── */
 
