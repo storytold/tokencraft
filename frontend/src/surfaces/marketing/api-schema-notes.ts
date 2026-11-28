@@ -17,16 +17,6 @@ const receiptHeaders = {
   "TokenCraft-Trace-Id": { schema: { type: "string" }, description: "Trace ID when recorded." },
 };
 const receipt: ResponseSchema = { description: "A new request was accepted.", headers: receiptHeaders, content: json(ref("AcceptedRequest")) };
-const rateLimit = (schema = "GatewayError"): ResponseSchema => ({
-  description: "Active work or submission rate limit reached. Compatible streams can also exhaust the API replica's SSE reader slots.",
-  headers: {
-    "Retry-After": {
-      schema: { type: "integer", minimum: 1 },
-      description: "On submission_rate_limit, wait this many seconds before retrying the same intent and idempotency key.",
-    },
-  },
-  content: json(ref(schema)),
-});
 const withExample = (operation: Operation, example: unknown): Operation["requestBody"] => {
   const body = operation.requestBody;
   return body && {
@@ -61,7 +51,6 @@ function media(primitive: string, summary: string, task: string, workload: Recor
         202: receipt,
         400: { description: "Invalid task, fields, or cost cap.", content: json(ref("GatewayError")) },
         409: { description: "Stale quote, changed intent, or admission conflict.", content: json(ref("GatewayError")) },
-        429: { ...rateLimit(), description: "Active work or submission rate limit reached." },
       },
     }),
   };
@@ -95,7 +84,6 @@ export const schemaNotes: Record<string, Note> = {
         input: { model: "example_image", workload: { kind: "image", count: 1, aspect_ratio: "1:1" } },
         image_prompt: "A paper lantern under a starry sky.",
       }),
-      responses: { ...operation.responses, 429: { ...rateLimit(), description: "Active work or submission rate limit reached." } },
     }),
   },
   "post /v1/chat/completions": {
@@ -104,7 +92,6 @@ export const schemaNotes: Record<string, Note> = {
       ...operation, requestBody: withExample(operation, {
         model, messages: [{ role: "user", content: "Write one line about rain." }], max_completion_tokens: 64, stream: true,
       }),
-      responses: { ...operation.responses, 429: rateLimit("ChatErrorResponse") },
     }),
   },
   "post /v1/responses": {
@@ -117,7 +104,6 @@ export const schemaNotes: Record<string, Note> = {
         requestBody: withExample(operation, { model, input: "Write one line about rain.", max_output_tokens: 64, stream: true }),
         responses: {
           ...operation.responses,
-          429: rateLimit("ChatErrorResponse"),
           200: {
             ...success, content: {
               ...success.content,
