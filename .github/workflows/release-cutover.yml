@@ -50,6 +50,7 @@ jobs:
           from pathlib import Path
           import shutil
           import sys
+          from tempfile import TemporaryDirectory
 
           from native_package import BINARIES, build_binaries
           from postgres_tools import postgres_bin
@@ -59,9 +60,11 @@ jobs:
           saved = runner / "cutover-baseline-bin"
           saved.mkdir()
           pg = postgres_bin()
-          baseline = build_binaries(pg, target, "dev", False, source=Path("cutover-baseline"))
-          for binary in BINARIES:
-              shutil.copy2(baseline / binary, saved / binary)
+          # Keep build artifacts separate for releases with the same workspace crate versions.
+          with TemporaryDirectory(prefix="cutover-baseline-target-", dir=runner) as directory:
+              baseline = build_binaries(pg, Path(directory), "dev", False, source=Path("cutover-baseline"))
+              for binary in BINARIES:
+                  shutil.copy2(baseline / binary, saved / binary)
           build_binaries(pg, target, "dev", False)
           PY
       - name: Verify the migration and restore the prior release
