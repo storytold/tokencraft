@@ -6,6 +6,7 @@ import { costStateNames, RequestHistoryFilters, statusNames } from "@/surfaces/c
 import { CopyRequestId } from "./CopyRequestId";
 import { diagnosticNames, shiftDate, validDate } from "./historyDiagnostics";
 import type { useRequestHistory } from "./useRequestHistory";
+import { RequestHistoryError } from "./RequestHistoryError";
 import { RequestFilterChat } from "./RequestFilterChat";
 import "./requests-workspace.css";
 
@@ -178,9 +179,9 @@ export function RequestsWorkspace({
             </div>}
           </div>
           <div className="tc-requests-results" aria-busy={loading && !rows.length}>
-            {error && <p className="px-4 py-4 text-sm text-rose-600 dark:text-rose-300" role="alert">
-              {error}
-            </p>}
+            {error && <div className="px-4 py-4">
+              <RequestHistoryError error={error} showingPrevious={Boolean(history)} onRetry={requestHistory.refresh} />
+            </div>}
             {rows.length ? (
               <table className="tc-requests-table">
                 <thead><tr>

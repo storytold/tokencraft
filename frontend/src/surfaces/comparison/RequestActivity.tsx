@@ -14,6 +14,7 @@ import { requestIsActive, useRequestStatus } from "@/surfaces/requests/useReques
 import { historySearch, setHistoryFilters } from "@/surfaces/requests/historyQuery";
 import { diagnosticFromUrl } from "@/surfaces/requests/historyDiagnostics";
 import { useRequestHistory } from "@/surfaces/requests/useRequestHistory";
+import { RequestHistoryError } from "@/surfaces/requests/RequestHistoryError";
 import { RequestsWorkspace } from "@/surfaces/requests/RequestsWorkspace";
 import { WorkflowRunLink } from "@/surfaces/requests/WorkflowRunLink";
 import { QuoteExpiry, useQuoteExpired } from "./QuoteExpiry";
@@ -53,7 +54,7 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
   const [localFilters, setLocalFilters] = useState<HistoryFilters>({});
   const filters = isDashboard ? linkedFilters : localFilters;
   const requestHistory = useRequestHistory(scope, filters);
-  const { history, error: historyError, refresh: refreshHistory, newest: newestHistory } = requestHistory;
+  const { history, error: historyError, loading: historyLoading, refresh: refreshHistory, newest: newestHistory } = requestHistory;
   const { data: trace, error: traceError, retrying, refresh: refreshTrace, replace: setTrace } = useRequestStatus(scope, requestId);
   const [runError, setRunError] = useState("");
   const [canceling, setCanceling] = useState(false);
@@ -63,7 +64,6 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
     if (promptMode && !recovered) setPrompt("");
     openRequest(id);
     newestHistory();
-    refreshHistory();
   });
   const submitting = submission.sending;
   const quoteIsExpired = useQuoteExpired(quote?.expires_at);
@@ -135,7 +135,6 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
       return;
     }
     newestHistory();
-    refreshHistory();
   }
 
   const traceContent = (
@@ -227,11 +226,13 @@ export function RequestActivity({ scope, quote, promptMode, readOnly = false, ca
       <Card className="min-w-0 p-5 sm:p-7">
         <div className="flex items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 text-lg font-semibold"><Clock className="h-4 w-4 text-brand" aria-hidden /> Request history</h2>
-          <Button type="button" variant="ghost" size="sm" aria-label="Refresh history" onClick={refreshHistory}><RefreshCw className="h-4 w-4" aria-hidden /></Button>
+          <Button type="button" variant="ghost" size="sm" aria-label="Refresh history" onClick={refreshHistory} disabled={historyLoading}>
+            <RefreshCw className="h-4 w-4" aria-hidden />
+          </Button>
         </div>
         <RequestHistoryFilters key={JSON.stringify(filters)} applied={filters} boundClient={boundClient}
           providers={history?.requests.map((row) => row.provider)} onApply={filterHistory} />
-        {historyError && <p role="alert" className="text-sm text-rose-500">{historyError}</p>}
+        {historyError && <RequestHistoryError error={historyError} showingPrevious={Boolean(history)} onRetry={refreshHistory} />}
         {history && history.requests.length > 0 && (
           <ul className="divide-y divide-border">
             {history.requests.map((item) => (
