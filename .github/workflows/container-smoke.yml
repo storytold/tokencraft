@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: container-smoke-${{ github.ref }}
+  group: container-smoke-${{ github.ref }}${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -76,16 +76,6 @@ jobs:
           gateway_id=$(docker image inspect --format '{{.Id}}' tokencraft-gateway:ci)
           [[ "$gateway_id" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf 'version=%s\ngateway_id=%s\n' "$package_version" "$gateway_id" >> "$GITHUB_OUTPUT"
-      - name: Verify the Render image reports the release revision
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ steps.image_metadata.outputs.version }}
-        run: |
-          docker build --file Dockerfile --build-arg "RENDER_GIT_COMMIT=$GITHUB_SHA" --tag tokencraft-render:ci .
-          for binary in tokencraft api-gateway admin-cli; do
-            docker run --rm --network none --entrypoint "$binary" tokencraft-render:ci --version \
-              | diff -u <(printf '%s %s (%s)\n' "$binary" "$PACKAGE_VERSION" "$GITHUB_SHA") -
-          done
       - name: Migrate and run the standalone gateway
         shell: bash
         run: |
@@ -142,6 +132,11 @@ jobs:
                          Path.cwd(), 4000, os.environ["GITHUB_SHA"],
                          console_dir=Path(os.environ["TOKENCRAFT_CONSOLE_DIR"]))
           PY
+      - name: Verify the Render image before archiving
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        env:
+          PACKAGE_VERSION: ${{ steps.image_metadata.outputs.version }}
+        run: bash .github/scripts/verify-render-image.sh "$GITHUB_SHA" "$PACKAGE_VERSION"
       - name: Archive the versioned gateway image
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         shell: bash
@@ -174,3 +169,14 @@ jobs:
       - name: Clean up disposable state
         if: always()
         run: docker compose down --volumes
+
+  render:
+    if: github.ref_type != 'tag' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify the Render image reports the release revision
+        run: bash .github/scripts/verify-render-image.sh "$GITHUB_SHA"
