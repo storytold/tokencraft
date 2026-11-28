@@ -1,94 +1,77 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Button, Card, Select } from "@/components/ui";
 import { UserAvatar } from "@/components/UserAvatar";
-import { api, ApiError, type ApiAccountUser, type ApiMember, type AuditItem, type AuditPage } from "@/lib/api";
+import { api, type ApiAccount, type ApiAccountUser, type ApiMember, type AuditItem, type AuditPage } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useOrg } from "@/lib/org";
 
+const auditReadTimeoutMs = 15_000;
 type Tab = "mine" | "org" | "members";
+type ReadPage = (before: string | undefined, signal: AbortSignal) => Promise<AuditPage>;
+type ActorDirectory = {
+  infos: Record<string, ApiAccountUser>;
+  ensure: (ids: (string | null)[]) => void;
+};
 
-type UserInfos = Record<string, ApiAccountUser>;
+const readMyPage: ReadPage = (before, signal) => api.userAuditLogs(before, undefined, signal);
 
-/**
- * Lazy cache over the account user-info API: audit rows carry bare actor ids; `ensure`
- * batch-fetches display info (name + chosen avatar) for ids we haven't asked about yet.
- * Failures are swallowed — rows just render without the portrait.
- */
-function useUserInfos(accountId: string | null) {
-  const [infos, setInfos] = useState<UserInfos>({});
-  const attempted = useRef<Set<string>>(new Set());
+function useUserInfos(accountId?: string): ActorDirectory {
+  const [infos, setInfos] = useState<Record<string, ApiAccountUser>>({});
+  const attempted = useRef(new Set<string>());
+  const pending = useRef(new Set<AbortController>());
 
   useEffect(() => {
-    attempted.current = new Set();
-    setInfos({});
-  }, [accountId]);
+    const requests = pending.current;
+    return () => {
+      for (const controller of requests) controller.abort();
+    };
+  }, []);
 
-  const ensure = useCallback(
-    (ids: (string | null | undefined)[]) => {
-      if (!accountId) return;
-      const fresh = [...new Set(ids.filter((i): i is string => Boolean(i)))]
-        .filter((i) => !attempted.current.has(i))
-        .slice(0, 100);
-      if (fresh.length === 0) return;
-      fresh.forEach((i) => attempted.current.add(i));
-      api
-        .accountUsers(accountId, fresh)
-        .then((r) =>
-          setInfos((prev) => {
-            const next = { ...prev };
-            for (const u of r.users) next[u.user_id] = u;
-            return next;
-          }),
-        )
-        .catch(() => {});
-    },
-    [accountId],
-  );
+  const ensure = useCallback((ids: (string | null)[]) => {
+    if (!accountId) return;
+    const fresh = [...new Set(ids.filter((id): id is string => Boolean(id)))]
+      .filter((id) => !attempted.current.has(id))
+      .slice(0, 100);
+    if (fresh.length === 0) return;
+    for (const id of fresh) attempted.current.add(id);
+
+    const controller = new AbortController();
+    pending.current.add(controller);
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(auditReadTimeoutMs)]);
+    // The actor directory enriches loaded rows independently of pagination.
+    api.accountUsers(accountId, fresh, signal).then(({ users }) => {
+      if (!signal.aborted && users.length > 0) {
+        setInfos((previous) => ({ ...previous, ...Object.fromEntries(users.map((user) => [user.user_id, user])) }));
+      }
+    }).catch(() => {
+      for (const id of fresh) attempted.current.delete(id);
+    }).finally(() => pending.current.delete(controller));
+  }, [accountId]);
 
   return { infos, ensure };
 }
 
-/**
- * Audit log page, tabbed: My Activity | Org Activity | Org Member Activity. Everyone gets the
- * first tab (private rows included); the org tabs appear only for owners/admins of the
- * currently-selected organization. All lists are keyset-paginated ("Load more").
- */
 export default function AuditLog() {
+  const { user } = useAuth();
   const { current, loading } = useOrg();
-  const [myRole, setMyRole] = useState<string | null>(null);
-  const [members, setMembers] = useState<ApiMember[]>([]);
+  if (loading || !user) return null;
+  return <AuditWorkspace key={`${user.id}/${current?.account_id ?? ""}/${current?.role ?? ""}`} account={current} />;
+}
+
+function AuditWorkspace({ account }: { account: ApiAccount | null }) {
+  const accountId = account?.account_id ?? "";
   const [tab, setTab] = useState<Tab>("mine");
-  const { infos, ensure } = useUserInfos(current?.account_id ?? null);
-
-  useEffect(() => {
-    setMyRole(null);
-    setTab("mine"); // switching orgs may change what's visible — land somewhere always-valid
-    if (!current) return;
-    let cancelled = false;
-    api
-      .listMembers(current.account_id)
-      .then((r) => {
-        if (!cancelled) {
-          setMyRole(r.your_role);
-          setMembers(r.members);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [current]);
-
-  if (loading) return null;
-  const isOrgAdmin = myRole === "owner" || myRole === "admin";
+  const actors = useUserInfos(accountId);
+  const isOrgAdmin = account?.role === "owner" || account?.role === "admin";
+  const readOrgPage = useCallback<ReadPage>((before, signal) =>
+    api.accountAuditLogs(accountId, before, undefined, signal), [accountId]);
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "mine", label: "My Activity" },
-    ...(isOrgAdmin && current
-      ? [
-          { key: "org" as Tab, label: "Org Activity" },
-          { key: "members" as Tab, label: "Org Member Activity" },
-        ]
-      : []),
+    ...(isOrgAdmin ? [
+      { key: "org" as Tab, label: "Org Activity" },
+      { key: "members" as Tab, label: "Org Member Activity" },
+    ] : []),
   ];
 
   return (
@@ -96,23 +79,25 @@ export default function AuditLog() {
       <div>
         <h1 className="font-display text-3xl font-bold tracking-tight">Audit log</h1>
         <p className="mt-1 text-muted">
-          Your account activity{isOrgAdmin && current ? ` — and ${current.name ?? "your organization"}'s` : ""}.
+          Your account activity{isOrgAdmin && account ? ` — and ${account.name ?? "your organization"}'s` : ""}.
         </p>
       </div>
 
       {tabs.length > 1 && (
-        <div className="inline-flex rounded-lg border border-border bg-surface p-1">
-          {tabs.map((t) => (
+        <div className="inline-flex rounded-lg border border-border bg-surface p-1" role="group" aria-label="Audit activity">
+          {tabs.map((item) => (
             <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
+              key={item.key}
+              onClick={() => setTab(item.key)}
+              type="button"
+              aria-pressed={tab === item.key}
               className={
-                tab === t.key
+                tab === item.key
                   ? "rounded-md px-3 py-1.5 text-xs font-medium brand-gradient text-white shadow-glow"
                   : "rounded-md px-3 py-1.5 text-xs font-medium text-muted transition hover:text-fg"
               }
             >
-              {t.label}
+              {item.label}
             </button>
           ))}
         </div>
@@ -122,117 +107,118 @@ export default function AuditLog() {
         <AuditSection
           title="My activity"
           subtitle="Everything on your user — including items only you can see."
-          fetchPage={(before) => api.userAuditLogs(before)}
-          userInfos={infos}
-          ensureUsers={ensure}
+          readPage={readMyPage}
+          actors={actors}
         />
       )}
-      {tab === "org" && isOrgAdmin && current && (
+      {tab === "org" && isOrgAdmin && (
         <AuditSection
-          key={`org-${current.account_id}`}
           title="Organization activity"
           subtitle="Membership, invitations, keys, and billing-profile events (admins only)."
-          fetchPage={(before) => api.accountAuditLogs(current.account_id, before)}
-          userInfos={infos}
-          ensureUsers={ensure}
+          readPage={readOrgPage}
+          actors={actors}
         />
       )}
-      {tab === "members" && isOrgAdmin && current && (
-        <MemberAuditSection accountId={current.account_id} members={members} userInfos={infos} ensureUsers={ensure} />
-      )}
+      {tab === "members" && isOrgAdmin && accountId && <MemberAuditSection accountId={accountId} actors={actors} />}
     </div>
   );
 }
 
-/* ── A paginated audit list ── */
-
-function AuditSection({
-  title,
-  subtitle,
-  fetchPage,
-  userInfos,
-  ensureUsers,
-}: {
-  title: string;
-  subtitle: string;
-  fetchPage: (before?: string) => Promise<AuditPage>;
-  userInfos: UserInfos;
-  ensureUsers: (ids: (string | null | undefined)[]) => void;
+function AuditSection({ title, subtitle, readPage, actors }: {
+  title: string; subtitle: string; readPage: ReadPage; actors: ActorDirectory;
 }) {
-  const [items, setItems] = useState<AuditItem[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [state, setState] = useState<"loading" | "idle" | "error">("loading");
-
-  const loadFirst = useCallback(async () => {
-    setState("loading");
-    try {
-      const page = await fetchPage(undefined);
-      setItems(page.items);
-      setCursor(page.next_before);
-      setState("idle");
-    } catch {
-      setState("error");
-    }
-  }, [fetchPage]);
-
-  useEffect(() => {
-    void loadFirst();
-  }, [loadFirst]);
-
-  // Resolve actors for display — a helper, never a gate on rendering the rows.
-  useEffect(() => {
-    ensureUsers(items.map((i) => i.actor_user_id));
-  }, [items, ensureUsers]);
-
-  const loadMore = async () => {
-    if (!cursor) return;
-    setState("loading");
-    try {
-      const page = await fetchPage(cursor);
-      setItems((prev) => [...prev, ...page.items]);
-      setCursor(page.next_before);
-      setState("idle");
-    } catch {
-      setState("error");
-    }
-  };
-
   return (
     <Card className="overflow-hidden">
       <div className="border-b border-border px-5 py-4">
         <h2 className="font-display font-semibold">{title}</h2>
         <p className="text-xs text-muted">{subtitle}</p>
       </div>
-      {state === "error" ? (
-        <p className="px-5 py-4 text-sm text-rose-500">Couldn't load this log.</p>
-      ) : items.length === 0 && state === "idle" ? (
-        <p className="px-5 py-4 text-sm text-muted">Nothing here yet.</p>
-      ) : (
-        <ul>
-          {items.map((item) => (
-            <AuditRow key={item.id} item={item} actor={item.actor_user_id ? userInfos[item.actor_user_id] : undefined} />
-          ))}
-        </ul>
-      )}
-      {(cursor || state === "loading") && (
-        <div className="border-t border-border px-5 py-3">
-          <Button variant="outline" size="sm" onClick={loadMore} disabled={state === "loading" || !cursor}>
-            {state === "loading" ? "Loading…" : "Load more"}
-          </Button>
-        </div>
-      )}
+      <AuditList readPage={readPage} actors={actors} />
     </Card>
   );
 }
 
-/* ── Member picker + their org-visible history ── */
+function AuditList({ readPage, actors: { infos, ensure }, empty = "Nothing here yet." }: {
+  readPage: ReadPage; actors: ActorDirectory; empty?: string;
+}) {
+  const [items, setItems] = useState<AuditItem[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const active = useRef<AbortController | null>(null);
 
-function MemberAuditSection({ accountId, members, userInfos, ensureUsers }: { accountId: string; members: ApiMember[]; userInfos: UserInfos; ensureUsers: (ids: (string | null | undefined)[]) => void }) {
-  const [userId, setUserId] = useState<string>("");
+  const load = useCallback(async (before?: string) => {
+    if (active.current) return;
+    const controller = new AbortController();
+    active.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(auditReadTimeoutMs)]);
+    setLoading(true);
+    setError("");
+    try {
+      const page = await readPage(before, signal);
+      signal.throwIfAborted();
+      setItems((previous) => before ? [...previous, ...page.items] : page.items);
+      setCursor(page.next_before);
+      ensure(page.items.map((item) => item.actor_user_id));
+    } catch {
+      if (!controller.signal.aborted) setError("Couldn’t load this log.");
+    } finally {
+      if (active.current === controller) {
+        active.current = null;
+        setLoading(false);
+      }
+    }
+  }, [readPage, ensure]);
 
   useEffect(() => {
-    setUserId("");
-  }, [accountId]);
+    void load();
+    return () => {
+      active.current?.abort();
+      active.current = null;
+    };
+  }, [load]);
+
+  return (
+    <>
+      {items.length > 0 && (
+        <ul>
+          {items.map((item) => (
+            <AuditRow key={item.id} item={item} actor={item.actor_user_id ? infos[item.actor_user_id] : undefined} />
+          ))}
+        </ul>
+      )}
+      {items.length === 0 && loading && <p role="status" className="px-5 py-4 text-sm text-muted">Loading…</p>}
+      {items.length === 0 && !loading && !error && <p className="px-5 py-4 text-sm text-muted">{empty}</p>}
+      {error && <p className="px-5 py-4 text-sm text-rose-500" role="alert">{error}</p>}
+      {(cursor || error) && (
+        <div className="border-t border-border px-5 py-3">
+          <Button variant="outline" size="sm" onClick={() => void load(cursor ?? undefined)} disabled={loading}>
+            {loading ? "Loading…" : error ? "Retry" : "Load more"}
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function MemberAuditSection({ accountId, actors }: { accountId: string; actors: ActorDirectory }) {
+  const [members, setMembers] = useState<ApiMember[]>();
+  const [rosterError, setRosterError] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const [userId, setUserId] = useState("");
+  const readPage = useCallback<ReadPage>((before, signal) =>
+    api.memberAuditLogs(accountId, userId, before, undefined, signal), [accountId, userId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(auditReadTimeoutMs)]);
+    api.listMembers(accountId, signal).then(({ members }) => {
+      if (!signal.aborted) setMembers(members);
+    }).catch(() => {
+      if (!controller.signal.aborted) setRosterError(true);
+    });
+    return () => controller.abort();
+  }, [accountId, revision]);
 
   return (
     <Card className="overflow-hidden">
@@ -241,77 +227,38 @@ function MemberAuditSection({ accountId, members, userInfos, ensureUsers }: { ac
           <h2 className="font-display font-semibold">Member activity</h2>
           <p className="text-xs text-muted">A member's history — organization-visible items only.</p>
         </div>
-        <Select value={userId} onChange={(e) => setUserId(e.target.value)} className="w-56">
+        <Select aria-label="Organization member" value={userId} onChange={(event) => setUserId(event.target.value)}
+          className="w-56" disabled={!members?.length}>
           <option value="">Choose a member…</option>
-          {members.map((m) => (
-            <option key={m.user_id} value={m.user_id}>
-              {m.display_name ?? m.email}
+          {members?.map((member) => (
+            <option key={member.user_id} value={member.user_id}>
+              {member.display_name ?? member.email}
             </option>
           ))}
         </Select>
       </div>
-      {userId ? (
-        <InnerMemberList key={userId} accountId={accountId} userId={userId} userInfos={userInfos} ensureUsers={ensureUsers} />
-      ) : (
-        <p className="px-5 py-4 text-sm text-muted">Pick a member to see their organization-visible activity.</p>
+      {userId && <AuditList key={userId} readPage={readPage} actors={actors} empty="No organization-visible activity." />}
+      {!userId && members && (
+        <p className="px-5 py-4 text-sm text-muted">
+          {members.length ? "Pick a member to see their organization-visible activity." : "No organization members to display."}
+        </p>
       )}
+      {!members && !rosterError && <p role="status" className="px-5 py-4 text-sm text-muted">Loading members…</p>}
+      {rosterError && <div className="space-y-2 px-5 py-4">
+        <p role="alert" className="text-sm text-rose-500">Couldn’t load organization members.</p>
+        <Button variant="outline" size="sm" onClick={() => {
+          setRosterError(false);
+          setRevision((value) => value + 1);
+        }}>Retry loading members</Button>
+      </div>}
     </Card>
-  );
-}
-
-function InnerMemberList({ accountId, userId, userInfos, ensureUsers }: { accountId: string; userId: string; userInfos: UserInfos; ensureUsers: (ids: (string | null | undefined)[]) => void }) {
-  const [page, setPage] = useState<AuditPage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .memberAuditLogs(accountId, userId)
-      .then((p) => {
-        if (!cancelled) setPage(p);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof ApiError ? err.message : "Couldn't load.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [accountId, userId]);
-
-  const loadMore = async () => {
-    if (!page?.next_before) return;
-    const next = await api.memberAuditLogs(accountId, userId, page.next_before);
-    setPage({ items: [...page.items, ...next.items], next_before: next.next_before });
-  };
-
-  useEffect(() => {
-    ensureUsers((page?.items ?? []).map((i) => i.actor_user_id));
-  }, [page, ensureUsers]);
-
-  if (error) return <p className="px-5 py-4 text-sm text-rose-500">{error}</p>;
-  if (!page) return <p className="px-5 py-4 text-sm text-muted">Loading…</p>;
-  if (page.items.length === 0) return <p className="px-5 py-4 text-sm text-muted">No organization-visible activity.</p>;
-  return (
-    <>
-      <ul>
-        {page.items.map((item) => (
-          <AuditRow key={item.id} item={item} actor={item.actor_user_id ? userInfos[item.actor_user_id] : undefined} />
-        ))}
-      </ul>
-      {page.next_before && (
-        <div className="border-t border-border px-5 py-3">
-          <Button variant="outline" size="sm" onClick={() => void loadMore()}>
-            Load more
-          </Button>
-        </div>
-      )}
-    </>
   );
 }
 
 /* ── One row ── */
 
 function AuditRow({ item, actor }: { item: AuditItem; actor?: ApiAccountUser }) {
+  const summary = summarize(item);
   return (
     <li className="flex items-start justify-between gap-3 border-b border-border/60 px-5 py-3 last:border-0">
       <div className="flex min-w-0 items-start gap-3">
@@ -325,7 +272,7 @@ function AuditRow({ item, actor }: { item: AuditItem; actor?: ApiAccountUser }) 
           {actor && (
             <div className="mt-0.5 text-xs text-muted">by {actor.display_name ?? actor.email}</div>
           )}
-          {summarize(item) && <div className="mt-0.5 truncate text-xs text-muted">{summarize(item)}</div>}
+          {summary && <div className="mt-0.5 truncate text-xs text-muted">{summary}</div>}
         </div>
       </div>
       <div className="shrink-0 text-right text-xs text-muted">

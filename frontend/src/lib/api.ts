@@ -503,8 +503,8 @@ export const api = {
   listAccounts: () => request<{ accounts: ApiAccount[] }>("GET", "/v1/accounts"),
 
   /** The member roster of an organization (any member may view). */
-  listMembers: (accountId: string) =>
-    request<{ members: ApiMember[]; your_role: string }>("GET", `/v1/accounts/${accountId}/members`),
+  listMembers: (accountId: string, signal?: AbortSignal) =>
+    request<{ members: ApiMember[]; your_role: string }>("GET", `/v1/accounts/${accountId}/members`, undefined, signal),
 
   /** Invite someone (owner/admin). Returns the code + join link to hand to the invitee. */
   inviteMember: (accountId: string, email: string, role: "admin" | "member") =>
@@ -572,16 +572,16 @@ export const api = {
   /* ── Audit logs (keyset-paginated) ── */
 
   /** The caller's own audit trail (private rows included). */
-  userAuditLogs: (before?: string, limit?: number) =>
-    request<AuditPage>("GET", `/v1/user/audit_logs${pageQuery(before, limit)}`),
+  userAuditLogs: (before?: string, limit?: number, signal?: AbortSignal) =>
+    request<AuditPage>("GET", `/v1/user/audit_logs${pageQuery(before, limit)}`, undefined, signal),
 
   /** The organization's audit trail (owner/admin only). */
-  accountAuditLogs: (accountId: string, before?: string, limit?: number) =>
-    request<AuditPage>("GET", `/v1/accounts/${accountId}/audit_logs${pageQuery(before, limit)}`),
+  accountAuditLogs: (accountId: string, before?: string, limit?: number, signal?: AbortSignal) =>
+    request<AuditPage>("GET", `/v1/accounts/${accountId}/audit_logs${pageQuery(before, limit)}`, undefined, signal),
 
   /** A member's trail as the org sees it — org-visible rows only (owner/admin only). */
-  memberAuditLogs: (accountId: string, userId: string, before?: string, limit?: number) =>
-    request<AuditPage>("GET", `/v1/accounts/${accountId}/members/${userId}/audit_logs${pageQuery(before, limit)}`),
+  memberAuditLogs: (accountId: string, userId: string, before?: string, limit?: number, signal?: AbortSignal) =>
+    request<AuditPage>("GET", `/v1/accounts/${accountId}/members/${userId}/audit_logs${pageQuery(before, limit)}`, undefined, signal),
 
   /* ── Generation ── */
 
