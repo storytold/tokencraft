@@ -132,7 +132,7 @@ jobs:
           python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli --case cooldown
           python3 -B scripts/smoke_webhook_backlog.py target/debug/api-gateway target/debug/admin-cli --case overload
           python3 -B scripts/smoke_webhook_recovery.py target/debug/api-gateway target/debug/admin-cli
-      - name: Verify scoped webhook signing key recovery
+      - name: Verify webhook creation and signing key recovery
         run: python3 -B scripts/smoke_webhook_rotation.py target/debug/api-gateway target/debug/admin-cli
       - name: Verify profiled media runners and workflow reuse
         run: |
@@ -184,7 +184,7 @@ jobs:
         run: node --experimental-strip-types --test ../scripts/console_aspect_ratio.test.mjs
       - name: Verify scoped console artifact downloads
         run: node --experimental-strip-types --test ../scripts/console_artifact_transfer.test.mjs
-      - name: Verify console webhook rotation recovery state
+      - name: Verify console webhook recovery state
         run: node --experimental-strip-types --test ../scripts/console_webhook_rotation.test.mjs
       - name: Reject a hosted console build without a revision
         env:

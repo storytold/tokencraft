@@ -122,6 +122,10 @@ Migration 89 adds receipt recovery to the version 1 export feed and backfills tr
 
 Migration 90 adds shared webhook receiver delays. Reapply the runtime grants and roll the webhook workers. Schema-89 gateways can overlap during the rollout. Use schema-90 workers throughout the cell to enforce the shared delay across replicas.
 
+### Apply the webhook creation receipt migration
+
+Apply migration 91 before rolling out recoverable webhook creation. Schema-90 gateways can overlap after the migration commits. Use schema-91 gateways throughout the cell before relying on receipt recovery. The migration locks webhook subscriptions while adding a nullable digest column and building its partial index.
+
 ### Rehearse the cutover before release
 
 The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The rehearsal verifies admission control on the primary and confirms that the API and worker reject the standby at startup. A running API withdraws readiness on read-only connections and recovers when its role can write again. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.

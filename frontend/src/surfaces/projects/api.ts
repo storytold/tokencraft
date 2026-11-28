@@ -1,4 +1,5 @@
 import { gatewayRequest, type ProjectScope } from "@/lib/gateway";
+import type { WebhookCreationInput } from "./webhookReceipts";
 
 export const grantRoles = {
   developer: "Developer",
@@ -133,20 +134,27 @@ export const webhooksApi = {
     gatewayRequest<WebhookPage<WebhookSubscription>>(inProject(scope, "/webhooks", before), { signal }),
   subscription: (scope: ProjectScope, id: string, signal: AbortSignal) =>
     gatewayRequest<WebhookSubscription>(inProject(scope, `/webhooks/${encodeURIComponent(id)}`), { signal, cache: "no-store" }),
-  create: (scope: ProjectScope, input: { name: string; destination_id: string; client_ref: string | null; workflow_app_id?: string }) =>
-    gatewayRequest<IssuedWebhook>(inProject(scope, "/webhooks"), write("POST", input)),
-  rotate: (scope: ProjectScope, id: string, key: string, expectedVersion: number) =>
+  create: (scope: ProjectScope, input: WebhookCreationInput, signal: AbortSignal) =>
+    gatewayRequest<IssuedWebhook>(inProject(scope, "/webhooks"), {
+      ...write("POST", input), signal, redirect: "error", cache: "no-store",
+    }),
+  createWithReceipt: (scope: ProjectScope, input: WebhookCreationInput, key: string, signal: AbortSignal) =>
+    gatewayRequest<IssuedWebhook>(inProject(scope, "/webhooks/creations"), {
+      ...write("POST", input), signal, redirect: "error", cache: "no-store",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+    }),
+  rotate: (scope: ProjectScope, id: string, key: string, expectedVersion: number, signal: AbortSignal) =>
     gatewayRequest<IssuedWebhook>(inProject(scope, `/webhooks/${encodeURIComponent(id)}/rotations`), {
-      method: "POST", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000),
+      method: "POST", redirect: "error", cache: "no-store", signal,
       headers: { "Content-Type": "application/json", "Idempotency-Key": key },
       body: JSON.stringify({ expected_signing_version: expectedVersion }),
     }),
-  revoke: (scope: ProjectScope, id: string) =>
-    gatewayRequest<void>(inProject(scope, `/webhooks/${encodeURIComponent(id)}`), { method: "DELETE" }),
+  revoke: (scope: ProjectScope, id: string, signal: AbortSignal) =>
+    gatewayRequest<void>(inProject(scope, `/webhooks/${encodeURIComponent(id)}`), { method: "DELETE", signal }),
   deliveries: (scope: ProjectScope, before: string | undefined, signal: AbortSignal) =>
     gatewayRequest<WebhookPage<WebhookDelivery>>(inProject(scope, "/webhook-deliveries", before), { signal }),
   detail: (scope: ProjectScope, id: string, signal: AbortSignal) =>
     gatewayRequest<WebhookDetail>(inProject(scope, `/webhook-deliveries/${encodeURIComponent(id)}`), { signal }),
-  redrive: (scope: ProjectScope, id: string) =>
-    gatewayRequest<void>(inProject(scope, `/webhook-deliveries/${encodeURIComponent(id)}/redrive`), { method: "POST" }),
+  redrive: (scope: ProjectScope, id: string, signal: AbortSignal) =>
+    gatewayRequest<void>(inProject(scope, `/webhook-deliveries/${encodeURIComponent(id)}/redrive`), { method: "POST", signal }),
 };

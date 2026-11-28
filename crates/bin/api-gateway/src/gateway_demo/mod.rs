@@ -122,6 +122,7 @@ pub(crate) use process::ProcessRole;
         webhooks::handlers::list_subscriptions,
         webhooks::handlers::get_subscription,
         webhooks::handlers::create,
+        webhooks::handlers::create_with_receipt,
         webhooks::handlers::rotate,
         webhooks::handlers::rotate_with_receipt,
         webhooks::handlers::revoke,

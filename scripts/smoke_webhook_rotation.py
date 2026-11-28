@@ -77,6 +77,7 @@ def verify(gateway, directory, settings, session, account, project, *, legacy=Fa
         assert sql(count) == "2"
         digest = sql("SELECT rotation_receipt_digest FROM gateway_webhook_subscriptions WHERE id = :'subscription';")
         assert len(digest) == 64 and key not in digest and issued["signing_secret"] not in digest
+        verify_creation(api, peer, project_path, query, session, sql)
 
         other_session, other_account, _ = provision(api)
         other = {**other_session, "Idempotency-Key": key}
@@ -124,6 +125,45 @@ def verify(gateway, directory, settings, session, account, project, *, legacy=Fa
         call(api, path + query, 204, method="DELETE", headers=session)
         rotate(peer, 409, headers=next_retry, body=next_request)
         print("PASS both keys signed delivery during overlap, and expired or revoked recovery issued no key")
+
+
+def verify_creation(api, peer, project_path, query, session, sql):
+    creation = project_path + "/webhooks/creations" + query
+    intent = {"name": "Creation fixture", "destination_id": "fixture", "client_ref": "creation-fixture"}
+    key = token_hex(24)
+    receipt = {**session, "Idempotency-Key": key}
+
+    def create(port, status=201, body=intent, headers=receipt):
+        return call(port, creation, status, method="POST", headers=headers, body=body)
+
+    create(api, 400, headers=session)
+    with ThreadPoolExecutor(max_workers=2) as requests:
+        trials = [requests.submit(create, api), requests.submit(create, peer)]
+        [(created, first), (recovered, second)] = [trial.result() for trial in trials]
+    assert created == recovered and created["signing_version"] == 1
+    assert first["Cache-Control"] == second["Cache-Control"] == "private, no-store"
+    create(api, 409, body={**intent, "name": "Different subscription"})
+
+    target = project_path + "/webhooks/" + created["id"]
+    metadata, _ = call(api, target + query, 200, headers=session)
+    assert metadata == {name: value for name, value in created.items() if name != "signing_secret"}
+    count = "SELECT count(*) FROM account_audit_logs WHERE target_id = :'subscription' AND account_id = :'account';"
+    assert sql(count, subscription=created["id"]) == "1"
+    digest = sql("SELECT encode(creation_receipt_digest, 'hex') FROM gateway_webhook_subscriptions WHERE id = :'subscription';",
+                 subscription=created["id"])
+    assert len(digest) == 64 and key not in digest and created["signing_secret"] not in digest
+    sql("UPDATE gateway_webhook_subscriptions SET created_at = now() - interval '25 hours' WHERE id = :'subscription';",
+        subscription=created["id"])
+    create(peer, 409)
+    call(api, target + query, 204, method="DELETE", headers=session)
+    create(api, 409)
+
+    fresh = {**session, "Idempotency-Key": token_hex(24)}
+    other, _ = create(api, headers=fresh)
+    assert other["id"] != created["id"]
+    call(api, project_path + "/webhooks/" + other["id"] + "/rotate" + query, 200, method="POST", headers=session)
+    create(peer, 409, headers=fresh)
+    print("PASS concurrent webhook creation recovered one subscription and rejected changed, expired, revoked, or rotated receipts")
 
 
 def main():

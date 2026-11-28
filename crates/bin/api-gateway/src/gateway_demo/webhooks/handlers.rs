@@ -13,6 +13,7 @@ use db_queries::{
 use enums::AuditEvent;
 use ids::{AccountId, GatewayProjectId, GatewayWebhookDeliveryId, GatewayWebhookSubscriptionId, WorkflowAppId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 
 use super::super::{
@@ -41,6 +42,10 @@ pub fn router(config: Arc<WebhookConfig>) -> Router<AppState> {
         .route(
             "/v1/projects/:project/webhooks",
             get(list_subscriptions).post(create),
+        )
+        .route(
+            "/v1/projects/:project/webhooks/creations",
+            post(create_with_receipt),
         )
         .route(
             "/v1/projects/:project/webhooks/:subscription",
@@ -265,6 +270,55 @@ pub(in crate::gateway_demo) async fn create(
     Json(input): Json<CreateWebhookSubscription>,
 ) -> ApiResult<(StatusCode, Json<IssuedWebhookSubscription>)> {
     let project = Project::authorized(&state, &auth, &query, &raw).await?;
+    issue_creation(&state, &auth, &project, &config, input, None).await
+}
+
+#[utoipa::path(
+    post, path = "/v1/projects/{project}/webhooks/creations",
+    operation_id = "createProjectWebhookWithReceipt", tag = "webhooks",
+    security(("session_cookie" = [])),
+    params(
+        ("project" = String, Path, description = "Project ID."),
+        ("account_id" = String, Query, description = "Organization account ID."),
+        ("Idempotency-Key" = String, Header, description = "A fresh random key of 32 to 128 allowed characters. Repeat with the original input to recover the response."),
+    ),
+    request_body = CreateWebhookSubscription,
+    responses(
+        (status = 201, description = "The new subscription and signing key, or the same result for a matching administrator replay within 24 hours. Never cached.",
+         body = IssuedWebhookSubscription),
+        (status = 400, description = "Invalid input, receipt key, or unknown destination.", body = GatewayError),
+        (status = 404, description = "Workflow app unavailable in this project.", body = GatewayError),
+        (status = 409, description = "A conflicting active workflow subscription or an unavailable creation receipt.", body = GatewayError),
+        (status = "default", response = RequestErrorResponse),
+    ),
+)]
+pub(in crate::gateway_demo) async fn create_with_receipt(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Query(query): Query<OrganizationQuery>,
+    Path(raw): Path<String>,
+    Extension(config): Extension<Arc<WebhookConfig>>,
+    headers: HeaderMap,
+    Json(input): Json<CreateWebhookSubscription>,
+) -> ApiResult<(StatusCode, Json<IssuedWebhookSubscription>)> {
+    let project = Project::authorized(&state, &auth, &query, &raw).await?;
+    let key = receipt_key(&headers)?;
+    let intent = serde_json::to_vec(&(
+        "tokencraft-webhook-creation-v1", auth.user.id.as_str(),
+        project.account.as_str(), project.id.as_str(), key,
+    )).expect("creation receipt key serializes");
+    let digest: [u8; 32] = Sha256::digest(intent).into();
+    issue_creation(&state, &auth, &project, &config, input, Some(&digest)).await
+}
+
+async fn issue_creation(
+    state: &AppState,
+    auth: &AuthContext,
+    project: &Project,
+    config: &WebhookConfig,
+    input: CreateWebhookSubscription,
+    receipt: Option<&[u8]>,
+) -> ApiResult<(StatusCode, Json<IssuedWebhookSubscription>)> {
     let name = validate_name(&input.name)?;
     let client_ref = input.client_ref.as_deref();
     validate_client_ref(client_ref)?;
@@ -278,14 +332,14 @@ pub(in crate::gateway_demo) async fn create(
         .destination(&input.destination_id)
         .ok_or_else(|| ApiError::BadRequest("unknown webhook destination".into()))?;
     let id = GatewayWebhookSubscriptionId::generate();
-    let mut tx = state.pool.begin().await?;
+    let mut tx = state.pool.begin_with("BEGIN ISOLATION LEVEL READ COMMITTED").await?;
     if let Some(app) = &workflow_app {
         if !gateway_webhooks::workflow_app_exists(&mut *tx, project.scope(), app).await? {
             return Err(ApiError::NotFound("workflow app not found in this project".into()));
         }
     }
-    let subscription = gateway_webhooks::create_subscription(
-        &mut *tx,
+    let result = gateway_webhooks::create_subscription(
+        &mut tx,
         project.scope(),
         NewSubscription {
             id: &id,
@@ -295,23 +349,26 @@ pub(in crate::gateway_demo) async fn create(
             client_ref,
             workflow_app_id: workflow_app.as_ref(),
         },
-    )
-    .await.map_err(|error| match error {
-        sqlx::Error::Database(db) if db.constraint() == Some("gateway_webhook_active_workflow_app") =>
-            ApiError::Conflict("this workflow app already has an active webhook subscription".into()),
-        other => other.into(),
-    })?;
-    audit(
-        &mut tx,
-        &project.account,
-        &auth.user.id,
-        AuditEvent::GatewayWebhookChanged,
-        "gateway_webhook_subscription",
-        id.as_str(),
-    )
-    .await?;
+        receipt,
+    ).await?.ok_or_else(|| ApiError::Conflict(if receipt.is_some() {
+        "the creation receipt is unavailable or this workflow app already has an active webhook subscription".into()
+    } else {
+        "this workflow app already has an active webhook subscription".into()
+    }))?;
+    if result.created {
+        audit(
+            &mut tx,
+            &project.account,
+            &auth.user.id,
+            AuditEvent::GatewayWebhookChanged,
+            "gateway_webhook_subscription",
+            id.as_str(),
+        )
+        .await?;
+    }
     tx.commit().await?;
-    let signing_secret = config.signing_secret(id.as_str(), subscription.signing_version);
+    let subscription = result.subscription;
+    let signing_secret = config.signing_secret(&subscription.id, subscription.signing_version);
     Ok((
         StatusCode::CREATED,
         Json(IssuedWebhookSubscription {
@@ -390,13 +447,18 @@ pub(in crate::gateway_demo) async fn rotate_with_receipt(
     if !(1..i32::MAX).contains(&expected_version) {
         return Err(ApiError::BadRequest("expected_signing_version must be a positive version below the maximum".into()));
     }
-    let key = idempotency_key(&headers)?;
-    if key.len() < 32 || !valid_idempotency_key(key) {
-        return Err(ApiError::BadRequest("use 32 to 128 ASCII letters, numbers or . _ : - in Idempotency-Key".into()));
-    }
+    let key = receipt_key(&headers)?;
     let digest = config.rotation_receipt_digest(auth.user.id.as_str(), id.as_str(), expected_version, key);
     let receipt = RotationReceipt { expected_version, digest: &digest };
     issue_rotation(&state, &auth, &project, &id, &config, Some(receipt)).await
+}
+
+fn receipt_key(headers: &HeaderMap) -> ApiResult<&str> {
+    let key = idempotency_key(headers)?;
+    if key.len() < 32 || !valid_idempotency_key(key) {
+        return Err(ApiError::BadRequest("use 32 to 128 ASCII letters, numbers or . _ : - in Idempotency-Key".into()));
+    }
+    Ok(key)
 }
 
 async fn issue_rotation(

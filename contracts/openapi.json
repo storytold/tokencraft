@@ -3453,6 +3453,103 @@
         ]
       }
     },
+    "/v1/projects/{project}/webhooks/creations": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "createProjectWebhookWithReceipt",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "description": "Project ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "description": "Organization account ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "A fresh random key of 32 to 128 allowed characters. Repeat with the original input to recover the response.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookSubscription"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new subscription and signing key, or the same result for a matching administrator replay within 24 hours. Never cached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedWebhookSubscription"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, receipt key, or unknown destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workflow app unavailable in this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A conflicting active workflow subscription or an unavailable creation receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestErrorResponse"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project}/webhooks/{subscription}": {
       "get": {
         "tags": [

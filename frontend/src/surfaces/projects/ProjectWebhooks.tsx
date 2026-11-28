@@ -1,14 +1,17 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Button, Card, Input, Select } from "@/components/ui";
-import { ApiError } from "@/lib/api";
+import { ApiError, isDefiniteClientRejection } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { errorMessage, isGatewayEndpointUnavailable, withProject, type ProjectScope } from "@/lib/gateway";
 import { OneTimeSecret } from "./OneTimeSecret";
 import {
   webhooksApi, type IssuedWebhook, type WebhookDelivery, type WebhookDetail, type WebhookPage, type WebhookSubscription,
 } from "./api";
-import { clearWebhookRotation, pendingWebhookRotation, rotationStorageKey, stageWebhookRotation } from "./webhookRotation";
+import {
+  clearWebhookReceipt, creationStorageKey, pendingWebhookCreation, pendingWebhookRotation,
+  rotationStorageKey, stageWebhookCreation, stageWebhookRotation, type WebhookCreation, type WebhookCreationInput,
+} from "./webhookReceipts";
 
 type Webhooks = { destinations: string[]; subscriptions: WebhookPage<WebhookSubscription>; deliveries: WebhookPage<WebhookDelivery> };
 type Collection = "subscriptions" | "deliveries";
@@ -24,6 +27,8 @@ export function ProjectWebhooks({ scope }: { scope: ProjectScope }) {
 }
 
 function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?: string }) {
+  const creationKey = actorId && creationStorageKey(actorId, scope.account_id, scope.project_id);
+  const [creation, setCreation] = useState(() => creationKey ? pendingWebhookCreation(creationKey) : undefined);
   const [data, setData] = useState<Webhooks | null>();
   const [before, setBefore] = useState<Partial<Record<Collection, string>>>({});
   const [revision, setRevision] = useState(0);
@@ -32,7 +37,10 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<IssuedWebhook>();
   const [selected, setSelected] = useState<string>();
+  const activeWrite = useRef<AbortController | null>(null);
   const refresh = () => setRevision((value) => value + 1);
+
+  useEffect(() => () => activeWrite.current?.abort(), []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -51,23 +59,77 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
     return () => controller.abort();
   }, [scope, revision, before]);
 
-  async function change(action: () => Promise<void | IssuedWebhook>, notice = "") {
-    if (busy || issued) return false;
+  async function change(action: (signal: AbortSignal) => Promise<void | IssuedWebhook>, notice = "") {
+    if (activeWrite.current || issued) return false;
+    const controller = new AbortController();
+    activeWrite.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const next = await action();
+      const next = await action(signal);
+      signal.throwIfAborted();
       if (next) setIssued(next);
       setNotice(notice);
       refresh();
       return true;
     } catch (error) {
-      setError(errorMessage(error));
+      if (!controller.signal.aborted) setError(errorMessage(error));
       return false;
     } finally {
+      activeWrite.current = null;
       setBusy(false);
     }
+  }
+
+  function clearCreation() {
+    if (creationKey) clearWebhookReceipt(creationKey);
+    setCreation(undefined);
+  }
+
+  async function submitCreation(attempt: WebhookCreation, allowLegacy: boolean) {
+    const created = await change(async (signal) => {
+      let legacy = false;
+      let missingReceiptSupport = false;
+      try {
+        let result: IssuedWebhook;
+        try {
+          result = await webhooksApi.createWithReceipt(scope, attempt.input, attempt.key, signal);
+        } catch (error) {
+          missingReceiptSupport = isGatewayEndpointUnavailable(error) || (error instanceof ApiError && error.status === 405);
+          if (!allowLegacy || !missingReceiptSupport || signal.aborted) throw error;
+          legacy = true;
+          clearCreation();
+          result = await webhooksApi.create(scope, attempt.input, signal);
+        }
+        if (!result?.id || result.signing_version !== 1
+            || typeof result.signing_secret !== "string" || !result.signing_secret.startsWith("whsec_")) {
+          throw new Error("Incomplete subscription issuance response");
+        }
+        return result;
+      } catch (error) {
+        if (missingReceiptSupport && !legacy && !signal.aborted) {
+          throw new ApiError(0, "creation_unavailable", "This gateway instance can’t recover the signing secret yet. Retry when creation recovery is available.");
+        }
+        if (isDefiniteClientRejection(error, signal)) {
+          clearCreation();
+          refresh();
+          if (error.status === 409) {
+            throw new ApiError(409, error.code, `${error.message}. Check Subscriptions before creating another.`);
+          }
+          throw error;
+        }
+        refresh();
+        throw new ApiError(0, "creation_receipt", legacy
+          ? "Couldn’t confirm creation. Check Subscriptions before creating another."
+          : "The creation response was interrupted. Retry creation to recover the signing secret.");
+      }
+    });
+    if (created && before.subscriptions) {
+      setBefore((previous) => ({ ...previous, subscriptions: undefined }));
+    }
+    return created;
   }
 
   function rotationKey(id: string) {
@@ -76,11 +138,11 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
 
   function rotate(subscription: WebhookSubscription) {
     const storageKey = rotationKey(subscription.id);
-    if (!storageKey || busy || issued) return;
+    if (!storageKey || activeWrite.current || issued || creation) return;
     const attempt = stageWebhookRotation(storageKey, subscription.signing_version);
-    void change(async () => {
+    void change(async (signal) => {
       try {
-        const result = await webhooksApi.rotate(scope, subscription.id, attempt.key, attempt.expectedVersion);
+        const result = await webhooksApi.rotate(scope, subscription.id, attempt.key, attempt.expectedVersion, signal);
         if (!result || result.id !== subscription.id || result.signing_version !== attempt.expectedVersion + 1
             || typeof result.signing_secret !== "string" || !result.signing_secret.startsWith("whsec_")) {
           throw new ApiError(0, "rotation_receipt", "The rotation response was incomplete. Retry to recover the signing key.");
@@ -88,7 +150,7 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
         return result;
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
-          clearWebhookRotation(storageKey);
+          clearWebhookReceipt(storageKey);
           refresh();
         }
         if (error instanceof ApiError && error.status === 404) {
@@ -105,13 +167,16 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
 
   function dismissSecret() {
     if (issued) {
-      const storageKey = rotationKey(issued.id);
-      if (storageKey) clearWebhookRotation(storageKey);
+      if (issued.signing_version === 1) clearCreation();
+      else {
+        const storageKey = rotationKey(issued.id);
+        if (storageKey) clearWebhookReceipt(storageKey);
+      }
     }
     setIssued(undefined);
   }
 
-  const disabled = busy || Boolean(issued);
+  const disabled = busy || Boolean(issued || creation);
   return (
     <Card className="min-w-0 space-y-4 p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -125,11 +190,28 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
       {data === null && <p className="text-sm text-muted" role="status">Webhook delivery requires a receiver configured on this gateway.</p>}
       {error && <p className="text-sm text-rose-600 dark:text-rose-300" role="alert">{error}</p>}
       {notice && <p className="text-sm text-muted" role="status">{notice}</p>}
-      {data && <AddSubscription destinations={data.destinations} disabled={disabled} create={async (input) => {
-        if (!await change(() => webhooksApi.create(scope, input))) return false;
-        if (before.subscriptions) setBefore((previous) => ({ ...previous, subscriptions: undefined }));
-        return true;
-      }} />}
+      {creation && !issued && <div className="space-y-2 rounded-lg border border-border p-3">
+        <p className="break-words text-sm">Pending creation for {creation.input.name}.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" disabled={busy} onClick={() => void submitCreation(creation, false)}>
+            {busy ? "Checking creation…" : "Retry creation"}
+          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => {
+            clearCreation();
+            setError("Check Subscriptions before creating another.");
+            refresh();
+          }}>Discard saved attempt</Button>
+        </div>
+      </div>}
+      {data && <div hidden={Boolean(creation)}>
+        <AddSubscription destinations={data.destinations} disabled={disabled || !creationKey}
+          create={async (input) => {
+            if (!creationKey || activeWrite.current) return false;
+            const attempt = stageWebhookCreation(creationKey, input);
+            setCreation(attempt);
+            return submitCreation(attempt, true);
+          }} />
+      </div>}
       {issued && <OneTimeSecret key={`${issued.id}:${issued.signing_version}`} label="Webhook signing secret" noun="secret"
         value={issued.signing_secret} dismiss={dismissSecret} />}
       {data && <>
@@ -157,7 +239,7 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
                     {recovery ? "Retry signing key rotation" : "Rotate signing key"}
                   </Button>
                   <Button variant="ghost" size="sm" disabled={disabled} onClick={() => {
-                    if (window.confirm(`Disable ${subscription.name}?`)) void change(() => webhooksApi.revoke(scope, subscription.id), "Subscription disabled.");
+                    if (window.confirm(`Disable ${subscription.name}?`)) void change((signal) => webhooksApi.revoke(scope, subscription.id, signal), "Subscription disabled.");
                   }}>Disable subscription</Button>
                 </div>}
               </li>;
@@ -182,7 +264,7 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
                   </span>
                 </button>
                 {selected === delivery.id && <DeliveryAttempts scope={scope} id={delivery.id} revision={revision} disabled={disabled}
-                  redrive={() => { void change(() => webhooksApi.redrive(scope, delivery.id), "Delivery queued for another attempt."); }} />}
+                  redrive={() => { void change((signal) => webhooksApi.redrive(scope, delivery.id, signal), "Delivery queued for another attempt."); }} />}
               </li>
             ))}
           </ul>
@@ -194,10 +276,8 @@ function ProjectWebhookPanel({ scope, actorId }: { scope: ProjectScope; actorId?
   );
 }
 
-type CreateInput = Parameters<typeof webhooksApi.create>[1];
-
 function AddSubscription({ destinations, disabled, create }: {
-  destinations: string[]; disabled: boolean; create: (input: CreateInput) => Promise<boolean>;
+  destinations: string[]; disabled: boolean; create: (input: WebhookCreationInput) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
   const [target, setTarget] = useState(destinations[0] ?? "");

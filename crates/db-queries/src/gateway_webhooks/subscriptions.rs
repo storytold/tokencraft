@@ -27,24 +27,64 @@ pub struct NewSubscription<'a> {
     pub workflow_app_id: Option<&'a WorkflowAppId>,
 }
 
-pub async fn create_subscription<'e, E: PgExecutor<'e>>(
-    exec: E,
+pub struct SubscriptionCreation {
+    pub subscription: Subscription,
+    pub created: bool,
+}
+
+pub async fn create_subscription(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     scope: RequestScope<'_>,
     subscription: NewSubscription<'_>,
-) -> sqlx::Result<Subscription> {
-    sqlx::query_as!(
-        Subscription,
+    receipt_digest: Option<&[u8]>,
+) -> sqlx::Result<Option<SubscriptionCreation>> {
+    let workflow_app = subscription.workflow_app_id.map(WorkflowAppId::as_str);
+    let inserted = sqlx::query_as(
         "INSERT INTO gateway_webhook_subscriptions
-         (id, account_id, project_id, name, destination_id, destination_url, client_ref, workflow_app_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (id, account_id, project_id, name, destination_id, destination_url, client_ref, workflow_app_id,
+          creation_receipt_digest)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT DO NOTHING
          RETURNING id, name, destination_id, client_ref, workflow_app_id, signing_version, signing_rotated_at,
                    created_at, revoked_at",
-        subscription.id.as_str(), scope.account.as_str(), scope.project.as_str(), subscription.name,
-        subscription.destination_id, subscription.destination_url, subscription.client_ref,
-        subscription.workflow_app_id.map(WorkflowAppId::as_str),
     )
-    .fetch_one(exec)
-    .await
+    .bind(subscription.id.as_str())
+    .bind(scope.account.as_str())
+    .bind(scope.project.as_str())
+    .bind(subscription.name)
+    .bind(subscription.destination_id)
+    .bind(subscription.destination_url)
+    .bind(subscription.client_ref)
+    .bind(workflow_app)
+    .bind(receipt_digest)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(subscription) = inserted {
+        return Ok(Some(SubscriptionCreation { subscription, created: true }));
+    }
+    let Some(digest) = receipt_digest else { return Ok(None) };
+    // Read committed lets this statement see the receipt after a concurrent INSERT commits.
+    let existing = sqlx::query_as(
+        "SELECT id, name, destination_id, client_ref, workflow_app_id, signing_version,
+                signing_rotated_at, created_at, revoked_at
+         FROM gateway_webhook_subscriptions
+         WHERE account_id = $1 AND project_id = $2 AND creation_receipt_digest = $3
+           AND name = $4 AND destination_id = $5
+           AND client_ref IS NOT DISTINCT FROM $6 AND workflow_app_id IS NOT DISTINCT FROM $7
+           AND revoked_at IS NULL AND signing_version = 1
+           AND created_at > clock_timestamp() - interval '24 hours'
+         FOR SHARE",
+    )
+    .bind(scope.account.as_str())
+    .bind(scope.project.as_str())
+    .bind(digest)
+    .bind(subscription.name)
+    .bind(subscription.destination_id)
+    .bind(subscription.client_ref)
+    .bind(workflow_app)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(existing.map(|subscription| SubscriptionCreation { subscription, created: false }))
 }
 
 pub async fn subscriptions<'e, E: PgExecutor<'e>>(
