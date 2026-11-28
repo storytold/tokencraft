@@ -19,7 +19,7 @@ import tarfile
 from tempfile import TemporaryDirectory, gettempdir
 from time import monotonic, sleep
 import tomllib
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -405,6 +405,8 @@ def packaged_gateway(command, state, env, opener, api, *, cwd):
                     with opener.open(api + "/ready", timeout=1) as ready:
                         if json.load(ready).get("ready"):
                             break
+                except HTTPError as error:
+                    error.close()
                 except (URLError, TimeoutError):
                     pass
                 sleep(.2)

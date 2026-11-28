@@ -8,7 +8,8 @@ import sys
 import tarfile
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 import native_package
@@ -137,6 +138,26 @@ class NativeConsoleBuildTest(unittest.TestCase):
             served["/assets/index-fixture.js"] = served["/models"]
             with self.assertRaisesRegex(RuntimeError, "assets/index-fixture.js differs from the release asset"):
                 verify_console(Opener(), "http://localhost:3000", package, 4000, revision)
+
+
+class NativeReadinessTest(unittest.TestCase):
+    def test_retry_closes_the_unready_response(self):
+        origin = "http://localhost:4000"
+        body = BytesIO(b'{"ready":false}')
+        opener = Mock()
+        opener.open.side_effect = [
+            HTTPError(origin + "/ready", 503, "Service Unavailable", {}, body),
+            BytesIO(b'{"ready":true}'),
+        ]
+        with (TemporaryDirectory() as directory,
+              patch.object(native_package.subprocess, "Popen") as launch,
+              patch.object(native_package, "sleep")):
+            child = launch.return_value.__enter__.return_value
+            child.poll.return_value = None
+            work = Path(directory)
+            with native_package.packaged_gateway(["tokencraft"], work / "state", {}, opener, origin, cwd=work):
+                self.assertTrue(body.closed)
+                self.assertEqual(opener.open.call_count, 2)
 
 
 class NativeBinaryVersionsTest(unittest.TestCase):
