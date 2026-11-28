@@ -16,7 +16,7 @@ import socket
 import subprocess
 import sys
 import tarfile
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from time import monotonic, sleep
 import tomllib
 from urllib.error import URLError
@@ -115,10 +115,13 @@ def build_binaries(pg_bin, target, cargo_profile, offline, *, source=ROOT, sourc
     else:
         env["TOKENCRAFT_SOURCE_REVISION"] = source_revision
     directory = target / ("debug" if cargo_profile == "dev" else cargo_profile)
-    # Keep the PostgreSQL socket path short while letting the build database use TMPDIR.
+    scratch = Path(gettempdir())
+    # macOS has a 104-byte Unix socket address field, including the terminator.
+    socket_size = len(os.fsencode(scratch / "tc-pg-xxxxxxxx" / ".s.PGSQL.5432"))
+    socket_parent = scratch if socket_size < 104 else Path("/tmp")
     with (
         TemporaryDirectory(prefix="tc-build-") as temp,
-        TemporaryDirectory(prefix="tc-pg-", dir="/tmp") as socket_dir,
+        TemporaryDirectory(prefix="tc-pg-", dir=socket_parent) as socket_dir,
     ):
         work = Path(temp)
         db = work / "postgres"
