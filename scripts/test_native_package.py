@@ -116,8 +116,12 @@ class NativeConsoleBuildTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(contents)
 
+            document = index.replace(b"<head>", b"<head>" + marker)
             served = {
-                "/pricing": index.replace(b"<head>", b"<head>" + marker),
+                "/pricing": document,
+                "/docs": document,
+                "/docs/api/post/v1/requests": document,
+                "/docs/api/get/.well-known/oauth-authorization-server": document,
                 "/assets/index-fixture.js": javascript,
                 "/docs/openapi.json": files["contracts/openapi.json"],
                 "/catalog/artcraft-v1.json": files["catalog/artcraft-v1.json"],

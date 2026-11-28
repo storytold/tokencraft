@@ -95,8 +95,10 @@ async fn serve_file(State(files): State<Arc<Files>>, method: Method, uri: Uri, h
         return StatusCode::NOT_FOUND.into_response();
     };
     let path = decoded.trim_start_matches('/').trim_end_matches('/');
+    let api_reference = path.starts_with("docs/api/");
     if !path.is_empty() && path.split('/').any(|part| {
-        part.is_empty() || part.starts_with('.') || part.contains('\\') || part.chars().any(char::is_control)
+        let hidden = part.starts_with('.') && !(api_reference && part == ".well-known");
+        part.is_empty() || hidden || part.contains('\\') || part.chars().any(char::is_control)
     }) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -114,7 +116,9 @@ async fn serve_file(State(files): State<Arc<Files>>, method: Method, uri: Uri, h
     let static_path = name.components().next().is_some_and(|prefix| {
         files.allowed.iter().any(|file| file.starts_with(Path::new(prefix.as_os_str())))
     });
-    if asset == Path::new("index.html") || (html && name.extension().is_none() && !static_path) {
+    // The documentation views share a prefix with the static OpenAPI document.
+    let client_route = !static_path || name.starts_with("docs");
+    if asset == Path::new("index.html") || (html && name.extension().is_none() && client_route) {
         return response(method, Body::from(files.index.clone()), files.index.len() as u64, "text/html; charset=utf-8", "no-store");
     }
     StatusCode::NOT_FOUND.into_response()

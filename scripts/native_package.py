@@ -200,14 +200,17 @@ def verify_console(opener, origin, package, api_port, revision, *, console_dir=N
     if script is None:
         raise RuntimeError("The compiled console index has no entry script.")
     entry = script[1][1:].decode()
-    route = Request(origin + "/pricing", headers={"Accept": "text/html"})
-    with opener.open(route, timeout=3) as result:
-        document = result.read()
-        marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
+    pages = ("/pricing", "/docs", "/docs/api/post/v1/requests",
+             "/docs/api/get/.well-known/oauth-authorization-server")
+    marker = f'<meta name="tokencraft-api-port" content="{api_port}">'.encode()
+    for page in pages:
+        route = Request(origin + page, headers={"Accept": "text/html"})
+        with opener.open(route, timeout=3) as result:
+            document = result.read()
         if marker not in document:
-            raise RuntimeError("The packaged console did not receive the active API port.")
+            raise RuntimeError(f"The packaged console {page} did not receive the active API port.")
         if script[1] not in document:
-            raise RuntimeError("The packaged console did not load the compiled entry script.")
+            raise RuntimeError(f"The packaged console {page} did not load the compiled entry script.")
     for route, expected in (("docs/openapi.json", package / "contracts/openapi.json"),
                             (REFERENCE_CATALOG, package / REFERENCE_CATALOG), (entry, console_dir / entry)):
         asset = expected.read_bytes()
