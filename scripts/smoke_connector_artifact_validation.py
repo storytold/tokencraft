@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from secrets import token_hex
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import monotonic, sleep
 
 from smoke_cell_faults import Connector, ConnectorHandler, PIXELS, eventually, serve
@@ -17,6 +18,9 @@ from smoke_workflow_contract import (
 )
 
 LANDSCAPE = fixture_png((35, 95, 210), 16, 12)
+INTERRUPTED_OUTPUT = "Output is still becoming available"
+UNKNOWN_CHARGE = "Output has no confirmed charge"
+LATE_CHARGE = "Output has a charge on the next poll"
 
 
 class ArtifactConnector(ConnectorHandler):
@@ -35,6 +39,19 @@ class ArtifactConnector(ConnectorHandler):
 
     def do_GET(self):
         fields = self.path.strip("/").split("/")
+        if len(fields) == 3 and fields[:2] == ["v1", "jobs"] and self.authorized():
+            request = fields[2]
+            with self.server.lock:
+                prompt = self.server.prompts.get(request)
+                self.server.polls[request] += 1
+                attempt = self.server.polls[request]
+            if prompt in {INTERRUPTED_OUTPUT, UNKNOWN_CHARGE, LATE_CHARGE}:
+                if attempt > 1 and prompt != LATE_CHARGE:
+                    return self.reply(503, {})
+                reply = {"version": 1, "status": "succeeded", "handle": request}
+                if prompt == INTERRUPTED_OUTPUT or (prompt == LATE_CHARGE and attempt > 1):
+                    reply["provider_charge"] = {"unit": "credit", "quantity": "1.25"}
+                return self.reply(200, reply)
         if len(fields) != 5 or fields[3] != "artifacts":
             return super().do_GET()
         if not self.authorized():
@@ -52,8 +69,10 @@ class ArtifactConnector(ConnectorHandler):
             self.send_header("Content-Length", str(2 * 1024 * 1024 + 1))
             self.end_headers()
             return
-        if prompt == "Output is still becoming available":
+        if prompt == INTERRUPTED_OUTPUT:
             if attempt == 1:
+                self.server.fetch_started.set()
+                self.server.release_fetch.wait(8)
                 return self.reply(503, {})
             if attempt == 2:
                 self.send_response(200)
@@ -63,6 +82,8 @@ class ArtifactConnector(ConnectorHandler):
                 self.wfile.write(LANDSCAPE[:8])
                 return
             return self.reply(200, LANDSCAPE, "image/png")
+        if prompt in {UNKNOWN_CHARGE, LATE_CHARGE} and attempt == 1:
+            return self.reply(503, {})
         return self.reply(200, PIXELS, "image/png")
 
 
@@ -144,12 +165,15 @@ def verify(gateway, directory, settings, session, account, project):
         connector = Connector()
         connector.RequestHandlerClass = ArtifactConnector
         connector.prompts, connector.fetches = {}, Counter()
+        connector.polls = Counter()
+        connector.fetch_started, connector.release_fetch = Event(), Event()
         stack.enter_context(serve(connector))
         receiver = stack.enter_context(webhook_receiver())
         settings = configure(directory, settings, connector, receiver)
         stack.enter_context(service("validation-api", [gateway], directory, settings, lambda: ready(port)))
         worker = dict(settings, TOKENCRAFT_PROCESS_ROLE="worker", API_GATEWAY_PORT=str(worker_port))
-        stack.enter_context(service("validation-worker", [gateway], directory, worker, lambda: ready(worker_port)))
+        first_worker = stack.enter_context(service("validation-worker", [gateway], directory, worker,
+                                                   lambda: ready(worker_port)))
 
         child = verify_workflow(port, session, account, project)
         print("PASS invalid connector image failed the original request and its workflow with the observed charge")
@@ -181,7 +205,7 @@ def verify(gateway, directory, settings, session, account, project):
                                                   "status": "failed", "fetch_url": f"/v1/requests/{mismatch['id']}"})
         print("PASS invalid type and size stopped publication, kept idempotent replay, and sent a signed failure")
 
-        deferred, _, _ = submit("Output is still becoming available", 1,
+        deferred, _, _ = submit(INTERRUPTED_OUTPUT, 1,
                                 aspect_ratio="7:5", max_relative_error_bps=500)
         deferred["status_url"] = f"/v1/requests/{deferred['id']}"
 
@@ -190,21 +214,38 @@ def verify(gateway, directory, settings, session, account, project):
             return state["status"] == "running" and state["upstream"].get("provider_charge")
 
         eventually(pending_with_charge, "observed charge during artifact retrieval", timeout=5)
-        delivered = wait_for_status(port, deferred, token, "succeeded", 14)
+        assert connector.fetch_started.wait(5), "The worker did not start retrieval before the interruption"
+        first_worker.kill()
+        first_worker.wait(timeout=5)
+        connector.release_fetch.set()
+        stack.enter_context(service("validation-worker-restarted", [gateway], directory, worker,
+                                    lambda: ready(worker_port)))
+        delivered = wait_for_status(port, deferred, token, "succeeded", 30)
         assert delivered["quote"]["candidates"][0]["applied_aspect_ratio"] == "4:3"
         assert read_image(port, deferred, token) == LANDSCAPE
+        print("PASS the restarted worker used the stored completion and recovered the interrupted artifact transfer")
+
+        unknown, _, _ = submit(UNKNOWN_CHARGE, 1)
+        late, _, _ = submit(LATE_CHARGE, 1)
+        for receipt, has_charge in ((unknown, False), (late, True)):
+            receipt["status_url"] = f"/v1/requests/{receipt['id']}"
+            completed = wait_for_status(port, receipt, token, "succeeded", 10)
+            assert bool(completed["upstream"].get("provider_charge")) == has_charge
+            assert read_image(port, receipt, token) == PIXELS
         usage, _ = call(port, "/v1/usage", 200, headers=token)
         totals = usage["totals"]
-        assert (totals["failed"], totals["succeeded"], totals["in_progress"], totals["completed_outputs"]) == (3, 1, 0, 1)
+        assert (totals["failed"], totals["succeeded"], totals["in_progress"], totals["completed_outputs"]) == (3, 3, 0, 3)
         charge, = totals["provider_charges"]
-        assert charge["unit"] == "credit" and charge["observations"] == 4 and Decimal(charge["quantity"]) == Decimal("5")
+        assert charge["unit"] == "credit" and charge["observations"] == 5 and Decimal(charge["quantity"]) == Decimal("6.25")
         with connector.lock:
-            assert connector.jobs == Counter((child, mismatch["id"], oversize["id"], deferred["id"]))
+            assert connector.jobs == Counter((child, mismatch["id"], oversize["id"], deferred["id"], unknown["id"], late["id"]))
             assert connector.fetches == Counter({
                 (child, 0): 1, (mismatch["id"], 0): 1, (mismatch["id"], 1): 1,
-                (oversize["id"], 0): 1, (deferred["id"], 0): 3,
+                (oversize["id"], 0): 1, (deferred["id"], 0): 3, (unknown["id"], 0): 2, (late["id"], 0): 2,
             })
-        print("PASS an unavailable and then interrupted transfer recovered on its original handle with exact usage")
+            assert connector.polls[deferred["id"]] == 1
+            assert connector.polls[unknown["id"]] == connector.polls[late["id"]] == 2
+        print("PASS retrieval tolerated a missing charge and still captured a late charge exactly once")
 
 
 def main():

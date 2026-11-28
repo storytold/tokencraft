@@ -19,6 +19,8 @@ pub struct ClaimedQueuePoll {
     pub applied_aspect_ratio: Option<String>,
     pub lease: DateTime<Utc>,
     pub credential_version: Option<i32>,
+    pub result_observed: bool,
+    pub charge_recorded: bool,
 }
 
 pub struct PollBindings<'a> {
@@ -36,7 +38,7 @@ pub async fn claim_queue_poll(
     let poll = sqlx::query_as!(
         ClaimedQueuePoll,
         r#"WITH ready AS (
-             SELECT r.id, r.project_id, r.adapter, r.provider_credential_version,
+             SELECT r.id, r.account_id, r.project_id, r.adapter, r.provider_credential_version,
                     r.trace_id, r.admission_span_id,
                     coalesce((r.quote #>> '{input,workload,count}')::smallint, 1::smallint) AS output_count,
                     (r.quote #>> '{input,workload,duration_seconds}')::smallint AS duration_seconds,
@@ -66,7 +68,13 @@ pub async fn claim_queue_poll(
                      ready.image_height, p.lease_until AS "lease!",
                      ready.workload AS "workload?", ready.applied_aspect_ratio AS "applied_aspect_ratio?",
                      ready.trace_id AS "trace_id?", ready.admission_span_id AS "admission_span_id?",
-                     ready.provider_credential_version AS "credential_version?""#,
+                     ready.provider_credential_version AS "credential_version?",
+                     (p.result_observed_at IS NOT NULL) AS "result_observed!",
+                     (p.result_observed_at IS NOT NULL AND EXISTS (
+                         SELECT 1 FROM gateway_usage_observations u
+                         WHERE u.account_id = ready.account_id AND u.request_id = p.request_id
+                           AND u.attempt_number = 1 AND u.source = 'connector_charge'
+                     )) AS "charge_recorded!""#,
         bindings.connectors,
         lane.key(),
     )

@@ -566,7 +566,12 @@ async fn observe_queue(
             )
             .await;
         }
-        connector.poll(&task, key.as_ref()).await
+        if task.charge_recorded {
+            Observation::Ready(None)
+        } else {
+            // Ask for a charge until the first valid one has been stored.
+            connector.poll(&task, key.as_ref()).await
+        }
     };
     // An already-authorized poll may finish during revocation. Each later
     // artifact call obtains the pinned key again.
@@ -652,24 +657,26 @@ async fn fetch_observed_result(
     status: Observation<Option<queued_runs::ProviderCharge>>,
     fetch: impl std::future::Future<Output = Result<artifacts::FetchedMedia, FetchError>> + Send,
 ) -> sqlx::Result<Observation<artifacts::FetchedMedia>> {
-    Ok(match status {
-        Observation::Ready(charge) => {
-            if !queued_runs::record_result_observed(pool, task, charge.as_ref()).await? {
-                return Ok(Observation::Retry);
-            }
-            match fetch.await {
-                Ok(media) => Observation::Ready(media),
-                Err(FetchError::Unavailable) => Observation::StillRunning("completed"),
-                Err(FetchError::InvalidArtifact) => Observation::Rejected("provider_artifact_invalid"),
-                Err(FetchError::CredentialUnavailable) =>
-                    Observation::Uncertain("provider_credential_unavailable"),
-                Err(FetchError::Database(error)) => return Err(error),
-            }
-        }
-        Observation::StillRunning(state) => Observation::StillRunning(state),
-        Observation::Rejected(reason) => Observation::Rejected(reason),
-        Observation::Uncertain(reason) => Observation::Uncertain(reason),
-        Observation::Retry => Observation::Retry,
+    let charge = match status {
+        Observation::Ready(charge) => charge,
+        // The stored terminal observation for this handle allows another retrieval
+        // even if the optional status read for a late charge fails.
+        _ if task.result_observed => None,
+        Observation::StillRunning(state) => return Ok(Observation::StillRunning(state)),
+        Observation::Rejected(reason) => return Ok(Observation::Rejected(reason)),
+        Observation::Uncertain(reason) => return Ok(Observation::Uncertain(reason)),
+        Observation::Retry => return Ok(Observation::Retry),
+    };
+    if !queued_runs::record_result_observed(pool, task, charge.as_ref()).await? {
+        return Ok(Observation::Retry);
+    }
+    Ok(match fetch.await {
+        Ok(media) => Observation::Ready(media),
+        Err(FetchError::Unavailable) => Observation::StillRunning("completed"),
+        Err(FetchError::InvalidArtifact) => Observation::Rejected("provider_artifact_invalid"),
+        Err(FetchError::CredentialUnavailable) =>
+            Observation::Uncertain("provider_credential_unavailable"),
+        Err(FetchError::Database(error)) => return Err(error),
     })
 }
 
