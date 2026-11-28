@@ -128,7 +128,7 @@ Apply migration 91 before rolling out recoverable webhook creation. Schema-90 ga
 
 ### Rehearse the cutover before release
 
-The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The rehearsal verifies admission control on the primary and confirms that the API and worker reject the standby at startup. A running API withdraws readiness on read-only connections and recovers when its role can write again. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.
+The **Release cutover** workflow builds the pinned schema-70 release (`06276c9`) and the candidate on Linux. It uses an isolated PostgreSQL 17 cluster with hostname-verified TLS and a restricted runtime role. The rehearsal verifies admission control on the primary and confirms that the API and worker reject the standby at startup. A running API withdraws readiness on read-only connections and recovers when its role can write again. The binding preflight distinguishes an undispatched request from a job already accepted by its provider. Both the upgrade and rollback replay receipts, resume the accepted job under its existing handle without resubmission, finish queued and new work, and verify artifact and signed webhook bytes. The upgraded fleet also recovers a new webhook subscription and signs an event with the recovered key. Rollback uses independent snapshots of PostgreSQL, connector state, and the filesystem artifact store.
 
 Run the same rehearsal from a source checkout with matching binaries, PostgreSQL 17, OpenSSL, and loopback port 4019 available.
 
@@ -141,6 +141,8 @@ python3 -B scripts/smoke_release_cutover.py \
   --candidate-gateway ./target/debug/api-gateway \
   --candidate-connector ./target/debug/tokencraft
 ```
+
+To rehearse the schema 90-to-91 rolling upgrade, use schema-90 binaries for the baseline and append `--baseline-schema 90 --expect-baseline-overlap`. Both API versions will read and write subscriptions on the migrated database. The rehearsal also verifies that the prior worker can sign and deliver an event for a subscription created with a recovery receipt.
 
 ## Connect existing compute endpoints
 

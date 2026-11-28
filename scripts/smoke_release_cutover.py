@@ -145,7 +145,9 @@ def rehearse(args, folder, stack):
         if not path.name.endswith(".down.sql")
     )
     latest = expected[-1]
-    pending = ",".join(str(version) for version in expected if version > BASELINE_SCHEMA)
+    baseline_schema = args.baseline_schema
+    assert baseline_schema in expected and baseline_schema < latest
+    pending = ",".join(str(version) for version in expected if version > baseline_schema)
     env = {"PATH": os.environ["PATH"], "LANG": "C", "RUST_LOG": "warn"}
     with socket() as check:
         if check.connect_ex((smoke.HOST, EXAMPLE_CONNECTOR_PORT)) == 0:
@@ -215,15 +217,15 @@ def rehearse(args, folder, stack):
 
     run(args.baseline_admin, "migrate", settings=owner)
     before = ledger()
-    assert psql("SELECT max(version) FROM public._sqlx_migrations") == str(BASELINE_SCHEMA)
+    assert psql("SELECT max(version) FROM public._sqlx_migrations") == str(baseline_schema)
     run(pg / "psql", "-Xqw", "-d", "postgres", "-f", smoke.FIXTURES/"create-runtime-role.sql",
         settings=dict(pg_env, TOKENCRAFT_RUNTIME_APP_PASSWORD=runtime_password))
     grant()
     psql("ALTER ROLE tokencraft_runtime SET default_transaction_read_only = on")
-    check_schema(runtime, "upgrade_required", database=str(BASELINE_SCHEMA), pending=pending)
+    check_schema(runtime, "upgrade_required", database=str(baseline_schema), pending=pending)
     assert ledger() == before
     psql("ALTER ROLE tokencraft_runtime RESET default_transaction_read_only")
-    print(f"PASS schema {BASELINE_SCHEMA} reported pending versions through {latest} using the read-only runtime role over TLS", flush=True)
+    print(f"PASS schema {baseline_schema} reported pending versions through {latest} using the read-only runtime role over TLS", flush=True)
 
     receiver = stack.enter_context(smoke.webhook_receiver())
     relay = stack.enter_context(serve(ConnectorRelay()))
@@ -297,7 +299,7 @@ def rehearse(args, folder, stack):
         )
         auth = {"Authorization": "Bearer " + principal["token"]}
 
-        def prepare_submission(port, app_ref, *, notify=False):
+        def prepare_submission(port, app_ref, *, subscription_id=None):
             quote, _ = smoke.call(
                 port, "/v1/quotes/scoped", 200, method="POST", headers=auth,
                 body={"model": "example_image", "workload": {"kind": "image", "count": 1, "aspect_ratio": "4:3"}},
@@ -306,19 +308,19 @@ def rehearse(args, folder, stack):
                 "quote_id": quote["id"], "input": quote["input"], "app_ref": app_ref,
                 "image_prompt": "Synthetic release migration",
             }
-            if notify:
-                body["delivery"] = {"webhook_subscription_id": subscription["id"]}
+            if subscription_id:
+                body["delivery"] = {"webhook_subscription_id": subscription_id}
             headers = {**auth, "Idempotency-Key": token_hex(16)}
             return headers, body
 
-        def submit(port, app_ref, *, notify=False):
-            headers, body = prepare_submission(port, app_ref, notify=notify)
+        def submit(port, app_ref, *, subscription_id=None):
+            headers, body = prepare_submission(port, app_ref, subscription_id=subscription_id)
             receipt, _ = smoke.call(port, "/v1/requests", 202, method="POST", headers=headers, body=body)
             return receipt, headers, body
 
         with ExitStack() as run_old:
             gateway(args.baseline_gateway, "worker", run_old, delivery=False)
-            completed, completed_headers, completed_body = submit(api, "before-upgrade", notify=True)
+            completed, completed_headers, completed_body = submit(api, "before-upgrade", subscription_id=subscription["id"])
             contents = read_image(api, completed, auth)
             relay.hold_polling.set()
             running, running_headers, running_body = submit(api, "accepted-before-upgrade")
@@ -438,9 +440,10 @@ def rehearse(args, folder, stack):
     )
     assert versions == ",".join(map(str, expected))
     assert psql(payload) == legacy_hex
-    old_settings = gateway_config("api", smoke.loopback_port(), "postgres", True)
-    blocked = subprocess.run([args.baseline_gateway], cwd=folder, env=old_settings, capture_output=True, text=True, timeout=15)
-    assert blocked.returncode == 1 and "apply the matching TokenCraft migrations" in blocked.stderr
+    if not args.expect_baseline_overlap:
+        old_settings = gateway_config("api", smoke.loopback_port(), "postgres", True)
+        blocked = subprocess.run([args.baseline_gateway], cwd=folder, env=old_settings, capture_output=True, text=True, timeout=15)
+        assert blocked.returncode == 1 and "apply the matching TokenCraft migrations" in blocked.stderr
     print(f"PASS explicit migration and grants reached schema {latest} and preserved the queued native delivery", flush=True)
 
     def replay(port, receipt, headers, body):
@@ -469,8 +472,15 @@ def rehearse(args, folder, stack):
         start_connector(args.candidate_connector, jobs, upgraded)
         verify_connector_state()
         api = gateway(args.candidate_gateway, "api", upgraded)
-        gateway(args.candidate_gateway, "worker", upgraded)
-        upgraded_headers, upgraded_body = prepare_submission(api, "after-upgrade")
+        gateway(args.candidate_gateway, "worker", upgraded, delivery=not args.expect_baseline_overlap)
+        prior_api = None
+        if args.expect_baseline_overlap:
+            prior_api = gateway(args.baseline_gateway, "api", upgraded)
+            gateway(args.baseline_gateway, "worker", upgraded)
+        recovered_subscription = verify_migrated_webhooks(api, base, query, session, subscription, prior_api=prior_api)
+        upgraded_headers, upgraded_body = prepare_submission(
+            api, "after-upgrade", subscription_id=recovered_subscription["id"],
+        )
         rejection, retry = smoke.call(api, "/v1/requests", 503, method="POST",
                                       headers=upgraded_headers, body=upgraded_body)
         assert rejection["error"]["code"] == "admissions_paused" and retry.get("Retry-After") == "5"
@@ -502,6 +512,13 @@ def rehearse(args, folder, stack):
         assert upgraded_handle and upgraded_handle != handle
         replay(api, upgraded_only, upgraded_headers, upgraded_body)
         verify_usage(api, "after-upgrade")
+        smoke.verify_signed_delivery(
+            api, base + "/webhook-deliveries", query, session, receiver, recovered_subscription, "request.succeeded",
+            {"request_id": upgraded_only["id"], "project_id": project, "status": "succeeded",
+             "fetch_url": upgraded_only["status_url"]},
+        )
+        worker = "prior" if args.expect_baseline_overlap else "upgraded"
+        print(f"PASS the {worker} worker signed and delivered the event for the receipt-created subscription", flush=True)
     print("PASS the migrated cell rejected fresh admission before resume and then accepted the same intent and key",
           flush=True)
     relay.assert_submissions(completed, running, queued, upgraded_only)
@@ -513,7 +530,8 @@ def rehearse(args, folder, stack):
     run(pg / "createdb", "rollback_rehearsal", settings=pg_env)
     run(pg / "pg_restore", "--exit-on-error", "--single-transaction", "-d", "rollback_rehearsal", dump, settings=pg_env)
     rollback_runtime = cli("tokencraft_runtime", runtime_password, "rollback_rehearsal")
-    check_schema(rollback_runtime, "upgrade_required", database=str(BASELINE_SCHEMA), pending=pending)
+    check_schema(rollback_runtime, "upgrade_required", database=str(baseline_schema), pending=pending)
+    assert psql("SELECT count(*) FROM public.gateway_webhook_subscriptions", database="rollback_rehearsal") == "1"
     assert receiver.received.empty()
     receiver.seen.clear()
 
@@ -552,6 +570,35 @@ def rehearse(args, folder, stack):
     print("PASS the independent database, connector, and filesystem snapshots excluded the post-cutover request", flush=True)
 
 
+def verify_migrated_webhooks(api, base, query, session, original, *, prior_api):
+    path = base + "/webhooks"
+
+    def check_metadata(port, subscription):
+        metadata, _ = smoke.call(port, path + "/" + subscription["id"] + query, 200, headers=session)
+        assert metadata == {name: value for name, value in subscription.items() if name != "signing_secret"}
+
+    check_metadata(api, original)
+    payload = {"name": "Current notification", "destination_id": "fixture"}
+    receipt = {**session, "Idempotency-Key": token_hex(24)}
+    issued, _ = smoke.call(api, path + "/creations" + query, 201, method="POST", headers=receipt, body=payload)
+    if prior_api is not None:
+        check_metadata(prior_api, original)
+        check_metadata(prior_api, issued)
+        old_format, _ = smoke.call(
+            prior_api, path + query, 201, method="POST", headers=session,
+            body={"name": "Notification created by the prior API", "destination_id": "fixture"},
+        )
+        check_metadata(api, old_format)
+    recovered, _ = smoke.call(api, path + "/creations" + query, 201, method="POST", headers=receipt, body=payload)
+    assert recovered == issued
+    if prior_api is not None:
+        print("PASS both API versions shared subscription metadata and the receipt survived a write through the prior API",
+              flush=True)
+    else:
+        print("PASS the migrated database retained the existing subscription and recovered a new creation receipt", flush=True)
+    return recovered
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-admin", type=Path, required=True)
@@ -560,7 +607,13 @@ def main():
     parser.add_argument("--candidate-gateway", type=Path, required=True)
     parser.add_argument("--baseline-connector", type=Path, required=True)
     parser.add_argument("--candidate-connector", "--connector", type=Path, required=True)
-    args = argparse.Namespace(**{key: value.resolve(strict=True) for key, value in vars(parser.parse_args()).items()})
+    parser.add_argument("--baseline-schema", type=int, default=BASELINE_SCHEMA)
+    parser.add_argument("--expect-baseline-overlap", action="store_true",
+                        help="Verify both API versions and the prior webhook worker on the migrated database.")
+    args = argparse.Namespace(**{
+        key: value.resolve(strict=True) if isinstance(value, Path) else value
+        for key, value in vars(parser.parse_args()).items()
+    })
     os.umask(0o077)
     with TemporaryDirectory(prefix="tokencraft-release-cutover-") as temp, ExitStack() as stack:
         rehearse(args, Path(temp), stack)
