@@ -18,8 +18,8 @@ export function OrganizationGeneral({ account }: { account: ApiAccount }) {
     setNotice(null);
     try {
       const saved = await api.updateBusinessName(account.account_id, value.trim() || null);
-      await reload();
-      setDraft(null);
+      const refreshed = await reload();
+      setDraft(refreshed ? null : saved.business_name ?? "");
       setNotice({
         tone: "ok",
         text: saved.business_name === null

@@ -26,7 +26,7 @@ function ConnectProjectScope() {
 }
 
 function ConnectWorkspace() {
-  const { accounts, current, loading, select, reload } = useOrg();
+  const { accounts, current, error, loading, select, reload } = useOrg();
   const { project, projects } = useProject();
   const [creatingKey, setCreatingKey] = useState(false);
 
@@ -59,7 +59,7 @@ function ConnectWorkspace() {
           busy={creatingKey} setBusy={setCreatingKey} />
       ) : (
         <p role="alert" className="text-sm text-muted">
-          Couldn’t load your workspace.{" "}
+          {error ?? "Couldn’t load your workspace."}{" "}
           <button type="button" className={linkClass} onClick={() => void reload()}>Try again</button>
         </p>
       )}

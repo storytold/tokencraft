@@ -49,7 +49,11 @@ function RequestLookup({ scope }: { scope?: ProjectScope }) {
       const result = await comparisonApi.locateRequest(id, controller.signal);
       if (controller.signal.aborted) return;
       if (!accounts.some((account) => account.account_id === result.account_id)) {
-        await reloadAccounts();
+        const updated = await reloadAccounts();
+        if (!updated?.some((account) => account.account_id === result.account_id)) {
+          if (!controller.signal.aborted) setError("Couldn’t confirm the request’s organization. Try again to open this request.");
+          return;
+        }
       }
       if (controller.signal.aborted) return;
       if (current?.account_id === result.account_id

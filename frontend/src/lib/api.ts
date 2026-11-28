@@ -500,7 +500,8 @@ export const api = {
   /* ── Organizations ── */
 
   /** Every organization the caller belongs to (drives the org switcher). */
-  listAccounts: () => request<{ accounts: ApiAccount[] }>("GET", "/v1/accounts"),
+  listAccounts: (signal?: AbortSignal) =>
+    request<{ accounts: ApiAccount[] }>("GET", "/v1/accounts", undefined, signal),
 
   /** The member roster of an organization (any member may view). */
   listMembers: (accountId: string, signal?: AbortSignal) =>

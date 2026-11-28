@@ -16,6 +16,7 @@ type ProjectSelection = {
 };
 
 const Context = createContext<ProjectSelection | null>(null);
+const projectReadTimeoutMs = 15_000;
 
 export function ProjectProvider({ accountId, includeAccountInUrl = false, children }: {
   accountId?: string; includeAccountInUrl?: boolean; children: ReactNode;
@@ -27,10 +28,16 @@ export function ProjectProvider({ accountId, includeAccountInUrl = false, childr
   useEffect(() => {
     if (!accountId) return;
     const controller = new AbortController();
-    projectsApi.list(accountId, controller.signal).then((projects) => {
-      if (!controller.signal.aborted) setResult({ accountId, revision, projects });
+    const deadline = AbortSignal.timeout(projectReadTimeoutMs);
+    const signal = AbortSignal.any([controller.signal, deadline]);
+    projectsApi.list(accountId, signal).then((projects) => {
+      signal.throwIfAborted();
+      if (!Array.isArray(projects)) throw new Error("Invalid project response");
+      setResult({ accountId, revision, projects });
     }).catch((error) => {
-      if (!controller.signal.aborted) setResult({ accountId, revision, error: errorMessage(error) });
+      if (!controller.signal.aborted) {
+        setResult({ accountId, revision, error: deadline.aborted ? "Loading projects took too long." : errorMessage(error) || "Couldn’t load projects." });
+      }
     });
     return () => controller.abort();
   }, [accountId, revision]);

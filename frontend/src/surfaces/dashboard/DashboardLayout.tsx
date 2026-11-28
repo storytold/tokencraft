@@ -81,7 +81,7 @@ function DashboardProjectScope({ accountInQuery }: { accountInQuery: boolean }) 
   const { current } = useOrg();
   return (
     <ProjectProvider accountId={demoEnabled ? current?.account_id : undefined} includeAccountInUrl={accountInQuery}>
-      <DashboardShell />
+      <DashboardShell accountInQuery={accountInQuery} />
     </ProjectProvider>
   );
 }
@@ -92,15 +92,17 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "bg-brand/12 text-brand" : "text-muted hover:bg-surface2 hover:text-fg",
   );
 
-function DashboardShell() {
+function DashboardShell({ accountInQuery }: { accountInQuery: boolean }) {
   const { user, logout } = useAuth();
-  const { current, withScope } = useOrg();
+  const { current, error, loading, reload, withScope } = useOrg();
   const { project } = useProject();
   const { pathname, search, hash } = useLocation();
   const navigate = useNavigate();
   const playground = useMatch("/playground") ? pathname + search + hash : withProject("/playground", project?.id, current?.account_id);
   const page = "/" + pathname.replace(/^\/dashboard(?:\/acct_[A-Za-z0-9]+)?\/?/i, "").split("/")[0].toLowerCase();
   const showProjectPicker = demoEnabled && projectPages.has(page);
+  const showWorkspaceStatus = !accountInQuery && page !== "/user" && !current && (loading || Boolean(error));
+  const showWorkspaceError = error && page !== "/user" && (showWorkspaceStatus || current);
 
   // RequireAuth guarantees a user before this renders; the guard is just for type-safety.
   if (!user) return null;
@@ -191,7 +193,13 @@ function DashboardShell() {
             {showProjectPicker && <div className="shrink-0 pr-3"><ProjectPicker compact /></div>}
           </div>
           <main className="min-w-0 flex-1 px-5 py-8 sm:px-8">
-            <Outlet />
+            {showWorkspaceError && <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm">
+              <p role="alert">{error}</p>
+              <button type="button" className="font-medium underline" onClick={() => void reload()}>Reload organizations</button>
+            </div>}
+            {showWorkspaceStatus
+              ? loading && <p role="status" className="text-sm text-muted">Loading your workspace…</p>
+              : <Outlet />}
           </main>
         </div>
       </div>

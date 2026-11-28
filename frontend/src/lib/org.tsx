@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, type ApiAccount } from "./api";
+import { api, ApiError, type ApiAccount } from "./api";
 import { useAuth } from "./auth";
 import { errorMessage } from "./gateway";
 
@@ -18,6 +18,8 @@ import { errorMessage } from "./gateway";
  */
 
 const LAST_ACCOUNT_COOKIE = "foundation_last_account";
+const organizationReadTimeoutMs = 15_000;
+const emptyAccounts: ApiAccount[] = [];
 
 /** Remember the last-viewed account (plain cookie — a UI hint, not a credential). */
 export function rememberLastAccount(accountId: string) {
@@ -58,7 +60,7 @@ type OrgContextValue = {
   /** Build a dashboard href under the current scope, e.g. `withScope("/requests")` →
    * `/dashboard/acct_…/requests` for multi-org users, `/dashboard/requests` otherwise. */
   withScope: (rest: string) => string;
-  reload: () => Promise<void>;
+  reload: () => Promise<ApiAccount[] | undefined>;
   loading: boolean;
   error?: string;
 };
@@ -68,39 +70,62 @@ const OrgCtx = createContext<OrgContextValue>({
   current: null,
   select: () => {},
   withScope: (rest) => `/dashboard${rest}`,
-  reload: async () => {},
+  reload: async () => undefined,
   loading: true,
 });
 
-export function OrgProvider({ children, explicitScope = false, accountInQuery = false }: {
+type OrgProviderProps = {
   children: ReactNode; explicitScope?: boolean; accountInQuery?: boolean;
-}) {
+};
+
+export function OrgProvider(props: OrgProviderProps) {
   const { user } = useAuth();
+  return <OrganizationScope key={user?.id ?? ""} userId={user?.id} {...props} />;
+}
+
+function OrganizationScope({ children, userId, explicitScope = false, accountInQuery = false }: OrgProviderProps & { userId?: string }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [accounts, setAccounts] = useState<ApiAccount[]>([]);
+  const [loadedAccounts, setAccounts] = useState<ApiAccount[]>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const pending = useRef<AbortController | null>(null);
+  const accounts = loadedAccounts ?? emptyAccounts;
+  const loading = Boolean(userId && !loadedAccounts && !error);
+
+  const cancelRead = useCallback(() => {
+    pending.current?.abort();
+    pending.current = null;
+  }, []);
 
   const reload = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
+    if (!userId) return;
+    cancelRead();
+    const controller = new AbortController();
+    pending.current = controller;
+    const deadline = AbortSignal.timeout(organizationReadTimeoutMs);
+    const signal = AbortSignal.any([controller.signal, deadline]);
     setError(undefined);
     try {
-      const r = await api.listAccounts();
-      setAccounts(r.accounts);
+      const { accounts } = await api.listAccounts(signal);
+      signal.throwIfAborted();
+      if (!Array.isArray(accounts)) throw new Error("Invalid organization response");
+      setAccounts(accounts);
+      return accounts;
     } catch (cause) {
-      setAccounts([]);
-      setError(errorMessage(cause));
+      if (!controller.signal.aborted) {
+        if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) setAccounts(undefined);
+        setError(deadline.aborted ? "Loading organizations took too long." : errorMessage(cause) || "Couldn’t load organizations.");
+      }
     } finally {
-      setLoading(false);
+      if (pending.current === controller) pending.current = null;
     }
-  }, [user]);
+  }, [cancelRead, userId]);
 
   useEffect(() => {
     void reload();
-  }, [reload]);
+    return cancelRead;
+  }, [cancelRead, reload]);
 
   const urlAccountId = accountInQuery ? new URLSearchParams(location.search).get("account_id") : accountIdInPath(location.pathname);
 
