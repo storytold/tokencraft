@@ -178,8 +178,14 @@ pub async fn list_requests<'e, E: PgExecutor<'e>>(
 ) -> sqlx::Result<Vec<RequestRow>> {
     // Select the page before attaching detailed traces, charges, and settlement evidence.
     let mut query = QueryBuilder::<Postgres>::new(PAGE);
-    if filter == RequestFilter::default() {
-        push_recent_scope(&mut query, scope);
+    let indexed_filter = filter
+        == RequestFilter {
+            after: filter.after,
+            app_ref: filter.app_ref,
+            ..RequestFilter::default()
+        };
+    if indexed_filter && !(scope.client_ref.is_some() && filter.app_ref.is_some()) {
+        push_indexed_page(&mut query, scope, filter.app_ref, filter.after);
     } else {
         if filter.status.is_some() || filter.cost_state.is_some() {
             query.push(ATTEMPT);
@@ -192,14 +198,7 @@ pub async fn list_requests<'e, E: PgExecutor<'e>>(
         }
         query.push(" WHERE ");
         push_scope(&mut query, scope);
-        if let Some(after) = filter.after {
-            query
-                .push(" AND r.sid < (SELECT r.sid FROM gateway_requests r WHERE r.id = ")
-                .push_bind(after.as_str())
-                .push(" AND ");
-            push_scope(&mut query, scope);
-            query.push(")");
-        }
+        push_cursor(&mut query, scope, filter.after);
         push_filters(&mut query, filter);
         query.push(" ORDER BY r.sid DESC");
     }
@@ -209,31 +208,43 @@ pub async fn list_requests<'e, E: PgExecutor<'e>>(
     query.build_query_as().fetch_all(exec).await
 }
 
-fn push_recent_scope<'a>(query: &mut QueryBuilder<'a, Postgres>, scope: RequestScope<'a>) {
-    // Matching bounds keep the leading scope columns in the index order. A global SID
-    // scan can otherwise read other projects' newer rows before finding this page.
-    let columns = if scope.client_ref.is_some() {
-        "r.account_id, r.project_id, r.client_ref"
-    } else {
-        "r.account_id, r.project_id"
-    };
-    query.push(" WHERE (").push(columns).push(") BETWEEN ");
-    push_scope_tuple(query, scope);
-    query.push(" AND ");
-    push_scope_tuple(query, scope);
-    query.push(" ORDER BY ").push(columns).push(", r.sid DESC");
-}
-
-fn push_scope_tuple<'a>(query: &mut QueryBuilder<'a, Postgres>, scope: RequestScope<'a>) {
+fn push_indexed_page<'a>(
+    query: &mut QueryBuilder<'a, Postgres>,
+    scope: RequestScope<'a>,
+    app_ref: Option<&'a str>,
+    after: Option<&'a GatewayRequestId>,
+) {
     query
-        .push("(")
+        .push(" WHERE r.account_id = ")
         .push_bind(scope.account.as_str())
-        .push(", ")
-        .push_bind(scope.project.as_str());
-    if let Some(client) = scope.client_ref {
-        query.push(", ").push_bind(client);
+        .push(" AND ");
+    let attribution = match (scope.client_ref, app_ref) {
+        (Some(client), _) => Some(("r.client_ref", client)),
+        (None, Some(app)) => Some(("r.app_ref", app)),
+        (None, None) => None,
+    };
+    let (column, reference) = if let Some(attribution) = attribution {
+        query
+            .push("r.project_id = ")
+            .push_bind(scope.project.as_str())
+            .push(" AND ");
+        attribution
+    } else {
+        ("r.project_id", scope.project.as_str())
+    };
+    // The one-element array keeps the scoped sort prefix without losing the index
+    // equality lookup. PostgreSQL can seek by scope and SID even with a generic plan.
+    query
+        .push(column)
+        .push(" = ANY(ARRAY[")
+        .push_bind(reference)
+        .push("])");
+    if app_ref.is_some() {
+        // Keep the partial app index eligible for generic plans.
+        query.push(" AND r.app_ref IS NOT NULL");
     }
-    query.push(")");
+    push_cursor(query, scope, after);
+    query.push(" ORDER BY ").push(column).push(", r.sid DESC");
 }
 
 fn push_scope<'a>(query: &mut QueryBuilder<'a, Postgres>, scope: RequestScope<'a>) {
@@ -244,6 +255,21 @@ fn push_scope<'a>(query: &mut QueryBuilder<'a, Postgres>, scope: RequestScope<'a
         .push_bind(scope.project.as_str());
     if let Some(client) = scope.client_ref {
         query.push(" AND r.client_ref = ").push_bind(client);
+    }
+}
+
+fn push_cursor<'a>(
+    query: &mut QueryBuilder<'a, Postgres>,
+    scope: RequestScope<'a>,
+    after: Option<&'a GatewayRequestId>,
+) {
+    if let Some(after) = after {
+        query
+            .push(" AND r.sid < (SELECT r.sid FROM gateway_requests r WHERE r.id = ")
+            .push_bind(after.as_str())
+            .push(" AND ");
+        push_scope(query, scope);
+        query.push(")");
     }
 }
 

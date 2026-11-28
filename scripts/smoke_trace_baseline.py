@@ -100,7 +100,7 @@ def seed_warning_history(port, directory, settings, account, project, session):
         )
         SELECT 'req_' || lpad(n::text, 26, '0'), :'account', :'project', 'warning-fixture',
                lpad(n::text, 64, '0'), repeat('a', 64), CASE WHEN n = 3037 THEN 'client-b' ELSE 'client-a' END,
-               'warning-fixture', 'runtime_image', 'warning-offer', 'self_hosted',
+               CASE WHEN n <> 4012 THEN 'warning-fixture' END, 'runtime_image', 'warning-offer', 'self_hosted',
                CASE WHEN n IN (3034, 3035) THEN 'openai_compatible_chat' ELSE 'connector_queue' END,
                :'quote'::jsonb, 0, at, at,
                CASE WHEN n NOT BETWEEN 3000 AND 3026 AND n NOT IN (3027, 3034, 3037) THEN at END,
@@ -135,8 +135,32 @@ def seed_warning_history(port, directory, settings, account, project, session):
     run_seed(directory, settings, account, project, seed, quote=json.dumps(quote, separators=(",", ":")))
 
 
-def verify_warning_history(port, directory, settings, account, project, session, auth):
-    seed_warning_history(port, directory, settings, account, project, session)
+def verify_recent_history(port, account, project, session, client):
+    project_history = f"/v1/requests?account_id={account}&project_id={project}"
+    for path, auth, params, older in (
+        (project_history, session, "&", range(4012, 3987, -1)),
+        (project_history + "&app_ref=warning-fixture", session, "&", range(4011, 3986, -1)),
+        ("/v1/model-requests", client, "?", range(4012, 3987, -1)),
+        ("/v1/model-requests?app_ref=warning-fixture", client, "&", range(4011, 3986, -1)),
+    ):
+        first, _ = call(port, path, 200, headers=auth)
+        assert [row["id"] for row in first["requests"]] == [request_id(n) for n in range(4037, 4012, -1)]
+        assert first["next_after"] == request_id(4013)
+        second, _ = call(port, f"{path}{params}after={first['next_after']}", 200, headers=auth)
+        assert [row["id"] for row in second["requests"]] == [request_id(n) for n in older]
+        assert second["next_after"] == request_id(older[-1])
+    app_page, _ = call(port, f"{project_history}&app_ref=warning-fixture&after={request_id(4012)}",
+                       200, headers=session)
+    assert app_page["requests"][0]["id"] == request_id(4011)
+    client_page, _ = call(port, f"/v1/model-requests?after={request_id(3038)}", 200, headers=client)
+    assert client_page["requests"][0]["id"] == request_id(3036)
+    for cursor in (3037, 99999):
+        empty, _ = call(port, f"/v1/model-requests?after={request_id(cursor)}", 200, headers=client)
+        assert empty["requests"] == [] and empty["next_after"] is None
+    print("PASS request history paginates project, app and client scopes with their existing cursor semantics")
+
+
+def verify_warning_history(port, auth):
     path = "/v1/requests?app_ref=warning-fixture&from=2026-11-24&to=2026-11-25"
     warnings = path + "&diagnostic=warnings"
     expected = [3035, 3030, 3029, *range(3026, 2999, -1)]
@@ -193,7 +217,10 @@ def verify(gateway, directory, settings, session, account, project):
         ]
         admin_baseline, _ = call(port, f"{path}?account_id={account}&project_id={project}", 200, headers=session)
         assert admin_baseline == baseline
-        verify_warning_history(port, directory, settings, account, project, session, key("client-a"))
+        seed_warning_history(port, directory, settings, account, project, session)
+        client = key("client-a")
+        verify_recent_history(port, account, project, session, client)
+        verify_warning_history(port, client)
     print("PASS trace baseline retained the latest 50 scoped matches and exact medians behind 1000 other models")
 
 
