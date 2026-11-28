@@ -1,6 +1,8 @@
 """Exercise the public console release gate on two disposable loopback origins."""
 
 from contextlib import ExitStack
+from gzip import compress
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -14,6 +16,7 @@ from smoke_cell_faults import serve
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
+CONSOLE_HTML = b'<!doctype html><main id="root">Fixture console</main>'
 ASSETS = {
     "/openapi.json": "contracts/openapi.json",
     "/docs/openapi.json": "contracts/openapi.json",
@@ -29,8 +32,13 @@ class ConsoleFixture(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urlsplit(self.path).path
         status = 200
+        content_type = "application/json"
         headers = {}
-        if route == "/ready":
+        if route == "/":
+            content_type = self.server.console_type
+            headers["Content-Encoding"] = "gzip"
+            data = compress(self.server.console_html)
+        elif route == "/ready":
             index = self.server.ready_calls
             self.server.ready_calls += 1
             state, headers = self.server.ready_responses[min(index, len(self.server.ready_responses) - 1)]
@@ -38,7 +46,8 @@ class ConsoleFixture(BaseHTTPRequestHandler):
         elif route in ASSETS:
             data = (ROOT / ASSETS[route]).read_bytes()
         elif route == "/release.json":
-            data = json.dumps({"source_revision": REVISION}).encode()
+            headers = self.server.release_headers
+            data = json.dumps({"source_revision": REVISION, "index_sha256": sha256(CONSOLE_HTML).hexdigest()}).encode()
         elif route in {"/v1/rate-limits", "/v1/auth/me"}:
             status = 401
             headers = {"Cache-Control": "private, no-store"}
@@ -53,7 +62,7 @@ class ConsoleFixture(BaseHTTPRequestHandler):
             if revision is not None:
                 headers["TokenCraft-Source-Revision"] = revision
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         for key, value in headers.items():
             self.send_header(key, value)
@@ -62,7 +71,8 @@ class ConsoleFixture(BaseHTTPRequestHandler):
 
 
 def release_gate(console_ready, gateway_ready, revision=REVISION, *, console_session_age=None,
-                 console_route_revisions=None):
+                 console_route_revisions=None, console_html=CONSOLE_HTML, console_type="text/html; charset=utf-8",
+                 release_headers=None):
     with ExitStack() as stack:
         servers = []
         for responses in (console_ready, gateway_ready):
@@ -73,6 +83,9 @@ def release_gate(console_ready, gateway_ready, revision=REVISION, *, console_ses
             server.route_revisions = (console_route_revisions or {}) if not servers else {}
             server.gateway_origin = bool(servers)
             server.default_revision = revision
+            server.console_html = console_html
+            server.console_type = console_type
+            server.release_headers = {"Cache-Control": "no-store"} if release_headers is None else release_headers
             servers.append(server)
         origins = [f"http://127.0.0.1:{server.server_port}" for server in servers]
         args = ["bash", str(ROOT / "scripts/smoke_hosted_console.sh"), *origins]
@@ -116,6 +129,24 @@ class HostedConsoleReadinessTest(unittest.TestCase):
         observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)], console_session_age="30")
         self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
         self.assertIn("FAIL console /v1/auth/me", observed.stderr)
+
+    def test_rejects_a_console_document_from_a_different_build(self):
+        observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)],
+                                   console_html=b"<!doctype html><p>Earlier console release</p>")
+        self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
+        self.assertIn("FAIL console / must match the release HTML", observed.stderr)
+
+    def test_rejects_console_html_served_as_plain_text(self):
+        observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)], console_type="text/plain")
+        self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
+        self.assertIn("FAIL console / must match the release HTML", observed.stderr)
+
+    def test_rejects_a_cached_or_storable_console_release_manifest(self):
+        for headers in ({"Cache-Control": "no-store", "Age": "30"}, {}):
+            with self.subTest(headers=headers):
+                observed, _ = release_gate([(True, self.fresh)], [(True, self.fresh)], release_headers=headers)
+                self.assertEqual(observed.returncode, 1, observed.stdout + observed.stderr)
+                self.assertIn("FAIL console /release.json", observed.stderr)
 
     def test_versioned_check_requires_each_proxied_response_to_match_readiness(self):
         for route, revision in (("/v1/schemas/primitives", "b" * 40), ("/v1/rate-limits", None),

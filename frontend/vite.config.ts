@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFile, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const releaseAssets = [
@@ -10,6 +11,7 @@ const releaseAssets = [
 
 function releaseAssetPlugin(): Plugin {
   let launcherApi = false;
+  let revision: string | undefined;
   return {
     name: "release-assets",
     apply: "build",
@@ -22,7 +24,7 @@ function releaseAssetPlugin(): Plugin {
     buildStart() {
       const configuredRevision = process.env.TOKENCRAFT_SOURCE_REVISION;
       const deploymentRevision = process.env.VERCEL_GIT_COMMIT_SHA;
-      const revision = configuredRevision || deploymentRevision;
+      revision = configuredRevision || deploymentRevision;
       if (configuredRevision && deploymentRevision && configuredRevision !== deploymentRevision) {
         this.error("TOKENCRAFT_SOURCE_REVISION and VERCEL_GIT_COMMIT_SHA must match.");
       }
@@ -36,13 +38,27 @@ function releaseAssetPlugin(): Plugin {
         this.addWatchFile(source);
         this.emitFile({ type: "asset", fileName, source: readFileSync(source) });
       }
-      if (revision || launcherApi) {
+    },
+    generateBundle: {
+      order: "post",
+      handler(_options, bundle) {
+        if (!revision && !launcherApi) return;
+        let indexSha256: string | undefined;
+        if (!launcherApi) {
+          const index = bundle["index.html"];
+          if (index?.type !== "asset") this.error("The hosted console build is missing index.html.");
+          indexSha256 = createHash("sha256").update(index.source).digest("hex");
+        }
         this.emitFile({
           type: "asset",
           fileName: "release.json",
-          source: JSON.stringify({ source_revision: revision || undefined, launcher_api: launcherApi || undefined }) + "\n",
+          source: JSON.stringify({
+            source_revision: revision || undefined,
+            launcher_api: launcherApi || undefined,
+            index_sha256: indexSha256,
+          }) + "\n",
         });
-      }
+      },
     },
   };
 }

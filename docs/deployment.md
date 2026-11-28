@@ -373,14 +373,14 @@ The Vercel configs restrict browser scripts to the console, Google Identity Serv
 
 Pass the expected Git commit to verify source revisions as well as the contract. Release archives built with `native_package.py --source-revision` and container builds with `SOURCE_REVISION` stamp the gateway binary. Other gateway builds can set `TOKENCRAFT_SOURCE_REVISION` when compiling. The gateway sends `TokenCraft-Source-Revision` on its responses. Preserve that header through the ingress and console proxy. Set the same build variable when building the console, or enable Vercel's Git system environment variables, to emit `/release.json`. [Vercel system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables#system-environment-variables)
 
-Both checked-in Vercel build commands require a revision. When both revision variables are set, use the same SHA in each. The console serves `/release.json` as a static asset outside its page fallback.
+Both checked-in Vercel build commands require a revision. When both revision variables are set, use the same SHA in each. The console serves `/release.json` as a non-storable static asset outside its page fallback. The hosted build records the SHA-256 of the compiled entry HTML in the manifest.
 
 ```sh
 source_revision="$(git rev-parse HEAD)"
 bash scripts/smoke_hosted_console.sh https://console.example.com https://api.example.com "$source_revision"
 ```
 
-The revision check verifies health and the expected SHA in a single fresh, non-storable response from each origin. It checks the SHA on the live OpenAPI document and on sampled API responses at both origins. It requires fresh, private, non-storable denials from `/v1/auth/me` and `/v1/rate-limits`. The check compares both console copies and the running gateway with the release OpenAPI snapshot, compares the connector primitive registry at both origins, and verifies the console catalog bytes. Treat any mismatch as a failed release check.
+The revision check verifies health and the expected SHA in a single fresh, non-storable response from each origin. It checks the SHA on the live OpenAPI document and on sampled API responses at both origins. It requires fresh, private, non-storable denials from `/v1/auth/me` and `/v1/rate-limits`. It uses OpenSSL to verify that the HTML served at the console root matches the fresh release manifest. The check compares both console copies and the running gateway with the release OpenAPI snapshot, compares the connector primitive registry at both origins, and verifies the console catalog bytes. Treat any mismatch as a failed release check.
 
 Before reopening submissions, pick an existing successful request with a gateway trace and a readable warm result. Inject a project key with `requests:read` and `usage:read` into `TOKENCRAFT_SMOKE_API_KEY`.
 

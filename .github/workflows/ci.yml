@@ -216,8 +216,10 @@ jobs:
           VITE_TOKENCRAFT_DEMO: "true"
           TOKENCRAFT_REQUIRE_SOURCE_REVISION: "1"
           VERCEL_GIT_COMMIT_SHA: ${{ github.sha }}
-      - name: Check the published catalog and API contract bytes
+      - name: Check the published catalog, API contract, and console manifest
         run: |
           cmp ../catalog/artcraft-v1.json dist/catalog/artcraft-v1.json
           cmp ../contracts/openapi.json dist/docs/openapi.json
-          jq -e --arg sha "$GITHUB_SHA" '.source_revision == $sha' dist/release.json >/dev/null
+          index_digest=$(openssl dgst -sha256 -r < dist/index.html | cut -d' ' -f1)
+          jq -e --arg sha "$GITHUB_SHA" --arg digest "$index_digest" \
+            '.source_revision == $sha and .index_sha256 == $digest' dist/release.json >/dev/null
