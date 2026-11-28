@@ -76,13 +76,13 @@ async function send<T>(
   return json as T;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   return send(
     method,
     path,
     body !== undefined
-      ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-      : {},
+      ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal }
+      : { signal },
   );
 }
 
@@ -552,11 +552,11 @@ export const api = {
     request<{ api_keys: ApiKeyItem[] }>("GET", `/v1/accounts/${accountId}/api_keys`),
 
   /** Mint a key. `secret` in the response is shown ONCE — it can never be retrieved again. */
-  createApiKey: (accountId: string, title: string, description?: string) =>
+  createApiKey: (accountId: string, title: string, description?: string, signal?: AbortSignal) =>
     request<{ api_key: ApiKeyItem; secret: string }>("POST", `/v1/accounts/${accountId}/api_keys`, {
       title,
       description: description || undefined,
-    }),
+    }, signal),
 
   /** Revoke ("delete") a key — it stops authenticating immediately. */
   deleteApiKey: (accountId: string, keyId: string) =>

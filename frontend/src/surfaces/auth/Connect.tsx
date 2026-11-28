@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { ArrowRight, Bot, ChevronDown, Copy, Eye, EyeOff, KeyRound, Terminal } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button, Card, Input, Select } from "@/components/ui";
-import { accountDisplayName, api, API_BASE_URL } from "@/lib/api";
+import { accountDisplayName, api, API_BASE_URL, ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { demoEnabled, errorMessage, withProject } from "@/lib/gateway";
 import { connectionCheckPath } from "@/lib/onboarding";
@@ -12,6 +12,7 @@ import { ProjectPicker, ProjectProvider, ProjectStatus, useProject } from "@/sur
 import { agentSetup, secureGatewayUrl, shellSetup } from "./connect-setup";
 
 const keyLifetimeDays = 30;
+const keyCreationTimeoutMs = 15_000;
 const checkPath = connectionCheckPath(demoEnabled);
 const linkClass = "inline-flex items-center gap-1.5 font-medium text-brand hover:underline";
 
@@ -27,6 +28,7 @@ function ConnectProjectScope() {
 function ConnectWorkspace() {
   const { accounts, current, loading, select, reload } = useOrg();
   const { project, projects } = useProject();
+  const [creatingKey, setCreatingKey] = useState(false);
 
   return (
     <div className="w-full max-w-5xl space-y-5 sm:space-y-7">
@@ -36,7 +38,7 @@ function ConnectWorkspace() {
           {demoEnabled && <p className="mt-2 text-sm text-muted">Local fixture requests incur no charges.</p>}
         </div>
         {current && (accounts.length > 1 || projects.length > 1) && (
-          <div className="flex min-w-0 flex-wrap items-end gap-3">
+          <fieldset aria-label="API key scope" className="flex min-w-0 flex-wrap items-end gap-3" disabled={creatingKey}>
             {accounts.length > 1 && (
               <label className="block min-w-0 max-w-xs space-y-1 text-xs font-medium text-muted">
                 Organization
@@ -46,13 +48,15 @@ function ConnectWorkspace() {
               </label>
             )}
             {demoEnabled && projects.length > 1 && <ProjectPicker />}
-          </div>
+          </fieldset>
         )}
       </header>
       {loading ? (
         <p role="status" className="text-sm text-muted">Loading your workspace…</p>
       ) : current ? (
-        <ConnectFlow key={`${current.account_id}/${project?.id ?? ""}`} accountId={current.account_id} organization={accountDisplayName(current)} />
+        <ConnectFlow key={`${current.account_id}/${project?.id ?? ""}`}
+          accountId={current.account_id} organization={accountDisplayName(current)}
+          busy={creatingKey} setBusy={setCreatingKey} />
       ) : (
         <p role="alert" className="text-sm text-muted">
           Couldn’t load your workspace.{" "}
@@ -63,13 +67,14 @@ function ConnectWorkspace() {
   );
 }
 
-function ConnectFlow({ accountId, organization }: { accountId: string; organization: string }) {
+function ConnectFlow({ accountId, organization, busy, setBusy }: {
+  accountId: string; organization: string; busy: boolean; setBusy: (busy: boolean) => void;
+}) {
   const { withScope } = useOrg();
   const { project, scope } = useProject();
   const [params, setParams] = useSearchParams();
   const agent = params.get("mode") === "agent";
   const [secret, setSecret] = useState<string>();
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const issuing = useRef(false);
   const origin = window.location.origin;
@@ -85,10 +90,11 @@ function ConnectFlow({ accountId, organization }: { accountId: string; organizat
   }
 
   async function createKey() {
-    if (issuing.current || secret) return;
+    if (busy || issuing.current || secret) return;
     issuing.current = true;
     setBusy(true);
     setError("");
+    const signal = AbortSignal.timeout(keyCreationTimeoutMs);
     try {
       if (scope) {
         const key = await projectsApi.createPrincipal(scope, {
@@ -96,14 +102,15 @@ function ConnectFlow({ accountId, organization }: { accountId: string; organizat
           scopes: ["requests:submit", "requests:read"],
           client_ref: null,
           expires_in_days: keyLifetimeDays,
-        });
+        }, signal);
         setSecret(key.token);
       } else {
-        const key = await api.createApiKey(accountId, "Quickstart");
+        const key = await api.createApiKey(accountId, "Quickstart", undefined, signal);
         setSecret(key.secret);
       }
     } catch (error) {
-      setError(errorMessage(error));
+      const rejected = !signal.aborted && error instanceof ApiError && error.status >= 400 && error.status < 500;
+      setError(rejected ? errorMessage(error) : "We couldn’t confirm the key was created. Check Manage keys before trying again.");
     } finally {
       setBusy(false);
       issuing.current = false;

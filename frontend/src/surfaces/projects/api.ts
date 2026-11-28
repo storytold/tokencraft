@@ -90,8 +90,11 @@ export const projectsApi = {
   revokeProviderKey: (scope: ProviderKeyTarget, version: number) => gatewayRequest<void>(
     providerKeyPath(scope, version), { method: "DELETE" },
   ),
-  createPrincipal: (scope: ProjectScope, input: { name: string; scopes: KeyScope[]; client_ref: string | null; expires_in_days: number; attach?: boolean; bootstrap_default?: boolean }) =>
-    gatewayRequest<IssuedKey>(inProject(scope, "/service-principals"), write("POST", input)),
+  createPrincipal: (scope: ProjectScope, input: {
+    name: string; scopes: KeyScope[]; client_ref: string | null; expires_in_days: number; attach?: boolean; bootstrap_default?: boolean;
+  }, signal?: AbortSignal) => gatewayRequest<IssuedKey>(
+    inProject(scope, "/service-principals"), { ...write("POST", input), signal },
+  ),
   attachKey: (scope: ProjectScope, principalId: string) => gatewayRequest<void>(
     inProject(scope, "/credentials/attached"), write("PUT", { principal_id: principalId }),
   ),
