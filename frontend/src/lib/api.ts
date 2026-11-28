@@ -9,6 +9,7 @@
  */
 
 const LOCAL_API_URL = "http://localhost:4000";
+const SESSION_READ_TIMEOUT_MS = 10_000;
 
 function resolveApiBaseUrl(): string {
   const explicit = import.meta.env.VITE_API_BASE_URL;
@@ -46,7 +47,10 @@ function reportRequestFailure() {
   }
 }
 
-async function send<T>(method: string, path: string, init: { headers?: Record<string, string>; body?: BodyInit }): Promise<T> {
+async function send<T>(
+  method: string, path: string,
+  init: { headers?: Record<string, string>; body?: BodyInit; signal?: AbortSignal },
+): Promise<T> {
   let resp: Response;
   try {
     resp = await fetch(`${API_BASE_URL}${path}`, {
@@ -55,13 +59,16 @@ async function send<T>(method: string, path: string, init: { headers?: Record<st
       cache: "no-store",
       headers: init.headers,
       body: init.body,
+      signal: init.signal,
     });
   } catch {
+    init.signal?.throwIfAborted();
     reportRequestFailure();
     throw new ApiError(0, "network", `Could not reach the API at ${API_BASE_URL}. Is the server running?`);
   }
   if (resp.status >= 500) reportRequestFailure();
   const json = await resp.json().catch(() => null);
+  init.signal?.throwIfAborted();
   if (!resp.ok) {
     const err = (json as { error?: { code?: string; message?: string } } | null)?.error;
     throw new ApiError(resp.status, err?.code ?? "unknown", err?.message ?? `Request failed (${resp.status})`);
@@ -410,7 +417,12 @@ export const api = {
 
   logout: () => request<{ ok: boolean }>("POST", "/v1/auth/logout"),
 
-  me: () => request<MeResponse>("GET", "/v1/auth/me"),
+  me: (signal?: AbortSignal) => {
+    const deadline = AbortSignal.timeout(SESSION_READ_TIMEOUT_MS);
+    return send<MeResponse>("GET", "/v1/auth/me", {
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+    });
+  },
 
   /* ── Account security ── */
 
